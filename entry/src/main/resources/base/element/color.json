@@ -1,0 +1,78 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#F0F0F0"
+    },
+    {
+      "name": "font_color",
+      "value": "#FF000000",
+      "additionalProperties": "全局字体颜色"
+    },
+    {
+      "name": "titleCar_color",
+      "value": "#FFFFFFFF",
+      "additionalProperties": "TitleCard 的背景色"
+    },
+    {
+      "name": "rightContent_color",
+      "value": "#FFEFF1F5",
+      "additionalProperties": "右边背景色"
+    },
+    {
+      "name": "menuTree_color",
+      "value": "#FFF7F8FB",
+      "additionalProperties": "menuTree 的背景色"
+    },
+    {
+      "name": "button_color",
+      "value": "#FFF0F1F4",
+      "additionalProperties": "按钮的背景色"
+    },
+     {
+      "name": "log_browse",
+      "value": "#FFE5E6EA",
+      "additionalProperties": "日志页面中浏览按钮的背景色"
+    },
+    {
+      "name": "light_Select",
+      "value": "#FF333333",
+      "additionalProperties": "浅色模式下选中的效果"
+    },
+    {
+      "name": "light_noSelect",
+      "value": "#FF999999",
+      "additionalProperties": "浅色模式下未选中的效果"
+    },
+    {
+      "name": "Key_prompt_window",
+      "value": "#FFE5E6EA",
+      "additionalProperties": "秘钥登录有密码文件弹框"
+    },
+    {
+      "name": "Menu_tree_name",
+      "value": "#333333",
+      "additionalProperties": "菜单栏文字颜色"
+    },
+    {
+      "name": "serial_message",
+      "value": "#FFFFFF",
+      "additionalProperties": "串口连接消息的背景颜色"
+    },
+    {
+      "name": "serial_dividing",
+      "value": "#B0B0B0",
+      "additionalProperties": "串口分割线的背景颜色"
+    },
+    {
+      "name": "serial_message_list_background",
+      "value": "#F0F0F2",
+      "additionalProperties": "串口消息主界面背景色"
+    },
+    {
+      "name": "warning_textColor",
+      "value": "#FD6F25",
+      "additionalProperties": "警告字体颜色"
+    }
+  ]
+}

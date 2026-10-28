@@ -1,0 +1,1188 @@
+﻿{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "模块描述"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "描述"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "轻舟"
+    },
+    {
+      "name": "test_content",
+      "value": "中文"
+    },
+    {
+      "name": "session_title",
+      "value": "指定要连接的目的地"
+    },
+    {
+      "name": "session_select",
+      "value": "选择登陆方式"
+    },
+    {
+      "name": "connection_type",
+      "value": "连接类型"
+    },
+    {
+      "name": "session_load_save",
+      "value": "加载，保存或删除会话"
+    },
+    {
+      "name": "session_save",
+      "value": "保存会话"
+    },
+    {
+      "name": "load",
+      "value": "加载"
+    },
+    {
+      "name": "reset",
+      "value": "重置"
+    },
+    {
+      "name": "Save",
+      "value": "保存"
+    },
+    {
+      "name": "Delete",
+      "value": "删除"
+    },
+    {
+      "name": "session_top",
+      "value": "CrossShellNext会话的基本选项"
+    },
+    {
+      "name": "log_top",
+      "value": "控制会话日志的选项"
+    },
+    {
+      "name": "con_top",
+      "value": "控制连接的选项"
+    },
+    {
+      "name": "win_top",
+      "value": "控制窗口的选项"
+    },
+    {
+      "name": "appear_top",
+      "value": "配置窗口外观"
+    },
+    {
+      "name": "colour_top",
+      "value": "配置终端展示颜色"
+    },
+    {
+      "name": "connect_title",
+      "value": "发送空包以保持会话活动"
+    },
+    {
+      "name": "connect_keep_alive",
+      "value": "keepalive之间的秒数（0表示关闭）"
+    },
+    {
+      "name": "connect_inter_version",
+      "value": "网络协议"
+    },
+    {
+      "name": "window_size",
+      "value": "配置终端大小"
+    },
+    {
+      "name": "window_Col",
+      "value": "宽"
+    },
+    {
+      "name": "window_row",
+      "value": "高"
+    },
+    {
+      "name": "cursor_set",
+      "value": "调整光标"
+    },
+    {
+      "name": "cursor_appear",
+      "value": "光标样式"
+    },
+    {
+      "name": "cursor_block",
+      "value": "块状"
+    },
+    {
+      "name": "cursor_Underline",
+      "value": "下划线"
+    },
+    {
+      "name": "cursor_VerticalLine",
+      "value": "竖线"
+    },
+    {
+      "name": "cursor_Blink",
+      "value": "光标闪烁"
+    },
+    {
+      "name": "language_title",
+      "value": "调整配置页面语言选项"
+    },
+    {
+      "name": "language_switch",
+      "value": "语言选择"
+    },
+    {
+      "name": "color_title",
+      "value": "调整CrossShellNext显示的精确颜色"
+    },
+    {
+      "name": "color_select",
+      "value": "选择颜色去调整"
+    },
+    {
+      "name": "RGBvalue",
+      "value": "RGB 值:"
+    },
+    {
+      "name": "red",
+      "value": "红色"
+    },
+    {
+      "name": "Green",
+      "value": "绿色"
+    },
+    {
+      "name": "Blue",
+      "value": "蓝色"
+    },
+    {
+      "name": "Modify",
+      "value": "修改"
+    },
+    {
+      "name": "Auto",
+      "value": "自动"
+    },
+    {
+      "name": "Sessionlogging",
+      "value": "会话日志："
+    },
+    {
+      "name": "None",
+      "value": "不生成"
+    },
+    {
+      "name": "Printableoutput",
+      "value": "可打印输出"
+    },
+    {
+      "name": "Allsessionoutput",
+      "value": "所有会话输出"
+    },
+    {
+      "name": "SSHpackets",
+      "value": "SSH数据包"
+    },
+    {
+      "name": "SSHpacketsandrawdata",
+      "value": "SSH数据包和原始数据"
+    },
+    {
+      "name": "Logfilename",
+      "value": "日志文件名:"
+    },
+    {
+      "name": "Logtip",
+      "value": "(日志文件名可以包含日期&Y、&M、&D，时间&T，主机名&H，端口号&P)"
+    },
+    {
+      "name": "Logsave",
+      "value": "如果日志文件已经存在："
+    },
+    {
+      "name": "overwrite",
+      "value": "覆盖写入日志文件"
+    },
+    {
+      "name": "append",
+      "value": "追加写入日志文件"
+    },
+    {
+      "name": "Includeheader",
+      "value": "包括标题"
+    },
+    {
+      "name": "Options_specific_to_SSH_packet_logging",
+      "value": "SSH数据包日志记录的特定选项"
+    },
+    {
+      "name": "Omit_known_password_fields",
+      "value": "省略已知密码字段"
+    },
+    {
+      "name": "Omit_session_data",
+      "value": "忽略会话数据"
+    },
+    {
+      "name": "hostname",
+      "value": "主机名（IP地址）"
+    },
+    {
+      "name": "Keylogin",
+      "value": "秘钥登陆"
+    },
+    {
+      "name": "UserName",
+      "value": "用户名"
+    },
+    {
+      "name": "Port",
+      "value": "端口"
+    },
+    {
+      "name": "Password",
+      "value": "密码"
+    },
+    {
+      "name": "keyauthentication",
+      "value": "鉴权私钥文件"
+    },
+    {
+      "name": "Displaymode",
+      "value": "调整配置页面深色浅色主题"
+    },
+    {
+      "name": "mode_switch",
+      "value": "选择深浅模式"
+    },
+    {
+      "name": "Light",
+      "value": "浅色"
+    },
+    {
+      "name": "Dark",
+      "value": "深色"
+    },
+    {
+      "name": "KeyGenerator",
+      "value": "CrossShellNext 秘钥生成"
+    },
+    {
+      "name": "SSHportforwarding",
+      "value": "控制 SSH 端口转发的选项"
+    },
+    {
+      "name": "KeyGeneratorTitle",
+      "value": "参数"
+    },
+    {
+      "name": "KeyGeneratortype",
+      "value": "生成秘钥类型"
+    },
+    {
+      "name": "KeyGeneratorPath",
+      "value": "秘钥文件生成路径"
+    },
+    {
+      "name": "BrowseFiles",
+      "value": "浏览文件"
+    },
+    {
+      "name": "KeyPassword",
+      "value": "秘钥密码（可选）"
+    },
+    {
+      "name": "ConfirmPassword",
+      "value": "确认密码"
+    },
+    {
+      "name": "PublicKey",
+      "value": "公钥"
+    },
+    {
+      "name": "Generate",
+      "value": "生成"
+    },
+    {
+      "name": "Serialline",
+      "value": "串口线路"
+    },
+    {
+      "name": "Speed",
+      "value": "波特率"
+    },
+    {
+      "name": "Databits",
+      "value": "数据位"
+    },
+    {
+      "name": "Stopbits",
+      "value": "停止位"
+    },
+    {
+      "name": "Parity",
+      "value": "奇偶校验"
+    },
+    {
+      "name": "Flowcontrol",
+      "value": "流量控制"
+    },
+    {
+      "name": "ambiguity",
+      "value": "处理 OLD_ENVIRON 的歧义"
+    },
+    {
+      "name": "BSD",
+      "value": "BSD (推荐)"
+    },
+    {
+      "name": "RFC",
+      "value": "RFC 1408（不常用）"
+    },
+    {
+      "name": "Telnetnegotiationmode",
+      "value": "Telnet 协商模式"
+    },
+    {
+      "name": "Passive",
+      "value": "被动"
+    },
+    {
+      "name": "Active",
+      "value": "主动"
+    },
+    {
+      "name": "Telnetspecialcommands",
+      "value": "键盘发送 Telnet 特殊命令"
+    },
+    {
+      "name": "TelnetNewLine",
+      "value": "Return 键发送 Telnet 新行，而不是 ^M"
+    },
+    {
+      "name": "Session",
+      "value": "会话"
+    },
+    {
+      "name": "Logging",
+      "value": "日志"
+    },
+    {
+      "name": "Tunnels",
+      "value": "通道"
+    },
+    {
+      "name": "Appearance",
+      "value": "外观"
+    },
+    {
+      "name": "Colours",
+      "value": "颜色选择"
+    },
+    {
+      "name": "KeyGeneratortitle",
+      "value": "秘钥生成"
+    },
+    {
+      "name": "Portforwarding",
+      "value": "端口转发"
+    },
+    {
+      "name": "Forwardedports",
+      "value": "转发端口"
+    },
+    {
+      "name": "Remove",
+      "value": "移除"
+    },
+    {
+      "name": "Addnewforwardedport",
+      "value": "添加新的转发端口："
+    },
+    {
+      "name": "Sourceport",
+      "value": "源端口"
+    },
+    {
+      "name": "Add",
+      "value": "添加"
+    },
+    {
+      "name": "Destination",
+      "value": "地址"
+    },
+    {
+      "name": "Local",
+      "value": "本地"
+    },
+    {
+      "name": "Remote",
+      "value": "远端"
+    },
+    {
+      "name": "Dynamic",
+      "value": "动态"
+    },
+    {
+      "name": "Connection",
+      "value": "连接"
+    },
+    {
+      "name": "Window",
+      "value": "窗口"
+    },
+    {
+      "name": "browse",
+      "value": "浏览"
+    },
+    {
+      "name": "Odd",
+      "value": "奇校验"
+    },
+    {
+      "name": "Even",
+      "value": "偶校验"
+    },
+    {
+      "name": "Mark",
+      "value": "标记校验"
+    },
+    {
+      "name": "Space",
+      "value": "空校验"
+    },
+    {
+      "name": "noneserial",
+      "value": "无校验"
+    },
+    {
+      "name": "Telnetprotocoladjustments",
+      "value": "远程登录协议调整"
+    },
+    {
+      "name": "English",
+      "value": "英文"
+    },
+    {
+      "name": "Chinese",
+      "value": "中文"
+    },
+    {
+      "name": "Cancel",
+      "value": "退出"
+    },
+    {
+      "name": "Open",
+      "value": "打开终端"
+    },
+    {
+      "name": "Always",
+      "value": "总是关闭窗口"
+    },
+    {
+      "name": "Never",
+      "value": "从不关闭窗口"
+    },
+    {
+      "name": "OnlyOnCleanExit",
+      "value": "仅在正常退出时关闭窗口"
+    },
+    {
+      "name": "CloseWindowOnExit",
+      "value": "退出时关闭窗口:"
+    },
+    {
+      "name": "abNormalExitTitle",
+      "value": "CrossShellNext严重错误"
+    },
+    {
+      "name": "abNormalExitContent",
+      "value": "远程端意外关闭网络连接"
+    },
+    {
+      "name": "abNormalExitConfirm",
+      "value": "确认"
+    },
+    {
+      "name": "About",
+      "value": "关于"
+    },
+    {
+      "name": "ok",
+      "value": "好的"
+    },
+    {
+      "name": "App_Name",
+      "value": "应用名"
+    },
+    {
+      "name": "Version",
+      "value": "版本"
+    },
+    {
+      "name": "aboutUsIntroduction",
+      "value": "CrossShellNext是免费开源的SSH、Telnet、rlogin协议客户端，适用于鸿蒙系统，主要用于远程服务器管理.如您有其他建议，请在以下开源社区反馈或联系我们."
+    },
+    {
+      "name": "OpenSourceAddress",
+      "value": "社区"
+    },
+    {
+      "name": "Introduction",
+      "value": "简介"
+    },
+    {
+      "name": "Set_language_prompt_to_restart",
+      "value": "目前使用的语言是中文。重新启动后，将跟随系统语言。"
+    },
+    {
+      "name": "check_node_param_data",
+      "value": "CrossShellNext会话的基本选项"
+    },
+    {
+      "name": "Terminal",
+      "value": "终端"
+    },
+    {
+      "name": "Terminal_options",
+      "value": "控制终端模拟的选项"
+    },
+    {
+      "name": "wrap_mode",
+      "value": "设置终端是否在行末自动换行模式的初始状态"
+    },
+    {
+      "name": "Implicit_CR_in_every_LF",
+      "value": "设置每个回车符（CR）是否隐式包含换行符（LF）"
+    },
+    {
+      "name": "Set_various_terminal_options",
+      "value": "设置各种终端选项"
+    },
+    {
+      "name": "Implicit_LF_in_every_CR",
+      "value": "设置每个回车符（CR）是否隐式包含换行符（LF）"
+    },
+    {
+      "name": "When_window_is_resized",
+      "value": "当窗口调整时"
+    },
+    {
+      "name": "Forbid_resizing_completely",
+      "value": "完全禁止窗口大小调整"
+    },
+    {
+      "name": "Change_the_number_of_rows_and_columns",
+      "value": "调整窗口大小时改变行列数"
+    },
+    {
+      "name": "Change_the_size_of_the_font",
+      "value": "调整窗口大小时改变字体大小"
+    },
+    {
+      "name": "Change_font_size_only_when_maximised",
+      "value": "仅在窗口最大化时改变字体大小"
+    },
+    {
+      "name": "DocumentReason",
+      "value": "用于获取文档文件以实现文件保存功能。"
+    },
+    {
+      "name": "read_paste",
+      "value": "用于访问剪贴板以实现复制粘贴功能。"
+    },
+    {
+      "name": "RunningInfo",
+      "value": "用于获取运行态信息。"
+    },
+    {
+      "name": "DownloadReason",
+      "value": "用于获取下载目录的读写权限，以实现用户能将文件读取和保存在download目录下"
+    },
+    {
+      "name": "ConfigHostAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "ConfigHostAbility_label",
+      "value": "dekeInfo"
+    },
+    {
+      "name": "shellWindowAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "shellWindowAbility_label",
+      "value": "轻舟 终端"
+    },
+    {
+      "name": "App_bundleName",
+      "value": "com.develop.skiff"
+    },
+    {
+      "name": "Click_Generate_to_select_the_path",
+      "value": "点击Generate选择路径"
+    },
+    {
+      "name": "Session_Save_Error_Toast",
+      "value": "请输入会话名称"
+    },
+    {
+      "name": "Save_Success_Toast",
+      "value": "保存成功"
+    },
+    {
+      "name": "Serial",
+      "value": "串口"
+    },
+    {
+      "name": "Serial_Title",
+      "value": "本地串口设置"
+    },
+    {
+      "name": "Select_Serial_Line",
+      "value": "选择串口"
+    },
+    {
+      "name": "Configure_Serial_Line",
+      "value": "串口配置"
+    },
+    {
+      "name": "confirm",
+      "value": "确定"
+    },
+    {
+      "name": "Serial_device",
+      "value": "设备 %d"
+    },
+    {
+      "name": "Serial_select_device",
+      "value": "选择串口设备"
+    },
+    {
+      "name": "cancel",
+      "value": "取消"
+    },
+    {
+      "name": "open_success",
+      "value": "打开成功"
+    },
+    {
+      "name": "failed_open",
+      "value": "打开失败"
+    },
+    {
+      "name": "serial_open_capability",
+      "value": "当前设备不具备串口能力，请检查后重试"
+    },
+    {
+      "name": "loading",
+      "value": "加载中"
+    },
+    {
+      "name": "logging_loading",
+      "value": "登录中，请稍后"
+    },
+    {
+      "name": "serial_open_loading",
+      "value": "正在打开串口接连终端，请稍后..."
+    },
+    {
+      "name": "send",
+      "value": "发送 %s"
+    },
+    {
+      "name": "clear_window",
+      "value": "清除窗口"
+    },
+    {
+      "name": "receive",
+      "value": "接收 %s"
+    },
+    {
+      "name": "clear_success",
+      "value": "清除成功"
+    },
+    {
+      "name": "send_button",
+      "value": "发送"
+    },
+    {
+      "name": "serial_device_open_warn",
+      "value": "当前选择的串口设备已打开，请选择其他设备重试！"
+    },
+    {
+      "name": "select_derial_device_warn",
+      "value": "当前未选择需要打开的串口设备，请选择后再点击确认！"
+    },
+    {
+      "name": "serila_configura_tips",
+      "value": "当前版本的工具支持标准UART参数配置，暂未提供硬件（RTS/CTS）或软件（XON/XOFF）流控制功能。"
+    },
+    {
+      "name": "Window_Col_Toast",
+      "value": "请输入 800 到 6000 之间的数字"
+    },
+    {
+      "name": "KeyGenerator_Password_Error_Toast",
+      "value": "两次输入的密码不匹配"
+    },
+    {
+      "name": "KeyGenerator_Successful_Toast",
+      "value": "密钥生成成功"
+    },
+    {
+      "name": "KeyGenerator_Error_Toast",
+      "value": "密钥生成失败"
+    },
+    {
+      "name": "Session_Key_Select_Error_Toast",
+      "value": "请选择.pem格式的密钥文件"
+    },
+    {
+      "name": "Setup_Successful",
+      "value": "设置成功"
+    },
+    {
+      "name": "Setup_Error_0_255",
+      "value": "设置失败，输入的值要在0~255"
+    },
+    {
+      "name": "Login_Failed",
+      "value": "登录失败，请检查连接信息或网络"
+    },
+    {
+      "name": "Link_Error",
+      "value": "连接出错"
+    },
+    {
+      "name": "Unknown_Error",
+      "value": "未知错误"
+    },
+    {
+      "name": "File_Download_Successful",
+      "value": "文件下载成功"
+    },
+    {
+      "name": "File_Download_Canceled",
+      "value": "文件下载已取消"
+    },
+    {
+      "name": "File_Download_Failed",
+      "value": "文件下载失败"
+    },
+    {
+      "name": "File_Uploaded_Successfully",
+      "value": "文件上传成功"
+    },
+    {
+      "name": "File_Transfer_Canceled",
+      "value": "文件传输已取消"
+    },
+    {
+      "name": "File_Upload_Failed",
+      "value": "文件上传失败"
+    },
+    {
+      "name": "Drag_Drop_Upload_Error",
+      "value": "当前拖拽上传的文件中包含文件夹，请检查后重试！"
+    },
+    {
+      "name": "File_Uploading_Error",
+      "value": "当前正在上传文件，请稍后再试"
+    },
+    {
+      "name": "Successfully_Added_Folder",
+      "value": "新增文件夹成功"
+    },
+    {
+      "name": "Failed_Add_Folder",
+      "value": "新增文件夹失败"
+    },
+    {
+      "name": "Delete_Error",
+      "value": "删除失败"
+    },
+    {
+      "name": "File_Transferred_Cannot_Deleted",
+      "value": "该文件正在传输中，不可进行删除操作！"
+    },
+    {
+      "name": "Deleted_Successfully",
+      "value": "删除成功 ﻿"
+    },
+    {
+      "name": "OPERATION_SUCCESSFUL",
+      "value": "操作成功"
+    },
+    {
+      "name": "FILE_READ_COMPLETED",
+      "value": "文件读取完成"
+    },
+    {
+      "name": "FILE_OR_DIRECTORY_NOT_EXIST",
+      "value": "文件或目录不存在"
+    },
+    {
+      "name": "PERMISSION_DENIED",
+      "value": "权限不足，拒绝访问"
+    },
+    {
+      "name": "SYSTEM_EXCEPTION",
+      "value": "系统异常"
+    },
+    {
+      "name": "SFTP_MESSAGE_FORMAT_ERROR",
+      "value": "sftp消息格式错误"
+    },
+    {
+      "name": "CONNECTION_FAILED",
+      "value": "无法连接到服务器"
+    },
+    {
+      "name": "CONNECTION_LOST",
+      "value": "与服务器的连接丢失"
+    },
+    {
+      "name": "OPERATION_NOT_SUPPORTED",
+      "value": "服务器不支持该操作"
+    },
+    {
+      "name": "INVALID_FILE_HANDLE",
+      "value": "无效的文件句柄"
+    },
+    {
+      "name": "PATH_NOT_EXIST",
+      "value": "路径不存在"
+    },
+    {
+      "name": "FILE_ALREADY_EXISTS",
+      "value": "文件已存在"
+    },
+    {
+      "name": "READ_ONLY_FILE_SYSTEM",
+      "value": "文件或文件系统是只读的"
+    },
+    {
+      "name": "NO_MEDIA",
+      "value": "设备中没有媒体"
+    },
+    {
+      "name": "FILESYSTEM_SPACE_INSUFFICIENT",
+      "value": "文件系统空间不足"
+    },
+    {
+      "name": "USER_QUOTA_EXCEEDED",
+      "value": "用户配额已超出"
+    },
+    {
+      "name": "UNKNOWN_PRINCIPAL",
+      "value": "未知的主体"
+    },
+    {
+      "name": "FILE_LOCK_CONFLICT",
+      "value": "文件锁定冲突"
+    },
+    {
+      "name": "DIRECTORY_NOT_EMPTY",
+      "value": "目录非空"
+    },
+    {
+      "name": "NOT_A_DIRECTORY",
+      "value": "指定的路径不是一个目录"
+    },
+    {
+      "name": "INVALID_FILENAME",
+      "value": "无效的文件名"
+    },
+    {
+      "name": "TOO_MANY_SYMBOLIC_LINKS",
+      "value": "符号链接循环过多"
+    },
+    {
+      "name": "FILE_IN_TRANSFER_RENAME_NOT_ALLOWED",
+      "value": "该文件正在传输中，不可进行重命名操作！"
+    },
+    {
+      "name": "RENAME_SUCCESSFUL",
+      "value": "重命名成功"
+    },
+    {
+      "name": "RENAME_FAILED",
+      "value": "重命名失败"
+    },
+    {
+      "name": "PORT_FORWARDING_SSH_ONLY",
+      "value": "端口转发功能仅适用于SSH连接"
+    },
+    {
+      "name": "GET_PORT_FORWARDING_RULES_FAILED",
+      "value": "获取端口转发规则失败"
+    },
+    {
+      "name": "STOP_FORWARDING_SUCCESS",
+      "value": "停止转发成功,端口：%s"
+    },
+    {
+      "name": "STOP_FORWARDING_FAILED",
+      "value": "停止转发失败,端口:%s"
+    },
+    {
+      "name": "PORT_FORWARDING_SSH_ONLY_2",
+      "value": "端口转发功能仅适用于SSH连接"
+    },
+    {
+      "name": "ENTER_VALID_SOURCE_PORT",
+      "value": "请输入有效的源端口号(1-65535)"
+    },
+    {
+      "name": "ENTER_VALID_TARGET_FORMAT",
+      "value": "请输入有效的目标地址和端口，格式为\"host:port\""
+    },
+    {
+      "name": "ENTER_VALID_TARGET_PORT",
+      "value": "请输入有效的目标端口号(1-65535)"
+    },
+    {
+      "name": "LOCAL",
+      "value": "本地端口转发已启动"
+    },
+    {
+      "name": "REMOTE",
+      "value": "远程端口转发已启动"
+    },
+    {
+      "name": "PORT_FORWARDING_STARTED",
+      "value": "端口转发已启动"
+    },
+    {
+      "name": "PORT_FORWARDING_FAILED",
+      "value": "端口转发失败"
+    },
+    {
+      "name": "DYNAMIC_SOCKS_STARTED",
+      "value": "动态SOCKS端口转发已启动"
+    },
+    {
+      "name": "DYNAMIC_SOCKS_START_FAILED",
+      "value": "启动动态SOCKS端口转发失败"
+    },
+    {
+      "name": "ADD_PORT_FORWARDING_FAILED",
+      "value": "添加端口转发失败: "
+    },
+    {
+      "name": "UPLOAD_IN_PROGRESS",
+      "value": "当前正在上传文件，请稍后再试"
+    },
+    {
+      "name": "FOLDER_DOWNLOAD_NOT_SUPPORTED",
+      "value": "当前不支持下载文件夹,请重新选择"
+    },
+    {
+      "name": "SELECT_FILE_TO_DOWNLOAD",
+      "value": "请选择需要下载的文件"
+    },
+    {
+      "name": "DOWNLOAD_IN_PROGRESS",
+      "value": "当前正在下载文件，请稍后再试"
+    },
+    {
+      "name": "SELECT_TO_RENAME",
+      "value": "请先选中需要重命名的文件或文件夹"
+    },
+    {
+      "name": "SELECT_TO_DELETE",
+      "value": "请先选中需要删除的文件或文件夹"
+    },
+    {
+      "name": "FILE_TRANSFER",
+      "value": "文件传输"
+    },
+    {
+      "name": "UNKNOWN_FILE",
+      "value": "未知文件"
+    },
+    {
+      "name": "CANCEL_TRANSFER",
+      "value": "取消传输"
+    },
+    {
+      "name": "TRANSFER_CANCELLED",
+      "value": "传输已取消"
+    },
+    {
+      "name": "TRANSFER_SUCCESSFUL",
+      "value": "传输成功"
+    },
+    {
+      "name": "PORT_FORWARDED",
+      "value": "已转发端口"
+    },
+    {
+      "name": "SOCKS_PROXY",
+      "value": "%s SOCKS代理"
+    },
+    {
+      "name": "NO_FORWARDED_PORTS",
+      "value": "暂无已转发端口"
+    },
+    {
+      "name": "ADD_PORT_FORWARDING",
+      "value": "添加端口转发"
+    },
+    {
+      "name": "FORWARD_PORT",
+      "value": "转发端口"
+    },
+    {
+      "name": "CANCEL",
+      "value": "取消"
+    },
+    {
+      "name": "SYSTEM_PROMPT",
+      "value": "系统提示"
+    },
+    {
+      "name": "CONFIRM_CLOSE_TERMINAL",
+      "value": "本次操作会关闭已连接的终端，请确认"
+    },
+    {
+      "name": "LOGGING_IN",
+      "value": "登录中，请稍后"
+    },
+    {
+      "name": "ENTER_KEY_PASSWORD",
+      "value": "请输入密钥密码"
+    },
+    {
+      "name": "ENTER_PASSWORD",
+      "value": "请输入密码"
+    },
+    {
+      "name": "Passwords_do_not_match",
+      "value": "两次密码输入不一致"
+    },
+    {
+      "name": "terminal_init",
+      "value": "终端初始化中..."
+    },
+    {
+      "name": "Connection_error",
+      "value": "连接异常"
+    },
+    {
+      "name": "sendEncoding",
+      "value": "发送时编码"
+    },
+    {
+      "name": "readEncoding",
+      "value": "读取时编码"
+    },
+    {
+      "name": "Proxy_GlobalSwitch",
+      "value": "全局代理开关"
+    },
+    {
+      "name": "Proxy_Enabled",
+      "value": "启用代理"
+    },
+    {
+      "name": "Proxy_Type",
+      "value": "代理类型"
+    },
+    {
+      "name": "Proxy_Settings",
+      "value": "代理设置"
+    },
+    {
+      "name": "Proxy_Address",
+      "value": "代理地址"
+    },
+    {
+      "name": "Proxy_Address_Placeholder",
+      "value": "如 127.0.0.1"
+    },
+    {
+      "name": "Proxy_Port",
+      "value": "代理端口"
+    },
+    {
+      "name": "Proxy_Port_Placeholder",
+      "value": "如 1080"
+    },
+    {
+      "name": "Proxy_Username",
+      "value": "用户名（可选）"
+    },
+    {
+      "name": "Proxy_Username_Placeholder",
+      "value": "代理用户名"
+    },
+    {
+      "name": "Proxy_Password",
+      "value": "密码（可选，加密存储）"
+    },
+    {
+      "name": "Proxy_Password_Placeholder",
+      "value": "代理密码"
+    },
+    {
+      "name": "Proxy_Timeout",
+      "value": "连接超时（秒）"
+    },
+    {
+      "name": "Proxy_Timeout_Placeholder",
+      "value": "默认 10"
+    },
+    {
+      "name": "Proxy_HttpConnect",
+      "value": "HTTP CONNECT"
+    },
+    {
+      "name": "Proxy_Description",
+      "value": "代理设置适用于 SSH / SFTP / Telnet 连接。会话页可设置每个会话的代理策略（跟随全局 / 自定义 / 禁用）。"
+    },
+    {
+      "name": "proxy_err_1",
+      "value": "代理配置无效或未启用"
+    },
+    {
+      "name": "proxy_err_2",
+      "value": "创建代理 Socket 失败"
+    },
+    {
+      "name": "proxy_err_3",
+      "value": "连接代理服务器失败"
+    },
+    {
+      "name": "proxy_err_4",
+      "value": "代理协议握手失败"
+    },
+    {
+      "name": "proxy_err_5",
+      "value": "代理鉴权失败"
+    },
+    {
+      "name": "proxy_err_6",
+      "value": "代理连接超时"
+    },
+    {
+      "name": "proxy_err_7",
+      "value": "代理拒绝连接目标"
+    },
+    {
+      "name": "proxy_err_8",
+      "value": "连接被拒绝"
+    },
+    {
+      "name": "Proxy_MenuTitle",
+      "value": "代理配置"
+    },
+    {
+      "name": "Proxy_PageTitle",
+      "value": "代理配置选项"
+    }
+  ]
+}

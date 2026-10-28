@@ -1,0 +1,51 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+
+# ================================================================
+# AI Agent Harness 工作流文件 — 一律不追踪（R-19 规则）
+# 详见 .opencode/rules/R-19_exclude-ai-harness-files.md
+# ================================================================
+
+# OpenCode Harness 全部本地文件（agents/rules/skills/hooks/plugins 等）
+.opencode/
+
+# Harness 规范入口与 AI 工具个人配置
+AGENTS.md
+opencode.jsonc
+opencode.json
+
+# 其他常见 AI Agent Harness 目录与文件（防御性排除）
+.claude/
+CLAUDE.md
+.cursor/
+.aider*
+
+# ================================================================
+# 密钥 / 证书 / 凭据 — 一律不追踪（secret 防御）
+# ================================================================
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+*.ppk
+*.jks
+*.keystore
+*.p7b
+*.cer
+*.der
+id_rsa
+id_rsa.pub
+id_dsa
+known_hosts
+authorized_keys

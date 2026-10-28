@@ -1,0 +1,8 @@
+{
+  "src": [
+    "pages/entryPage/Index",
+    "pages/configHostPage/configHost",
+    "pages/shellWindowPage/ShellWindow",
+    "pages/mobile/Index"
+  ]
+}

@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XTerm.js</title>
+  <script src="./xterm/index.js"></script>
+  <script src="./xterm-addon-fit/index.js"></script>
+  <script src="./xterm-addon-webgl/index.js"></script>
+  <link rel="stylesheet" href="./xterm/xterm.css"/>
+
+  <style>
+    @font-face {
+      font-family: 'CsxMono';
+      src: url('./fonts/mono.ttf') format('truetype');
+      font-weight: 400;
+      font-style: normal;
+      font-display: block;
+    }
+    body {
+      margin: 0;
+      background-color: #08090C;
+      height: 100vh;
+      width: 100vw;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #terminal-container {
+      background: #08090C;
+      padding: 6px 6px 4px 8px;
+      box-sizing: border-box;
+      width: 100vw;
+      flex: 1;
+      overflow: hidden;
+    }
+
+  </style>
+</head>
+
+<body>
+<div id="terminal-container"></div>
+<div id="context-menu" style="display: none; position: absolute; background: #2b2b2b; border: 1px solid #444; padding: 5px;">
+  <div class="menu-item" id="copy" style="padding: 5px 10px; cursor: pointer; color: white;">复制</div>
+  <script>
+    let h5Port; // h5端口通道
+    let fitAddon = new FitAddon.FitAddon();
+    let webglAddon = new WebglAddon.WebglAddon();
+    let isTerminalOpened = false; // 跟踪终端是否已打开
+    let pendingStyles = null; // 存储初始化前接收到的样式
+    let lastTermSize = { cols: 0, rows: 0 }; // 存储上一次的终端大小
+    let windowResizedId = '1'
+    let textSize = 15
+    let isWindowMax = false
+    let f = true
+    let timer = -1
+
+     async function getWindowResizedId(){
+              try{
+                windowResizedId = await window.arkTS.getWindowResizedId()
+               // if(windowResizedId==='2'){
+                  //term.options.fontSize = textContent.offsetWidth * 0.02
+                  //textSize =  textContent.offsetWidth * 0.02
+                    // if(f){
+                    //   f= false
+                    //   setTimeout(()=>{
+                    //     f= true
+                    //     fitAddon.fit();
+                    //   },100)
+                    // }
+                    //clearTimeout(timer)
+                    //timer = setTimeout(()=>{
+                     // fitAddon.fit();
+                    //},30)
+                  //}
+              }catch(e){
+            }
+    }
+
+    const textContent = document.getElementById('terminal-container');
+
+    async function windowToMax(){
+        textSize = term.options.fontSize
+        windowResizedId = await  window.arkTS.getWindowResizedId()
+        isWindowMax = true
+    }
+
+    async function exitWindowMax(){
+      windowResizedId =await window.arkTS.getWindowResizedId()
+      isWindowMax = false
+    }
+
+    // 初始化终端
+    const term = new Terminal({
+      rendererType: "canvas",
+      wordWrap: false,
+      cursorBlink: true,
+      convertEol: false,
+      disableStdin: false,
+      cursorStyle: "block",
+      fontSize: 14,
+      tabStopWidth: 4,
+      fontFamily: 'CsxMono, monospace',
+      rightClickSelectsWord: true,
+      allowMouseEvent: true,
+      theme: {
+        background: "#08090C",
+        foreground: "#D7DEE9",
+        cursor: "#3DDC97",
+      },
+    });
+
+
+
+    // 初始化终端
+    function init() {
+    getWindowResizedId()
+
+      term.loadAddon(fitAddon);
+      // 先不打开终端，等待样式配置
+      console.log("初始化终端，但延迟打开");
+      // 适配两个阶段：监听消息 -> 应用样式 -> 打开终端
+      setupContextMenu();
+      setupEventListeners();
+
+      // 设置超时，确保即使未收到样式也能正常显示
+      setTimeout(ensureTerminalOpened, 1000);
+
+       // 窗口调整大小时自动适应终端大小
+      window.addEventListener('resize', () => {
+        if(windowResizedId==='2'){
+              term.options.fontSize = textContent.offsetWidth * 0.02
+              textSize =  textContent.offsetWidth * 0.02
+            }
+
+        else if(windowResizedId==='3'){
+          if(isWindowMax){
+            term.options.fontSize = textContent.offsetWidth * 0.02
+          }else{
+            term.options.fontSize = textSize
+          }
+        }
+        else if(windowResizedId==='4'){
+          // textSize = 15
+          term.options.fontSize =  textSize
+          //exitWindowMax()
+        }
+        // fitAddon.fit()
+            try{
+              // fitAddon.fit()
+              clearTimeout(timer)
+                timer = setTimeout(()=>{
+                  fitAddon.fit();
+                  // 发送新的终端大小到ETS层
+                  updateTerminalSize();
+                },30)
+            }catch(e){
+
+            }
+         // 发送新的终端大小到ETS层
+          // updateTerminalSize();
+      });
+
+      // 确保终端被打开的函数
+      function ensureTerminalOpened() {
+        if (!isTerminalOpened) {
+          console.log("超时打开终端");
+          openTerminal();
+        }
+      }
+
+       // 打开终端的封装函数
+      function openTerminal() {
+        if (isTerminalOpened) return; // 防止重复打开
+
+         // 如果有等待应用的样式，立即应用
+        if (pendingStyles) {
+          console.log("应用等待的样式:", pendingStyles);
+          applyTerminalStyles(pendingStyles);
+          pendingStyles = null;
+        }
+
+        console.log("正式打开终端");
+        term.open(document.getElementById("terminal-container"));
+        fitAddon.fit();
+        term.focus();
+        term.refresh(0, term.rows - 1);
+        isTerminalOpened = true;
+        try {
+          if (h5Port) {
+            // 向 ETS 侧通知：H5 终端已就绪，可以安全写入
+            h5Port.postMessage("__terminal_ready__");
+          }
+        } catch (e) {
+          console.warn('发送 __terminal_ready__ 失败:', e);
+        }
+
+         // 终端打开后立即发送大小信息
+        setTimeout(() => {
+          updateTerminalSize();
+        }, 100);
+
+        // 监听终端调整大小事件
+        term.onResize((size) => {
+          console.log(`终端onResize事件: ${size.cols}x${size.rows}`);
+          lastTermSize = { cols: size.cols, rows: size.rows };
+
+          if (h5Port) {
+            h5Port.postMessage(`resize:${size.cols},${size.rows}`);
+          }
+        });
+      }
+
+      // 应用终端样式的函数
+      function applyTerminalStyles(styles) {
+        if (!styles) return;
+        console.log("开始应用样式======:", styles);
+
+        try {
+          // 确保styles是对象
+          if (typeof styles === 'string') {
+            try {
+              styles = JSON.parse(styles);
+            } catch (parseError) {
+              console.error("样式格式错误，无法解析:", parseError);
+              return;
+            }
+          }
+
+          // 应用样式
+          console.log("应用样式对象:", styles);
+
+          // 设置光标样式
+          if (styles.cursorBlinks !== undefined) {
+            term.options.cursorBlink = styles.cursorBlinks;
+            console.log("设置光标闪烁:", styles.cursorBlinks);
+          }
+
+          if (styles.cursorAppear !== undefined) {
+            term.options.cursorStyle = styles.cursorAppear;
+            console.log("设置光标样式:", styles.cursorAppear);
+          }
+
+          // 设置前景色
+          if (styles.foreground) {
+            // 确保颜色格式正确
+            const foregroundColor = styles.foreground.startsWith('#')
+              ? styles.foreground
+              : '#' + styles.foreground;
+
+            console.log("设置前景色:", foregroundColor);
+
+            // 创建新的主题对象
+            const newTheme = {
+              ...term.options.theme,
+              foreground: foregroundColor
+            };
+
+            // 应用新主题
+            term.options.theme = newTheme;
+          }
+
+          // 强制刷新终端
+          if (isTerminalOpened) {
+            console.log("刷新终端显示");
+
+            // 尝试多种刷新方法
+            try {
+              // 方法1: 标准刷新
+              term.refresh(0, term.rows - 1);
+
+              // 方法2: 使用fit插件
+              fitAddon.fit();
+              console.log("应用fit插件");
+            } catch (refreshError) {
+              console.warn("刷新终端时出错:", refreshError);
+            }
+          }
+
+          console.log("样式应用完成");
+        } catch (e) {
+          console.error("应用样式时出错:", e);
+        }
+      }
+
+      // 单独函数处理右键菜单，确保代码清晰
+      function setupContextMenu() {
+        console.log("开始设置右键菜单");
+
+        // 获取右键菜单元素
+        const contextMenu = document.getElementById('context-menu');
+        const terminalContainer = document.getElementById('terminal-container');
+
+        if (!contextMenu) {
+          console.error("找不到右键菜单元素!");
+          return;
+        }
+
+        if (!terminalContainer) {
+          console.error("找不到终端容器元素!");
+          return;
+        }
+
+        // 确保菜单样式正确
+        contextMenu.style.zIndex = "1000"; // 确保在最上层
+
+        // 禁用默认的右键菜单，仅在终端容器上
+        terminalContainer.addEventListener('contextmenu', function(e) {
+          console.log("右键菜单被触发");
+          e.preventDefault();
+          e.stopPropagation();
+
+          // 显示自定义菜单
+          contextMenu.style.display = 'block';
+          
+          // 获取菜单尺寸
+          const menuRect = contextMenu.getBoundingClientRect();
+          const menuWidth = menuRect.width || 80; // 默认宽度，如果获取不到实际宽度
+          const menuHeight = menuRect.height || 40; // 默认高度，如果获取不到实际高度
+          
+          // 获取窗口尺寸
+          const windowWidth = window.innerWidth;
+          const windowHeight = window.innerHeight;
+          
+          // 计算菜单位置，考虑边缘避让
+          let left = e.pageX;
+          let top = e.pageY;
+          
+          // 右边缘避让：如果菜单会超出右边界，将菜单左对齐到鼠标位置
+          if (left + menuWidth > windowWidth) {
+            left = windowWidth - menuWidth - 5; // 留5px边距
+          }
+          
+          // 左边缘避让：确保菜单不会超出左边界
+          if (left < 5) {
+            left = 5;
+          }
+          
+          // 下边缘避让：如果菜单会超出下边界，将菜单上对齐到鼠标位置
+          if (top + menuHeight > windowHeight) {
+            top = windowHeight - menuHeight - 5; // 留5px边距
+          }
+          
+          // 上边缘避让：确保菜单不会超出上边界
+          if (top < 5) {
+            top = 5;
+          }
+          
+          contextMenu.style.left = `${left}px`;
+          contextMenu.style.top = `${top}px`;
+
+          return false;
+        });
+
+        // 点击其他地方时隐藏右键菜单
+        document.addEventListener('click', function() {
+          console.log("文档点击，隐藏菜单");
+          contextMenu.style.display = 'none';
+        });
+
+        // 复制按钮
+        const copyButton = document.getElementById('copy');
+        if (copyButton) {
+          console.log("找到复制按钮，添加事件监听器");
+          copyButton.addEventListener('click', function(e) {
+            console.log("复制按钮被点击");
+            e.stopPropagation();
+
+            const selection = term.getSelection();
+            console.log("选中的文本:", selection);
+
+            if (selection && selection.length > 0) {
+              copyToClipboard(selection);
+            } else {
+              console.log("没有选中文本");
+            }
+
+            contextMenu.style.display = 'none';
+          });
+          term.focus();
+        } else {
+          console.error("找不到复制按钮元素!");
+          term.focus();
+        }
+
+        // 粘贴按钮
+        const pasteButton = document.getElementById('paste');
+        if (pasteButton) {
+          console.log("找到粘贴按钮，添加事件监听器");
+          pasteButton.addEventListener('click', function(e) {
+            console.log("粘贴按钮被点击");
+            e.stopPropagation();
+
+            pasteFromClipboard();
+            contextMenu.style.display = 'none';
+          });
+          term.focus();
+        } else {
+          console.error("找不到粘贴按钮元素!");
+          term.focus();
+        }
+
+        console.log("右键菜单设置完成");
+      }
+
+      // 复制到剪贴板的函数
+      function copyToClipboard(text) {
+        console.log("尝试复制文本:", text);
+
+        // 现代剪贴板API
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text)
+            .then(() => {
+              console.log("使用Clipboard API复制成功");
+            })
+            .catch(err => {
+              console.error("Clipboard API复制失败:", err);
+              // 剪贴板可能没有权限，使用备用方法
+              fallbackCopy(text);
+            });
+        } else {
+          console.log("Clipboard API不可用，使用备用方法");
+          fallbackCopy(text);
+        }
+        term.focus();
+      }
+
+      // 备用复制方法
+      function fallbackCopy(text) {
+        console.log("使用备用方法复制");
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+
+        try {
+          textarea.select();
+          const success = document.execCommand('copy');
+          console.log("备用复制" + (success ? "成功" : "失败"));
+        } catch (err) {
+          console.error("备用复制出错:", err);
+        } finally {
+          document.body.removeChild(textarea);
+        }
+        term.focus();
+      }
+
+      // 从剪贴板粘贴的函数
+      function pasteFromClipboard() {
+        console.log("尝试粘贴");
+
+        try {
+          // 现代剪贴板API
+          if (navigator.clipboard && navigator.clipboard.readText) {
+            navigator.clipboard.readText()
+              .then(text => {
+                console.log("获取到剪贴板文本:", text);
+                if (text && h5Port) {
+                  h5Port.postMessage(text);
+                }
+              })
+              .catch(err => {
+                console.error("读取剪贴板失败:", err);
+                // 可能是权限问题，使用备用方法
+                fallbackPaste();
+              });
+              term.focus();
+          } else {
+            console.log("Clipboard API不可用，使用备用方法");
+            fallbackPaste();
+            term.focus();
+          }
+        } catch (e) {
+          console.error("粘贴操作发生错误:", e);
+          // 出错时不中断应用流程
+          term.focus();
+        }
+      }
+
+      // 备用粘贴方法
+      function fallbackPaste() {
+        console.log("尝试备用粘贴方法");
+        // 在HarmonyOS上可能不支持
+        let textarea = null;
+        try {
+          // 创建一个可编辑元素
+          textarea = document.createElement('textarea');
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.focus();
+
+          const success = document.execCommand('paste');
+          console.log("备用粘贴" + (success ? "成功" : "失败"));
+
+          if (success && textarea.value && h5Port) {
+            h5Port.postMessage(textarea.value);
+          }
+        } catch (err) {
+          console.error("备用粘贴出错:", err);
+        } finally {
+          // 确保清理DOM元素，防止内存泄漏
+          if (textarea && textarea.parentNode) {
+            try {
+              document.body.removeChild(textarea);
+            } catch (removeErr) {
+              console.error("清理textarea元素失败:", removeErr);
+            }
+          }
+          term.focus();
+        }
+      }
+
+      // 鸿蒙键码映射（全局定义，避免作用域问题）
+      const HARMONY_KEYCODE = {
+        // 特殊键
+        KEYCODE_TAB: 2049,       // Tab键
+        KEYCODE_SPACE: 2050,     // 空格键
+        KEYCODE_ENTER: 2054,     // 回车键
+        KEYCODE_DEL: 2055,       // 退格键
+
+        // 导航键
+        KEYCODE_DPAD_UP: 2012,    // 向上
+        KEYCODE_DPAD_DOWN: 2013,  // 向下
+        KEYCODE_DPAD_LEFT: 2014,  // 向左
+        KEYCODE_DPAD_RIGHT: 2015, // 向右
+        KEYCODE_ESCAPE: 2070,     // ESC键
+        KEYCODE_PAGE_UP: 2068,    // 向上翻页
+        KEYCODE_PAGE_DOWN: 2069,  // 向下翻页
+
+        // 控制键
+        KEYCODE_CTRL_LEFT: 2072,  // 左Ctrl
+        KEYCODE_CTRL_RIGHT: 2073, // 右Ctrl
+        KEYCODE_SHIFT_LEFT: 2047, // 左Shift
+        KEYCODE_SHIFT_RIGHT: 2048, // 右Shift
+        KEYCODE_CAPS_LOCK: 2043,  // Caps Lock键
+
+        // 字母键 A-Z (鸿蒙PC端键码)
+        KEYCODE_A: 2017, KEYCODE_B: 2018, KEYCODE_C: 2019, KEYCODE_D: 2020,
+        KEYCODE_E: 2021, KEYCODE_F: 2022, KEYCODE_G: 2023, KEYCODE_H: 2024,
+        KEYCODE_I: 2025, KEYCODE_J: 2026, KEYCODE_K: 2027, KEYCODE_L: 2028,
+        KEYCODE_M: 2029, KEYCODE_N: 2030, KEYCODE_O: 2031, KEYCODE_P: 2032,
+        KEYCODE_Q: 2033, KEYCODE_R: 2034, KEYCODE_S: 2035, KEYCODE_T: 2036,
+        KEYCODE_U: 2037, KEYCODE_V: 2038, KEYCODE_W: 2039, KEYCODE_X: 2040,
+        KEYCODE_Y: 2041, KEYCODE_Z: 2042,
+
+        // 数字键 0-9 (鸿蒙PC端键码)
+        KEYCODE_0: 2000, KEYCODE_1: 2001, KEYCODE_2: 2002, KEYCODE_3: 2003,
+        KEYCODE_4: 2004, KEYCODE_5: 2005, KEYCODE_6: 2006, KEYCODE_7: 2007,
+        KEYCODE_8: 2008, KEYCODE_9: 2009,
+
+        // 功能键
+        KEYCODE_F1: 2090, KEYCODE_F2: 2091, KEYCODE_F3: 2092, KEYCODE_F4: 2093,
+        KEYCODE_F5: 2094, KEYCODE_F6: 2095, KEYCODE_F7: 2096, KEYCODE_F8: 2097,
+        KEYCODE_F9: 2098, KEYCODE_F10: 2099, KEYCODE_F11: 2100, KEYCODE_F12: 2101,
+
+        // 编辑键
+        KEYCODE_MOVE_HOME: 2081,   // Home键
+        KEYCODE_MOVE_END: 2082,    // End键
+        KEYCODE_INSERT: 2083,      // Insert键
+        KEYCODE_FORWARD_DEL: 2071  // Delete键
+      };
+
+      // 更新终端大小的函数（全局定义）
+      function updateTerminalSize() {
+        const newSize = { cols: term.cols, rows: term.rows };
+
+        // 只有当大小确实发生变化时才发送消息
+        if (newSize.cols !== lastTermSize.cols || newSize.rows !== lastTermSize.rows) {
+          console.log(`终端大小变更: ${newSize.cols}x${newSize.rows}`);
+          lastTermSize = newSize;
+
+          if (h5Port) {
+            h5Port.postMessage(`resize:${newSize.cols},${newSize.rows}`);
+          }
+        }
+      }
+
+      // 设置事件监听器
+      function setupEventListeners() {
+        // 添加标记来防止重复处理按键
+        let keyHandled = false;
+        // 添加Shift状态跟踪
+        let shiftKeyPressed = false;
+        // 添加Caps Lock状态跟踪
+        let capsLockPressed = false;
+        // 输入法状态跟踪
+        let isComposing = false;
+
+        // 监听数据事件，处理所有用户输入（包括 Enter, Backspace, 功能键等）
+        term.onData(data => {
+            console.log("输入的数据Data====>",data)
+          if (h5Port && !keyHandled && !isComposing) {
+            h5Port.postMessage(data);
+          }
+          // 重置标记
+          keyHandled = false;
+        });
+
+        // 监听中文输入法合成事件
+        document.getElementById('terminal-container').addEventListener('compositionstart', () => {
+          console.log("输入法开始输入");
+          isComposing = true;
+        });
+
+        document.getElementById('terminal-container').addEventListener('compositionend', (e) => {
+          console.log("输入法完成输入:", e.data);
+          isComposing = false;
+          // 将输入法输入的文本发送到终端
+          if (h5Port && e.data) {
+            h5Port.postMessage(e.data);
+          }
+        });
+
+        // 添加额外的键盘事件监听器，确保空格键被正确处理
+        document.getElementById('terminal-container').addEventListener('keydown', function(e) {
+          console.log("键盘事件keydown:", e.keyCode, e.code);
+
+          // 字体大小调整状态
+          let currentFontSize = term.options.fontSize || 14;
+  <!--        let currentFontSize = 25;-->
+
+          // 检测和更新Shift状态
+          if (e.keyCode === HARMONY_KEYCODE.KEYCODE_SHIFT_LEFT ||
+              e.keyCode === HARMONY_KEYCODE.KEYCODE_SHIFT_RIGHT ||
+              e.keyCode === 16) {
+            console.log("Shift键被按下，更新状态");
+            shiftKeyPressed = true;
+            return true; // 允许事件继续传递
+          }
+
+          // 检测和切换Caps Lock状态
+          if (e.keyCode === HARMONY_KEYCODE.KEYCODE_CAPS_LOCK || e.keyCode === 20) {
+            console.log("Caps Lock键被按下，切换状态");
+            capsLockPressed = !capsLockPressed;
+            console.log("Caps Lock状态:", capsLockPressed ? "开启" : "关闭");
+            // Caps Lock键本身不发送字符，只切换状态
+            e.preventDefault();
+            return false;
+          }
+
+          // 如果是单独的Ctrl键，不做特殊处理，让它正常传递
+          if (e.keyCode === HARMONY_KEYCODE.KEYCODE_CTRL_LEFT ||
+              e.keyCode === HARMONY_KEYCODE.KEYCODE_CTRL_RIGHT ||
+              e.keyCode === 17) { // 17是标准Ctrl键码
+            console.log("Ctrl键被按下，等待组合键");
+            return true; // 允许事件继续传递，不拦截
+          }
+
+          // 使用事件的shiftKey属性或我们的状态变量检测Shift
+          const isShiftPressed = e.shiftKey || shiftKeyPressed;
+
+          // 检测是否按下了Ctrl键
+          const isCtrlPressed = e.ctrlKey ||
+                               e.keyCode === HARMONY_KEYCODE.KEYCODE_CTRL_LEFT ||
+                               e.keyCode === HARMONY_KEYCODE.KEYCODE_CTRL_RIGHT;
+
+          // 检测空格键 (标准keyCode 32、code 'Space' 或 鸿蒙键码 2050)
+          if (e.keyCode === 32 || e.code === 'Space' || e.keyCode === HARMONY_KEYCODE.KEYCODE_SPACE) {
+            console.log("空格键被按下");
+            // 防止事件冒泡和默认行为
+            e.preventDefault();
+            e.stopPropagation();
+            // 设置标记，防止term.onData再次处理
+            keyHandled = true;
+            // 直接发送空格字符
+            if (h5Port) {
+              h5Port.postMessage(' ');
+            }
+            return false;
+          }
+
+          // Shift+数字键处理
+          if (isShiftPressed) {
+            console.log("检测到Shift组合键:", e.keyCode);
+
+            // 数字键的Shift组合
+            const shiftNumMap = {
+              '48': ')', // Shift+0 => )
+              '49': '!', // Shift+1 => !
+              '50': '@', // Shift+2 => @
+              '51': '#', // Shift+3 => #
+              '52': '$', // Shift+4 => $
+              '53': '%', // Shift+5 => %
+              '54': '^', // Shift+6 => ^
+              '55': '&', // Shift+7 => &
+              '56': '*', // Shift+8 => *
+              '57': '('  // Shift+9 => (
+            };
+
+            // 鸿蒙平台数字键码 (2000-2009对应0-9)
+            const harmonyNumMap = {
+              '2000': ')', // Shift+0 => )
+              '2001': '!', // Shift+1 => !
+              '2002': '@', // Shift+2 => @
+              '2003': '#', // Shift+3 => #
+              '2004': '$', // Shift+4 => $
+              '2005': '%', // Shift+5 => %
+              '2006': '^', // Shift+6 => ^
+              '2007': '&', // Shift+7 => &
+              '2008': '*', // Shift+8 => *
+              '2009': '('  // Shift+9 => (
+            };
+
+            // 其他常见组合键
+            const shiftSymbolMap = {
+              '186': ':', // Shift+; => :
+              '187': '+', // Shift+= => +
+              '188': '<', // Shift+, => <
+              '189': '_', // Shift+- => _
+              '190': '>', // Shift+. => >
+              '191': '?', // Shift+/ => ?
+              '192': '~', // Shift+` => ~
+              '219': '{', // Shift+[ => {
+              '220': '|', // Shift+\ => |
+              '221': '}', // Shift+] => }
+              '222': '"'  // Shift+' => "
+            };
+
+            // 处理标准键码的Shift组合
+            if (shiftNumMap[e.keyCode]) {
+              console.log(`Shift+${e.keyCode} 组合键，发送: ${shiftNumMap[e.keyCode]}`);
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage(shiftNumMap[e.keyCode]);
+              }
+              return false;
+            }
+
+            // 处理鸿蒙键码的Shift组合
+            if (harmonyNumMap[e.keyCode]) {
+              console.log(`Shift+鸿蒙数字键 ${e.keyCode} 组合键，发送: ${harmonyNumMap[e.keyCode]}`);
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage(harmonyNumMap[e.keyCode]);
+              }
+              return false;
+            }
+
+            // 处理符号键的Shift组合
+            if (shiftSymbolMap[e.keyCode]) {
+              console.log(`Shift+符号键 ${e.keyCode} 组合键，发送: ${shiftSymbolMap[e.keyCode]}`);
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage(shiftSymbolMap[e.keyCode]);
+              }
+              return false;
+            }
+
+            // 处理Shift+字母键的组合（考虑Caps Lock状态）
+            if ((e.keyCode >= 65 && e.keyCode <= 90) ||
+                (e.keyCode >= 2017 && e.keyCode <= 2042)) { // A-Z 或鸿蒙A-Z键码
+              // 获取字母字符
+              let letter = '';
+
+              // 判断是否应该输出大写字母
+              // Shift+字母键时：
+              // 1. Caps Lock关闭 -> 大写
+              // 2. Caps Lock开启 -> 小写（Shift和Caps Lock相互抵消）
+              const shouldBeUppercase = !capsLockPressed;
+
+              if (e.keyCode >= 65 && e.keyCode <= 90) {
+                // 标准键码处理
+                if (shouldBeUppercase) {
+                  letter = String.fromCharCode(e.keyCode); // 大写
+                } else {
+                  letter = String.fromCharCode(e.keyCode + 32); // 小写
+                }
+              } else if (e.keyCode >= 2017 && e.keyCode <= 2042) {
+                // 鸿蒙键码处理
+                if (shouldBeUppercase) {
+                  letter = String.fromCharCode(65 + (e.keyCode - 2017)); // 大写
+                } else {
+                  letter = String.fromCharCode(97 + (e.keyCode - 2017)); // 小写
+                }
+              }
+
+              console.log(`Shift+字母键 ${e.keyCode} 被按下，发送${shouldBeUppercase ? '大写' : '小写'}字母: ${letter}`);
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage(letter);
+              }
+              return false;
+            }
+          }
+
+          // 处理组合键
+          if (isCtrlPressed) {
+            // Ctrl++
+            if (e.keyCode === 187 || e.keyCode === 107 || e.key === '+' || e.key === '=') {
+              console.log("放大字体");
+              e.preventDefault();
+              keyHandled = true;
+
+              // 增加字体大小，但设置上限
+              currentFontSize = Math.min(currentFontSize + 1, 24);
+              term.options.fontSize = currentFontSize;
+
+              // 调整大小后应用更改
+              fitAddon.fit();
+              term.refresh(0, term.rows - 1);
+              console.log(`字体大小增加到: ${currentFontSize}px`);
+              return false;
+            }
+
+            // Ctrl+-
+            if (e.keyCode === 189 || e.keyCode === 109 || e.key === '-') {
+              console.log("缩小字体");
+              e.preventDefault();
+              keyHandled = true;
+
+              // 减小字体大小，但设置下限
+              currentFontSize = Math.max(currentFontSize - 1, 8);
+              term.options.fontSize = currentFontSize;
+
+              // 调整大小后应用更改
+              fitAddon.fit();
+              term.refresh(0, term.rows - 1);
+              console.log(`字体大小减小到: ${currentFontSize}px`);
+              return false;
+            }
+
+            // Ctrl+0 重置字体大小
+            if (e.keyCode === 48 || e.keyCode === 96 || e.key === '0') {
+              console.log("重置字体");
+              e.preventDefault();
+              keyHandled = true;
+
+              // 重置到默认字体大小
+              currentFontSize = 14;
+              term.options.fontSize = currentFontSize;
+
+              // 调整大小后应用更改
+              fitAddon.fit();
+              term.refresh(0, term.rows - 1);
+              console.log(`字体大小重置到: ${currentFontSize}px`);
+              return false;
+            }
+
+            // Ctrl+字母键产生控制字符
+            const charCode = e.key ? e.key.charCodeAt(0) : 0;
+            if (charCode >= 97 && charCode <= 122) { // 小写字母a-z
+              const ctrlCharCode = charCode - 96; // 转换为控制字符 (a=1, b=2, ...)
+              console.log(`Ctrl+${e.key} 被按下，发送控制字符: ${ctrlCharCode}`);
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage(String.fromCharCode(ctrlCharCode));
+              }
+              return false;
+            } else if (charCode >= 65 && charCode <= 90) { // 大写字母A-Z
+              const ctrlCharCode = charCode - 64; // 转换为控制字符 (A=1, B=2, ...)
+              console.log(`Ctrl+${e.key} 被按下，发送控制字符: ${ctrlCharCode}`);
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage(String.fromCharCode(ctrlCharCode));
+              }
+              return false;
+            }
+          }
+
+          // 添加其他特殊键处理
+          switch(e.keyCode) {
+            case HARMONY_KEYCODE.KEYCODE_TAB:
+              console.log("Tab键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\t');
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_ENTER:
+              console.log("回车键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\r');
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_DEL:
+              console.log("退格键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\b');
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_ESCAPE:
+              console.log("ESC键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b'); // ESC字符
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_DPAD_UP:
+              console.log("向上键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[A'); // ANSI转义序列：向上
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_DPAD_DOWN:
+              console.log("向下键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[B'); // ANSI转义序列：向下
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_DPAD_RIGHT:
+              console.log("向右键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[C'); // ANSI转义序列：向右
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_DPAD_LEFT:
+              console.log("向左键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[D'); // ANSI转义序列：向左
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_PAGE_UP:
+              console.log("Page Up键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[5~'); // ANSI转义序列：Page Up
+              }
+              return false;
+            case HARMONY_KEYCODE.KEYCODE_PAGE_DOWN:
+              console.log("Page Down键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[6~'); // ANSI转义序列：Page Down
+              }
+              return false;
+
+            // 新增功能键支持
+            case HARMONY_KEYCODE.KEYCODE_MOVE_HOME:
+              console.log("Home键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[H'); // Home键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_MOVE_END:
+              console.log("End键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[F'); // End键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_INSERT:
+              console.log("Insert键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[2~'); // Insert键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_FORWARD_DEL:
+              console.log("Delete键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[3~'); // Delete键的ANSI转义序列
+              }
+              return false;
+
+            // F1-F12功能键
+            case HARMONY_KEYCODE.KEYCODE_F1:
+              console.log("F1键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1bOP'); // F1键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F2:
+              console.log("F2键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1bOQ'); // F2键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F3:
+              console.log("F3键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1bOR'); // F3键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F4:
+              console.log("F4键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1bOS'); // F4键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F5:
+              console.log("F5键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[15~'); // F5键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F6:
+              console.log("F6键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[17~'); // F6键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F7:
+              console.log("F7键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[18~'); // F7键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F8:
+              console.log("F8键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[19~'); // F8键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F9:
+              console.log("F9键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[20~'); // F9键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F10:
+              console.log("F10键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[21~'); // F10键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F11:
+              console.log("F11键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[23~'); // F11键的ANSI转义序列
+              }
+              return false;
+
+            case HARMONY_KEYCODE.KEYCODE_F12:
+              console.log("F12键被按下");
+              e.preventDefault();
+              keyHandled = true;
+              if (h5Port) {
+                h5Port.postMessage('\x1b[24~'); // F12键的ANSI转义序列
+              }
+              return false;
+          }
+
+          // 处理鸿蒙PC端字母键（考虑Shift和Caps Lock状态）
+          if (e.keyCode >= 2017 && e.keyCode <= 2042) {
+            // 鸿蒙键码，转换为字母 (2017=A/a, 2018=B/b, ...)
+            let letter;
+
+            // 判断是否应该输出大写字母
+            // 1. Shift键按下但Caps Lock关闭 -> 大写
+            // 2. Shift键未按下但Caps Lock开启 -> 大写
+            // 3. Shift键按下且Caps Lock开启 -> 小写（两个状态相互抵消）
+            // 4. Shift键未按下且Caps Lock关闭 -> 小写
+            const shouldBeUppercase = (isShiftPressed && !capsLockPressed) || (!isShiftPressed && capsLockPressed);
+
+            if (shouldBeUppercase) {
+              // 大写字母 (2017=A, 2018=B, ...)
+              letter = String.fromCharCode(65 + (e.keyCode - 2017));
+              console.log(`鸿蒙字母键 ${e.keyCode} 被按下，发送大写字母: ${letter}`);
+            } else {
+              // 小写字母 (2017=a, 2018=b, ...)
+              letter = String.fromCharCode(97 + (e.keyCode - 2017));
+              console.log(`鸿蒙字母键 ${e.keyCode} 被按下，发送小写字母: ${letter}`);
+            }
+
+            e.preventDefault();
+            keyHandled = true;
+            if (h5Port) {
+              h5Port.postMessage(letter);
+            }
+            return false;
+          }
+
+          // 处理标准字母键（65-90对应A-Z）
+          if (!isShiftPressed && e.keyCode >= 65 && e.keyCode <= 90) {
+            let letter;
+
+            // 同样的逻辑：考虑Caps Lock状态
+            const shouldBeUppercase = capsLockPressed;
+
+            if (shouldBeUppercase) {
+              // 大写字母
+              letter = String.fromCharCode(e.keyCode);
+              console.log(`标准字母键 ${e.keyCode} 被按下，发送大写字母: ${letter}`);
+            } else {
+              // 小写字母
+              letter = String.fromCharCode(e.keyCode + 32);
+              console.log(`标准字母键 ${e.keyCode} 被按下，发送小写字母: ${letter}`);
+            }
+
+            e.preventDefault();
+            keyHandled = true;
+            if (h5Port) {
+              h5Port.postMessage(letter);
+            }
+            return false;
+          }
+
+          // 处理鸿蒙PC端数字键（没有Shift键时）
+          if (!isShiftPressed && e.keyCode >= 2000 && e.keyCode <= 2009) {
+            // 鸿蒙键码，转换为数字 (2000=0, 2001=1, ...)
+            const digit = String.fromCharCode(48 + (e.keyCode - 2000));
+            console.log(`鸿蒙数字键 ${e.keyCode} 被按下，发送数字: ${digit}`);
+            e.preventDefault();
+            keyHandled = true;
+            if (h5Port) {
+              h5Port.postMessage(digit);
+            }
+            return false;
+          }
+        }, true);
+
+        // 添加keyup事件监听器来重置Shift和Caps Lock状态
+        document.getElementById('terminal-container').addEventListener('keyup', function(e) {
+          if (e.keyCode === 16 ||
+              e.keyCode === HARMONY_KEYCODE.KEYCODE_SHIFT_LEFT ||
+              e.keyCode === HARMONY_KEYCODE.KEYCODE_SHIFT_RIGHT) {
+            console.log("Shift键释放，重置状态");
+            shiftKeyPressed = false;
+          }
+          // 处理Caps Lock键释放（注意：Caps Lock是切换键，不需要在keyup时重置状态）
+          // 但我们可以在这里添加日志来跟踪状态
+          if (e.keyCode === 20 || e.keyCode === HARMONY_KEYCODE.KEYCODE_CAPS_LOCK) {
+            console.log("Caps Lock键释放，当前状态:", capsLockPressed);
+          }
+        }, true);
+
+        // 监听message
+        window.addEventListener("message", function (event) {
+          if (event.data == "__init_port__") {
+            if (event.ports[0] != null) {
+              h5Port = event.ports[0]; // 保存从ets侧发送过来的端口
+
+              h5Port.onmessage = function (event) {
+                try {
+                  // 接收ets侧发送过来的消息
+                  const result = event.data;
+                  if (typeof result == "string") {
+                    try {
+                      // 尝试解析为JSON对象
+                      let obj = JSON.parse(result);
+                      console.log("接收到样式配置:", obj);
+
+                      if (!isTerminalOpened) {
+                        // 如果终端还未打开，先存储样式，然后等待打开时应用
+                        pendingStyles = obj;
+                        openTerminal();
+                      } else {
+                        // 终端已打开，直接应用样式
+                        applyTerminalStyles(obj);
+                      }
+                    } catch (e) {
+                      console.log("非JSON数据:", e);
+                      // 不是JSON，直接写入终端
+                      if (isTerminalOpened) {
+                        term.write(result);
+                      } else {
+                        // 终端未打开但收到输出，先打开终端
+                        openTerminal();
+                        term.write(result);
+                      }
+                    }
+                  } else if (typeof result == "object" && Array.isArray(result)) {
+                    // 服务器返回的数据，直接写入终端
+                    if (!isTerminalOpened) {
+                      openTerminal();
+                    }
+                    let serverData = result[0];
+                    term.write(serverData);
+                  }
+                } catch (error) {
+                  console.error("处理消息时发生错误:", error);
+                }
+              };
+
+              // 添加消息错误处理
+              h5Port.onmessageerror = function (event) {
+                console.error("消息传递错误:", event);
+              };
+
+              // 通知ETS层端口已准备好
+              h5Port.postMessage("ready");
+              // 如果终端已打开，但之前因端口未就绪未能发送“终端就绪”握手，则此处补发一次
+              try {
+                if (isTerminalOpened) {
+                  h5Port.postMessage("__terminal_ready__");
+                }
+              } catch (e) {
+                console.warn('发送补偿 __terminal_ready__ 失败:', e);
+              }
+
+               // 如果终端已经打开，则发送当前大小
+              if (isTerminalOpened) {
+                setTimeout(updateTerminalSize, 200);
+              }
+            }
+          }
+        });
+      }
+    }
+
+    // 页面加载完成后初始化终端
+    document.addEventListener('DOMContentLoaded', function () {
+      if (document.fonts && document.fonts.load) {
+        document.fonts.load('14px CsxMono').then(init).catch(init);
+      } else {
+        init();
+      }
+    });
+
+
+
+    // 页面卸载时清理资源
+    window.addEventListener('beforeunload', function() {
+      try {
+        // 清理终端资源
+        if (term) {
+          term.dispose();
+        }
+
+        // 清理插件资源
+        if (fitAddon) {
+          fitAddon.dispose();
+        }
+
+        if (searchAddon) {
+          searchAddon.dispose();
+        }
+
+        if (unicode11Addon) {
+          unicode11Addon.dispose();
+        }
+
+        // 关闭端口连接
+        if (h5Port) {
+          h5Port.close();
+        }
+      } catch (error) {
+        console.error('清理资源时发生错误:', error);
+      }
+    });
+  </script>
+  <div class="menu-item" id="paste" style="padding: 5px 10px; cursor: pointer; color: white;">粘贴</div>
+</div>
+</body>
+</html>
+
+    

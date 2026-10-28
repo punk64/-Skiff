@@ -1,0 +1,1188 @@
+﻿{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Skiff"
+    },
+    {
+      "name": "test_content",
+      "value": "English"
+    },
+    {
+      "name": "session_title",
+      "value": "Specify the destination you want to connect to"
+    },
+    {
+      "name": "session_select",
+      "value": "Select login method"
+    },
+    {
+      "name": "connection_type",
+      "value": "Connection type"
+    },
+    {
+      "name": "session_load_save",
+      "value": "Load, save or delete a stored session"
+    },
+    {
+      "name": "session_save",
+      "value": "Saved Sessions"
+    },
+    {
+      "name": "load",
+      "value": "Load"
+    },
+    {
+      "name": "reset",
+      "value": "Reset"
+    },
+    {
+      "name": "Save",
+      "value": "Save"
+    },
+    {
+      "name": "Delete",
+      "value": "Delete"
+    },
+    {
+      "name": "session_top",
+      "value": "Basic options for your CrossShellNext session"
+    },
+    {
+      "name": "log_top",
+      "value": "Options controlling session logging"
+    },
+    {
+      "name": "con_top",
+      "value": "Options controlling the connection"
+    },
+    {
+      "name": "win_top",
+      "value": "Options controlling CrossShellNext's window"
+    },
+    {
+      "name": "appear_top",
+      "value": "Configure the appearance of CrossShellNext's window"
+    },
+    {
+      "name": "colour_top",
+      "value": "Options controlling use of colours"
+    },
+    {
+      "name": "connect_title",
+      "value": "Sending of null packets to keep session active"
+    },
+    {
+      "name": "connect_keep_alive",
+      "value": "Seconds between keepalives (0 to turn off)"
+    },
+    {
+      "name": "connect_inter_version",
+      "value": "Internet protocol version"
+    },
+    {
+      "name": "window_size",
+      "value": "Set the size of the window"
+    },
+    {
+      "name": "window_Col",
+      "value": "Columns"
+    },
+    {
+      "name": "window_row",
+      "value": "Rows"
+    },
+    {
+      "name": "cursor_set",
+      "value": "Adjust the use of the cursor"
+    },
+    {
+      "name": "cursor_appear",
+      "value": "Cursor appearance:"
+    },
+    {
+      "name": "cursor_block",
+      "value": "Block"
+    },
+    {
+      "name": "cursor_Underline",
+      "value": "Underline"
+    },
+    {
+      "name": "cursor_VerticalLine",
+      "value": "Vertical line"
+    },
+    {
+      "name": "cursor_Blink",
+      "value": "Cursor blinks"
+    },
+    {
+      "name": "language_title",
+      "value": "Adjust the use of the language"
+    },
+    {
+      "name": "language_switch",
+      "value": "Switch language"
+    },
+    {
+      "name": "color_title",
+      "value": "Adjust the precise colours CrossShellNext displays"
+    },
+    {
+      "name": "color_select",
+      "value": "Select a colour to adjust:"
+    },
+    {
+      "name": "RGBvalue",
+      "value": "RGB value:"
+    },
+    {
+      "name": "red",
+      "value": "Red"
+    },
+    {
+      "name": "Green",
+      "value": "Green"
+    },
+    {
+      "name": "Blue",
+      "value": "Blue"
+    },
+    {
+      "name": "Modify",
+      "value": "Modify"
+    },
+    {
+      "name": "Auto",
+      "value": "Auto"
+    },
+    {
+      "name": "Sessionlogging",
+      "value": "Session logging:"
+    },
+    {
+      "name": "None",
+      "value": "None"
+    },
+    {
+      "name": "Printableoutput",
+      "value": "Printable output"
+    },
+    {
+      "name": "Allsessionoutput",
+      "value": "All session output"
+    },
+    {
+      "name": "SSHpackets",
+      "value": "SSH packets"
+    },
+    {
+      "name": "SSHpacketsandrawdata",
+      "value": "SSH packets and raw data"
+    },
+    {
+      "name": "Logfilename",
+      "value": "Log file name:"
+    },
+    {
+      "name": "Logtip",
+      "value": "(Log file name can contain &Y,&M,&D for date,&T for time,&H for host name,and &P for port number)"
+    },
+    {
+      "name": "Logsave",
+      "value": "What to do if the log file already exists:"
+    },
+    {
+      "name": "overwrite",
+      "value": "Always overwrite it"
+    },
+    {
+      "name": "append",
+      "value": "Always append to the end of it"
+    },
+    {
+      "name": "Options_specific_to_SSH_packet_logging",
+      "value": "Options specific to SSH packet logging"
+    },
+    {
+      "name": "Omit_known_password_fields",
+      "value": "Omit known password fields"
+    },
+    {
+      "name": "Omit_session_data",
+      "value": "Omit session data"
+    },
+    {
+      "name": "Includeheader",
+      "value": "Include header"
+    },
+    {
+      "name": "hostname",
+      "value": "Host Name (or IP address)"
+    },
+    {
+      "name": "Keylogin",
+      "value": "Key login"
+    },
+    {
+      "name": "UserName",
+      "value": "User Name"
+    },
+    {
+      "name": "Port",
+      "value": "Port"
+    },
+    {
+      "name": "Password",
+      "value": "Password"
+    },
+    {
+      "name": "keyauthentication",
+      "value": "Private key file for authentication"
+    },
+    {
+      "name": "Displaymode",
+      "value": "Adjust the use of the Display mode"
+    },
+    {
+      "name": "mode_switch",
+      "value": "Switch Mode"
+    },
+    {
+      "name": "Light",
+      "value": "Light"
+    },
+    {
+      "name": "Dark",
+      "value": "Dark"
+    },
+    {
+      "name": "KeyGenerator",
+      "value": "CrossShellNext Key Generator"
+    },
+    {
+      "name": "SSHportforwarding",
+      "value": "Options controlling SSH port forwarding"
+    },
+    {
+      "name": "KeyGeneratorTitle",
+      "value": "Parameters"
+    },
+    {
+      "name": "KeyGeneratortype",
+      "value": "Type of key to generate"
+    },
+    {
+      "name": "KeyGeneratorPath",
+      "value": "Key File Retention Path"
+    },
+    {
+      "name": "BrowseFiles",
+      "value": "Browse Files"
+    },
+    {
+      "name": "KeyPassword",
+      "value": "Key Password (Not required)"
+    },
+    {
+      "name": "ConfirmPassword",
+      "value": "Confirm Password"
+    },
+    {
+      "name": "PublicKey",
+      "value": "Public Key"
+    },
+    {
+      "name": "Generate",
+      "value": "Generate"
+    },
+    {
+      "name": "Serialline",
+      "value": "Serial line"
+    },
+    {
+      "name": "Speed",
+      "value": "Speed"
+    },
+    {
+      "name": "Databits",
+      "value": "Data bits"
+    },
+    {
+      "name": "Stopbits",
+      "value": "Stop bits"
+    },
+    {
+      "name": "Parity",
+      "value": "Parity"
+    },
+    {
+      "name": "Flowcontrol",
+      "value": "Flow control"
+    },
+    {
+      "name": "ambiguity",
+      "value": "Handling of OLD_ENVIRON ambiguity:"
+    },
+    {
+      "name": "BSD",
+      "value": "BSD (commonplace)"
+    },
+    {
+      "name": "RFC",
+      "value": "RFC 1408 (unusual)"
+    },
+    {
+      "name": "Telnetnegotiationmode",
+      "value": "Telnet negotiation mode"
+    },
+    {
+      "name": "Passive",
+      "value": "Passive"
+    },
+    {
+      "name": "Active",
+      "value": "Active"
+    },
+    {
+      "name": "Telnetspecialcommands",
+      "value": "Keyboard sends Telnet special commands"
+    },
+    {
+      "name": "TelnetNewLine",
+      "value": "Return key sends Telnet New Line instead of ^M"
+    },
+    {
+      "name": "Session",
+      "value": "Session"
+    },
+    {
+      "name": "Logging",
+      "value": "Logging"
+    },
+    {
+      "name": "Tunnels",
+      "value": "Tunnels"
+    },
+    {
+      "name": "Appearance",
+      "value": "Appearance"
+    },
+    {
+      "name": "Colours",
+      "value": "Colours"
+    },
+    {
+      "name": "KeyGeneratortitle",
+      "value": "KeyGenerator"
+    },
+    {
+      "name": "Portforwarding",
+      "value": "Port forwarding"
+    },
+    {
+      "name": "Forwardedports",
+      "value": "Forwarded ports:"
+    },
+    {
+      "name": "Remove",
+      "value": "Remove"
+    },
+    {
+      "name": "Addnewforwardedport",
+      "value": "Add new forwarded port:"
+    },
+    {
+      "name": "Sourceport",
+      "value": "Source port"
+    },
+    {
+      "name": "Add",
+      "value": "Add"
+    },
+    {
+      "name": "Destination",
+      "value": "Destination"
+    },
+    {
+      "name": "Local",
+      "value": "Local"
+    },
+    {
+      "name": "Remote",
+      "value": "Remote"
+    },
+    {
+      "name": "Dynamic",
+      "value": "Dynamic"
+    },
+    {
+      "name": "Connection",
+      "value": "Connection"
+    },
+    {
+      "name": "Window",
+      "value": "Window"
+    },
+    {
+      "name": "browse",
+      "value": "browse"
+    },
+    {
+      "name": "Odd",
+      "value": "Odd"
+    },
+    {
+      "name": "Even",
+      "value": "Even"
+    },
+    {
+      "name": "Mark",
+      "value": "Mark"
+    },
+    {
+      "name": "Space",
+      "value": "Space"
+    },
+    {
+      "name": "noneserial",
+      "value": "None"
+    },
+    {
+      "name": "Telnetprotocoladjustments",
+      "value": "Telnet protocol adjustments"
+    },
+    {
+      "name": "English",
+      "value": "English"
+    },
+    {
+      "name": "Chinese",
+      "value": "Chinese"
+    },
+    {
+      "name": "Cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "Open",
+      "value": "Open"
+    },
+    {
+      "name": "Always",
+      "value": "Always"
+    },
+    {
+      "name": "Never",
+      "value": "Never"
+    },
+    {
+      "name": "OnlyOnCleanExit",
+      "value": "Only on clean exit"
+    },
+    {
+      "name": "abNormalExitTitle",
+      "value": "CrossShellNext Fatal Error"
+    },
+    {
+      "name": "abNormalExitContent",
+      "value": "Remote side unexpectedly closed network connection"
+    },
+    {
+      "name": "abNormalExitConfirm",
+      "value": "confirm"
+    },
+    {
+      "name": "CloseWindowOnExit",
+      "value": "Close window on exit:"
+    },
+    {
+      "name": "About",
+      "value": "About"
+    },
+    {
+      "name": "ok",
+      "value": "ok"
+    },
+    {
+      "name": "App_Name",
+      "value": "App Name"
+    },
+    {
+      "name": "Version",
+      "value": "Version"
+    },
+    {
+      "name": "aboutUsIntroduction",
+      "value": "CrossShellNext is a free and open-source client for SSH, Telnet, and rlogin protocols. It is compatible with HarmonyOS and is primarily used for remote server management.If you have any suggestions, please feel free to provide feedback or contact us on the following open-source community platforms."
+    },
+    {
+      "name": "Introduction",
+      "value": "Introduction"
+    },
+    {
+      "name": "OpenSourceAddress",
+      "value": "Community"
+    },
+    {
+      "name": "Set_language_prompt_to_restart",
+      "value": "The current language in use is English. After the application is restarted, it will operate according to the system settings."
+    },
+    {
+      "name": "check_node_param_data",
+      "value": "Basic options for your CrossShellNext session"
+    },
+    {
+      "name": "Terminal",
+      "value": "Terminal"
+    },
+    {
+      "name": "Terminal_options",
+      "value": "Options controlling the terminal emulation"
+    },
+    {
+      "name": "wrap_mode",
+      "value": "Auto wrap mode initially on"
+    },
+    {
+      "name": "Implicit_CR_in_every_LF",
+      "value": " Implicit LF in every CR"
+    },
+    {
+      "name": "Set_various_terminal_options",
+      "value": "Set various terminal options"
+    },
+    {
+      "name": "Implicit_LF_in_every_CR",
+      "value": "Implicit LF in every CR"
+    },
+    {
+      "name": "When_window_is_resized",
+      "value": "When window is resized"
+    },
+    {
+      "name": "Forbid_resizing_completely",
+      "value": "Forbid resizing completely"
+    },
+    {
+      "name": "Change_the_number_of_rows_and_columns",
+      "value": "Change the number of rows and columns"
+    },
+    {
+      "name": "Change_the_size_of_the_font",
+      "value": "Change the size of the font"
+    },
+    {
+      "name": "Change_font_size_only_when_maximised",
+      "value": "Change font size only when maximised"
+    },
+    {
+      "name": "DocumentReason",
+      "value": "It is used to obtain document files to achieve the file saving function."
+    },
+    {
+      "name": "RunningInfo",
+      "value": "Used to obtain runtime information."
+    },
+    {
+      "name": "read_paste",
+      "value": "Used to access the clipboard to achieve copy and paste functionality."
+    },
+    {
+      "name": "DownloadReason",
+      "value": "Used to obtain read and write permissions for the download directory, so that users can read and save files in the \"download\" directory."
+    },
+    {
+      "name": "ConfigHostAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "ConfigHostAbility_label",
+      "value": "dekeInfo"
+    },
+    {
+      "name": "shellWindowAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "shellWindowAbility_label",
+      "value": "Skiff Terminal"
+    },
+    {
+      "name": "App_bundleName",
+      "value": "com.develop.skiff"
+    },
+    {
+      "name": "Click_Generate_to_select_the_path",
+      "value": "Click Generate to select the path"
+    },
+    {
+      "name": "Session_Save_Error_Toast",
+      "value": "Please enter the session name"
+    },
+    {
+      "name": "Save_Success_Toast",
+      "value": "Save Successful"
+    },
+    {
+      "name": "Window_Col_Toast",
+      "value": "Please enter a number between 800 and 6000"
+    },
+    {
+      "name": "KeyGenerator_Password_Error_Toast",
+      "value": "The passwords entered twice do not match"
+    },
+    {
+      "name": "KeyGenerator_Successful_Toast",
+      "value": "Key generation successful"
+    },
+    {
+      "name": "KeyGenerator_Error_Toast",
+      "value": "Key generation failed"
+    },
+    {
+      "name": "Session_Key_Select_Error_Toast",
+      "value": "Please select a. pem format key file"
+    },
+    {
+      "name": "Setup_Successful",
+      "value": "Setup successful"
+    },
+    {
+      "name": "Setup_Error_0_255",
+      "value": "Setting failed, the input value should be between 0 and 255"
+    },
+    {
+      "name": "Login_Failed",
+      "value": "Login failed, please check connection information or network"
+    },
+    {
+      "name": "Link_Error",
+      "value": "Link error"
+    },
+    {
+      "name": "Unknown_Error",
+      "value": "Unknown error"
+    },
+    {
+      "name": "File_Download_Successful",
+      "value": "File download successful"
+    },
+    {
+      "name": "File_Download_Canceled",
+      "value": "File download canceled"
+    },
+    {
+      "name": "File_Download_Failed",
+      "value": "File download failed"
+    },
+    {
+      "name": "File_Uploaded_Successfully",
+      "value": "File uploaded successfully"
+    },
+    {
+      "name": "File_Transfer_Canceled",
+      "value": "File transfer canceled"
+    },
+    {
+      "name": "File_Upload_Failed",
+      "value": "File upload failed"
+    },
+    {
+      "name": "Drag_Drop_Upload_Error",
+      "value": "The current drag and drop uploaded file contains folders. Please check and try again!"
+    },
+    {
+      "name": "File_Uploading_Error",
+      "value": "The file is currently being uploaded, please try again later"
+    },
+    {
+      "name": "Successfully_Added_Folder",
+      "value": "Successfully added folder"
+    },
+    {
+      "name": "Failed_Add_Folder",
+      "value": "Failed to add folder"
+    },
+    {
+      "name": "Delete_Error",
+      "value": "Deleted failed"
+    },
+    {
+      "name": "File_Transferred_Cannot_Deleted",
+      "value": "This file is currently being transferred and cannot be deleted!"
+    },
+    {
+      "name": "Deleted_Successfully",
+      "value": "Deleted successfully"
+    },
+    {
+      "name": "OPERATION_SUCCESSFUL",
+      "value": "Operation successful"
+    },
+    {
+      "name": "FILE_READ_COMPLETED",
+      "value": "File read completed"
+    },
+    {
+      "name": "FILE_OR_DIRECTORY_NOT_EXIST",
+      "value": "File or directory does not exist"
+    },
+    {
+      "name": "PERMISSION_DENIED",
+      "value": "Permission denied, access refused"
+    },
+    {
+      "name": "SYSTEM_EXCEPTION",
+      "value": "System exception"
+    },
+    {
+      "name": "SFTP_MESSAGE_FORMAT_ERROR",
+      "value": "SFTP message format error"
+    },
+    {
+      "name": "CONNECTION_FAILED",
+      "value": "Unable to connect to server"
+    },
+    {
+      "name": "CONNECTION_LOST",
+      "value": "Connection to server lost"
+    },
+    {
+      "name": "OPERATION_NOT_SUPPORTED",
+      "value": "Operation not supported by server"
+    },
+    {
+      "name": "INVALID_FILE_HANDLE",
+      "value": "Invalid file handle"
+    },
+    {
+      "name": "PATH_NOT_EXIST",
+      "value": "Path does not exist"
+    },
+    {
+      "name": "FILE_ALREADY_EXISTS",
+      "value": "File already exists"
+    },
+    {
+      "name": "READ_ONLY_FILE_SYSTEM",
+      "value": "File or filesystem is read-only"
+    },
+    {
+      "name": "NO_MEDIA",
+      "value": "No media in device"
+    },
+    {
+      "name": "FILESYSTEM_SPACE_INSUFFICIENT",
+      "value": "Insufficient filesystem space"
+    },
+    {
+      "name": "USER_QUOTA_EXCEEDED",
+      "value": "User quota exceeded"
+    },
+    {
+      "name": "UNKNOWN_PRINCIPAL",
+      "value": "Unknown principal"
+    },
+    {
+      "name": "FILE_LOCK_CONFLICT",
+      "value": "File lock conflict"
+    },
+    {
+      "name": "DIRECTORY_NOT_EMPTY",
+      "value": "Directory not empty"
+    },
+    {
+      "name": "NOT_A_DIRECTORY",
+      "value": "The specified path is not a directory"
+    },
+    {
+      "name": "INVALID_FILENAME",
+      "value": "Invalid filename"
+    },
+    {
+      "name": "TOO_MANY_SYMBOLIC_LINKS",
+      "value": "Too many symbolic link levels"
+    },
+    {
+      "name": "FILE_IN_TRANSFER_RENAME_NOT_ALLOWED",
+      "value": "The file is being transferred and cannot be renamed!"
+    },
+    {
+      "name": "RENAME_SUCCESSFUL",
+      "value": "Rename successful"
+    },
+    {
+      "name": "RENAME_FAILED",
+      "value": "Rename failed"
+    },
+    {
+      "name": "PORT_FORWARDING_SSH_ONLY",
+      "value": "Port forwarding is only available for SSH connections"
+    },
+    {
+      "name": "GET_PORT_FORWARDING_RULES_FAILED",
+      "value": "Failed to get port forwarding rules"
+    },
+    {
+      "name": "STOP_FORWARDING_SUCCESS",
+      "value": "Stop forwarding successfully, port: %s"
+    },
+    {
+      "name": "STOP_FORWARDING_FAILED",
+      "value": "Stop forwarding failed, port: %s"
+    },
+    {
+      "name": "PORT_FORWARDING_SSH_ONLY_2",
+      "value": "Port forwarding is only available for SSH connections"
+    },
+    {
+      "name": "ENTER_VALID_SOURCE_PORT",
+      "value": "Please enter a valid source port number (1-65535)"
+    },
+    {
+      "name": "ENTER_VALID_TARGET_FORMAT",
+      "value": "Please enter a valid target address and port in the format \"host:port\""
+    },
+    {
+      "name": "ENTER_VALID_TARGET_PORT",
+      "value": "Please enter a valid target port number (1-65535)"
+    },
+    {
+      "name": "LOCAL",
+      "value": "Local port forwarding started"
+    },
+    {
+      "name": "REMOTE",
+      "value": "Remote port forwarding started"
+    },
+    {
+      "name": "PORT_FORWARDING_STARTED",
+      "value": "port forwarding started"
+    },
+    {
+      "name": "PORT_FORWARDING_FAILED",
+      "value": "port forwarding failed"
+    },
+    {
+      "name": "DYNAMIC_SOCKS_STARTED",
+      "value": "Dynamic SOCKS port forwarding started"
+    },
+    {
+      "name": "DYNAMIC_SOCKS_START_FAILED",
+      "value": "Failed to start dynamic SOCKS port forwarding"
+    },
+    {
+      "name": "ADD_PORT_FORWARDING_FAILED",
+      "value": "Add port forwarding failed: "
+    },
+    {
+      "name": "UPLOAD_IN_PROGRESS",
+      "value": "File is currently being uploaded, please try again later"
+    },
+    {
+      "name": "FOLDER_DOWNLOAD_NOT_SUPPORTED",
+      "value": "Downloading folders is not currently supported, please reselect"
+    },
+    {
+      "name": "SELECT_FILE_TO_DOWNLOAD",
+      "value": "Please select the file to download"
+    },
+    {
+      "name": "DOWNLOAD_IN_PROGRESS",
+      "value": "File is currently being downloaded, please try again later"
+    },
+    {
+      "name": "SELECT_TO_RENAME",
+      "value": "Please select the file or folder to rename first"
+    },
+    {
+      "name": "SELECT_TO_DELETE",
+      "value": "Please select the file or folder to delete first"
+    },
+    {
+      "name": "FILE_TRANSFER",
+      "value": "File transfer"
+    },
+    {
+      "name": "UNKNOWN_FILE",
+      "value": "Unknown file"
+    },
+    {
+      "name": "CANCEL_TRANSFER",
+      "value": "Cancel transfer"
+    },
+    {
+      "name": "TRANSFER_CANCELLED",
+      "value": "Transfer cancelled"
+    },
+    {
+      "name": "TRANSFER_SUCCESSFUL",
+      "value": "Transfer successful"
+    },
+    {
+      "name": "PORT_FORWARDED",
+      "value": "Forwarded ports"
+    },
+    {
+      "name": "SOCKS_PROXY",
+      "value": "%s SOCKS proxy"
+    },
+    {
+      "name": "NO_FORWARDED_PORTS",
+      "value": "No forwarded ports"
+    },
+    {
+      "name": "ADD_PORT_FORWARDING",
+      "value": "Add port forwarding"
+    },
+    {
+      "name": "FORWARD_PORT",
+      "value": "Forward port"
+    },
+    {
+      "name": "CANCEL",
+      "value": "Cancel"
+    },
+    {
+      "name": "SYSTEM_PROMPT",
+      "value": "System Prompt"
+    },
+    {
+      "name": "CONFIRM_CLOSE_TERMINAL",
+      "value": "This operation will close the connected terminal, please confirm"
+    },
+    {
+      "name": "LOGGING_IN",
+      "value": "Logging in, please wait"
+    },
+    {
+      "name": "ENTER_KEY_PASSWORD",
+      "value": "Please enter the key password"
+    },
+    {
+      "name": "ENTER_PASSWORD",
+      "value": "Please enter the password"
+    },
+    {
+      "name": "Passwords_do_not_match",
+      "value": "The two passwords you entered do not match."
+    },
+    {
+      "name": "terminal_init",
+      "value": "Initializing terminal environment..."
+    },
+    {
+      "name": "Serial",
+      "value": "Serial"
+    },
+    {
+      "name": "Serial_Title",
+      "value": "Options controlling local serial lines"
+    },
+    {
+      "name": "Select_Serial_Line",
+      "value": "Select a serial line"
+    },
+    {
+      "name": "Configure_Serial_Line",
+      "value": "Configure the serial line"
+    },
+    {
+      "name": "Serial_select_device",
+      "value": "Select serial device"
+    },
+    {
+      "name": "Serial_device",
+      "value": "Device %d"
+    },
+    {
+      "name": "confirm",
+      "value": "Confirm"
+    },
+    {
+      "name": "cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "open_success",
+      "value": "Successfully opened"
+    },
+    {
+      "name": "failed_open",
+      "value": "Failed to open"
+    },
+    {
+      "name": "serial_open_capability",
+      "value": "The current device does not have serial port capability. Please check and retry"
+    },
+    {
+      "name": "loading",
+      "value": "Loading"
+    },
+    {
+      "name": "logging_loading",
+      "value": "Logging in, please wait!"
+    },
+    {
+      "name": "serial_open_loading",
+      "value": "Opening serial port to connect to the terminal, please wait .."
+    },
+    {
+      "name": "send",
+      "value": "Send %s"
+    },
+    {
+      "name": "clear_window",
+      "value": "Clear"
+    },
+    {
+      "name": "receive",
+      "value": "Receive %s"
+    },
+    {
+      "name": "clear_success",
+      "value": "Cleared successfully"
+    },
+    {
+      "name": "send_button",
+      "value": "Send"
+    },
+    {
+      "name": "serial_device_open_warn",
+      "value": "The currently selected serial port device is already open. Please select another device and try again."
+    },
+    {
+      "name": "select_derial_device_warn",
+      "value": "Please select one before confirming"
+    },
+    {
+      "name": "serila_configura_tips",
+      "value": "The current version of the tool offers configuration for standard UART parameters; however, it does not include flow control features, such as hardware (RTS/CTS) or software (XON/XOFF)."
+    },
+    {
+      "name": "sendEncoding",
+      "value": "Send encoding"
+    },
+    {
+      "name": "readEncoding",
+      "value": "Read encoding"
+    },
+    {
+      "name": "Connection_error",
+      "value": "Connection Error"
+    },
+    {
+      "name": "Proxy_GlobalSwitch",
+      "value": "Global Proxy Switch"
+    },
+    {
+      "name": "Proxy_Enabled",
+      "value": "Enable Proxy"
+    },
+    {
+      "name": "Proxy_Type",
+      "value": "Proxy Type"
+    },
+    {
+      "name": "Proxy_Settings",
+      "value": "Proxy Settings"
+    },
+    {
+      "name": "Proxy_Address",
+      "value": "Proxy Address"
+    },
+    {
+      "name": "Proxy_Address_Placeholder",
+      "value": "e.g. 127.0.0.1"
+    },
+    {
+      "name": "Proxy_Port",
+      "value": "Proxy Port"
+    },
+    {
+      "name": "Proxy_Port_Placeholder",
+      "value": "e.g. 1080"
+    },
+    {
+      "name": "Proxy_Username",
+      "value": "Username (optional)"
+    },
+    {
+      "name": "Proxy_Username_Placeholder",
+      "value": "Proxy username"
+    },
+    {
+      "name": "Proxy_Password",
+      "value": "Password (optional, encrypted)"
+    },
+    {
+      "name": "Proxy_Password_Placeholder",
+      "value": "Proxy password"
+    },
+    {
+      "name": "Proxy_Timeout",
+      "value": "Connection Timeout (s)"
+    },
+    {
+      "name": "Proxy_Timeout_Placeholder",
+      "value": "Default 10"
+    },
+    {
+      "name": "Proxy_HttpConnect",
+      "value": "HTTP CONNECT"
+    },
+    {
+      "name": "Proxy_Description",
+      "value": "Proxy applies to SSH / SFTP / Telnet connections. Set per-session proxy policy (Follow Global / Custom / Off) on the Session page."
+    },
+    {
+      "name": "proxy_err_1",
+      "value": "Invalid or disabled proxy configuration"
+    },
+    {
+      "name": "proxy_err_2",
+      "value": "Failed to create proxy socket"
+    },
+    {
+      "name": "proxy_err_3",
+      "value": "Failed to connect to proxy server"
+    },
+    {
+      "name": "proxy_err_4",
+      "value": "Proxy protocol handshake failed"
+    },
+    {
+      "name": "proxy_err_5",
+      "value": "Proxy authentication failed"
+    },
+    {
+      "name": "proxy_err_6",
+      "value": "Proxy connection timeout"
+    },
+    {
+      "name": "proxy_err_7",
+      "value": "Proxy refused the connection target"
+    },
+    {
+      "name": "proxy_err_8",
+      "value": "Connection refused"
+    },
+    {
+      "name": "Proxy_MenuTitle",
+      "value": "Proxy"
+    },
+    {
+      "name": "Proxy_PageTitle",
+      "value": "Proxy Options"
+    }
+  ]
+}

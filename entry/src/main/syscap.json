@@ -1,0 +1,13 @@
+{
+  "devices": {
+    "general": [
+      "2in1",
+      'tablet'
+    ]
+  },
+  "development": {
+    "addedSysCaps": [
+      "SystemCapability.USB.USBManager.Serial"
+    ]
+  }
+}

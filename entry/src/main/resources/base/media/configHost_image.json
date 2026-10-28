@@ -1,0 +1,7 @@
+{
+  "configHost-image":
+  {
+    "background" : "$media:background",
+    "foreground" : "$media:favicon"
+  }
+}
