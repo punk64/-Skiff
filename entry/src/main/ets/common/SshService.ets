@@ -27,6 +27,10 @@ export interface LogFileInfo {
   mtime: number
 }
 
+function isSessionLog(name: string): boolean {
+  return name.startsWith('skiff-') && name.endsWith('.log')
+}
+
 function fmtSize(b: number): string {
   if (b >= 1073741824) {
     return (b / 1073741824).toFixed(1) + ' GB'
@@ -293,6 +297,17 @@ export class SshService {
       const old: number = this.sessionOf(h.id)
       AppLog.i('ssh', `connect host=${h.host}:${h.port} user=${h.user} auth=${h.auth} prev=${old}`)
       if (old >= 0) {
+        this.started.delete(h.id)
+        try {
+          const list: ForwardInfo[] = await listActivePortForwardings(old) as ForwardInfo[]
+          for (let i = 0; i < list.length; i++) {
+            try {
+              await stopPortForwarding(old, list[i].port, list[i].isRemote)
+            } catch (e) {
+            }
+          }
+        } catch (e) {
+        }
         this.byHost.delete(h.id)
         this.bySess.delete(old)
         this.sftpSids.delete(old)
@@ -325,7 +340,6 @@ export class SshService {
             const info: HostKeyInfo = JSON.parse(raw) as HostKeyInfo
             fp = info.fp === undefined ? '' : info.fp
             if (fp.length > 0) {
-              h.hostKey = fp
               h.hostKeyType = info.type === undefined ? '' : info.type
             }
           }
@@ -377,6 +391,14 @@ export class SshService {
           } catch (e) {
           }
         }
+      } catch (e) {
+      }
+      try {
+        await new Promise<void>((resolve: () => void) => {
+          setTimeout(() => {
+            resolve()
+          }, 400)
+        })
       } catch (e) {
       }
       try {
@@ -569,6 +591,7 @@ export class SshService {
 
   startLog(hostId: number, ctx: common.Context): void {
     if (!uiBool('sk_logOn', false)) {
+      this.disableLog(hostId)
       return
     }
     const sid: number = this.sessionOf(hostId)
@@ -587,17 +610,62 @@ export class SshService {
       const f = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.APPEND)
       const fd: number = f.fd
       this.logFds.set(hostId, fd)
-      const cfg: LoggingConfig = {
-        fd: fd,
-        logType: AppStorage.get<number>('sk_logType') === 1 ? 1 : 2,
-        existOperation: 1,
-        includeHeader: true,
-        omitKnownPassword: true,
-        omitSessionData: false
-      }
-      setLogging(sid, cfg, (ok: boolean, err: string) => {
-      })
+      this.applyLogging(sid, fd)
     } catch (e) {
+      AppLog.e('log', `start log failed host=${hostId}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  private applyLogging(sid: number, fd: number): void {
+    const cfg: LoggingConfig = {
+      fd: fd,
+      logType: AppStorage.get<number>('sk_logType') === 1 ? 1 : 2,
+      existOperation: 1,
+      includeHeader: true,
+      omitKnownPassword: true,
+      omitSessionData: false
+    }
+    setLogging(sid, cfg, (ok: boolean, err: string) => {
+      if (!ok) {
+        AppLog.e('log', `setLogging failed sid=${sid}: ${err}`)
+      }
+    })
+  }
+
+  disableLog(hostId: number): void {
+    const sid: number = this.sessionOf(hostId)
+    if (sid >= 0) {
+      const off: LoggingConfig = {
+        fd: -1, logType: 0, existOperation: 1,
+        includeHeader: false, omitKnownPassword: true, omitSessionData: false
+      }
+      try {
+        setLogging(sid, off, (ok: boolean, err: string) => {
+          if (!ok) {
+            AppLog.e('log', `disable log failed sid=${sid}: ${err}`)
+          }
+        })
+      } catch (e) {
+      }
+    }
+    this.stopLog(hostId)
+  }
+
+  refreshLogging(ctx: common.Context): void {
+    const ids: number[] = Array.from(this.byHost.keys())
+    for (let i = 0; i < ids.length; i++) {
+      const id: number = ids[i]
+      if (uiBool('sk_logOn', false)) {
+        const sid: number = this.sessionOf(id)
+        const fd: number | undefined = this.logFds.get(id)
+        if (sid >= 0 && fd !== undefined) {
+          this.applyLogging(sid, fd)
+        } else {
+          this.startLog(id, ctx)
+        }
+      } else {
+        this.disableLog(id)
+      }
     }
   }
 
@@ -626,7 +694,7 @@ export class SshService {
     try {
       const names: string[] = fs.listFileSync(dir)
       for (let i = 0; i < names.length; i++) {
-        if (!names[i].endsWith('.log')) {
+        if (!isSessionLog(names[i])) {
           continue
         }
         const p: string = dir + '/' + names[i]
@@ -651,7 +719,7 @@ export class SshService {
     try {
       const names: string[] = fs.listFileSync(dir)
       for (let i = 0; i < names.length; i++) {
-        if (!names[i].endsWith('.log')) {
+        if (!isSessionLog(names[i])) {
           continue
         }
         const p: string = dir + '/' + names[i]
@@ -692,7 +760,7 @@ export class SshService {
     try {
       const names: string[] = fs.listFileSync(dir)
       for (let i = 0; i < names.length; i++) {
-        if (!names[i].endsWith('.log')) {
+        if (!isSessionLog(names[i])) {
           continue
         }
         try {
@@ -709,16 +777,64 @@ export class SshService {
   readLog(path: string, maxBytes: number): string {
     try {
       const st: fs.Stat = fs.statSync(path)
+      if (st.size <= 0) {
+        return ''
+      }
+      let start: number = st.size > maxBytes ? st.size - maxBytes : 0
+      if (start > 0) {
+        start = start - 1
+      }
+      const len: number = st.size - start
+      const f = fs.openSync(path, fs.OpenMode.READ_ONLY)
+      const buf: ArrayBuffer = new ArrayBuffer(len)
+      const n: number = fs.readSync(f.fd, buf, { offset: start, length: len })
+      fs.closeSync(f.fd)
+      const dec: util.TextDecoder = util.TextDecoder.create('utf-8', { fatal: false, ignoreBOM: true })
+      let text: string = dec.decodeToString(new Uint8Array(buf, 0, n > 0 ? n : len))
+      if (start > 0) {
+        const nl: number = text.indexOf('\n')
+        text = nl >= 0 ? text.substring(nl + 1) : ''
+      }
+      return text
+    } catch (e) {
+      return ''
+    }
+  }
+
+  readLogHead(path: string, maxBytes: number): string {
+    try {
+      const st: fs.Stat = fs.statSync(path)
       const size: number = Math.min(st.size, maxBytes)
       if (size <= 0) {
         return ''
       }
       const f = fs.openSync(path, fs.OpenMode.READ_ONLY)
       const buf: ArrayBuffer = new ArrayBuffer(size)
-      fs.readSync(f.fd, buf)
+      const n: number = fs.readSync(f.fd, buf)
       fs.closeSync(f.fd)
       const dec: util.TextDecoder = util.TextDecoder.create('utf-8', { fatal: false, ignoreBOM: true })
-      return dec.decodeToString(new Uint8Array(buf))
+      return dec.decodeToString(new Uint8Array(buf, 0, n > 0 ? n : size))
+    } catch (e) {
+      return ''
+    }
+  }
+
+  readLogRange(path: string, offset: number, length: number): string {
+    try {
+      const st: fs.Stat = fs.statSync(path)
+      if (st.size <= 0 || offset >= st.size) {
+        return ''
+      }
+      const len: number = Math.min(length, st.size - offset)
+      if (len <= 0) {
+        return ''
+      }
+      const f = fs.openSync(path, fs.OpenMode.READ_ONLY)
+      const buf: ArrayBuffer = new ArrayBuffer(len)
+      const n: number = fs.readSync(f.fd, buf, { offset: offset, length: len })
+      fs.closeSync(f.fd)
+      const dec: util.TextDecoder = util.TextDecoder.create('utf-8', { fatal: false, ignoreBOM: true })
+      return dec.decodeToString(new Uint8Array(buf, 0, n > 0 ? n : len))
     } catch (e) {
       return ''
     }

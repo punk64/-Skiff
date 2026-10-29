@@ -1,6 +1,7 @@
 import { fileIo as fs } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
 import { generateKeyPair } from 'libentry.so'
+import { HostItem } from './Models'
 
 export interface ManagedKey {
   name: string
@@ -137,6 +138,16 @@ export async function createKey(ctx: common.Context, alg: string, pass: string):
     encrypted: pass.length > 0,
     size: size
   }
+}
+
+export function keyInUse(hosts: HostItem[], keyPath: string): number {
+  let n: number = 0
+  for (let i = 0; i < hosts.length; i++) {
+    if (hosts[i].keyPath === keyPath) {
+      n = n + 1
+    }
+  }
+  return n
 }
 
 export function removeKey(k: ManagedKey): void {

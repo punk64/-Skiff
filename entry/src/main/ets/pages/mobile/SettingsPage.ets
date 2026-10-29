@@ -2,8 +2,8 @@ import { promptAction, window } from '@kit.ArkUI'
 import { common, ConfigurationConstant } from '@kit.AbilityKit'
 import { fileIo as fs, picker } from '@kit.CoreFileKit'
 import { saveUiPrefs } from '../../common/Store'
-import { HostItem } from '../../common/Models'
-import { ManagedKey, listKeys, createKey, removeKey } from '../../common/KeyStore'
+import { HostItem, cloneHost } from '../../common/Models'
+import { ManagedKey, listKeys, createKey, removeKey, keyInUse } from '../../common/KeyStore'
 import { SshService, LogFileInfo } from '../../common/SshService'
 import { AppLog, AppLogFile } from '../../common/AppLog'
 import { probeTcp } from '../../common/PortProbe'
@@ -112,6 +112,14 @@ export struct SettingsPage {
   }
 
   dropKey(k: ManagedKey): void {
+    const used: number = keyInUse(this.hosts, k.path)
+    if (used > 0) {
+      promptAction.showToast({
+        message: this.t(`该密钥正被 ${used} 台主机使用，请先改其认证方式`, `${used} host(s) use this key; change their auth first`),
+        duration: 4000
+      })
+      return
+    }
     removeKey(k)
     this.refreshKeys()
     promptAction.showToast({ message: this.t('已删除密钥', 'Key deleted') })
@@ -138,9 +146,10 @@ export struct SettingsPage {
       if (h.id !== id) {
         return h
       }
-      h.hostKey = ''
-      h.hostKeyType = ''
-      return h
+      const nh: HostItem = cloneHost(h, h.tunnels)
+      nh.hostKey = ''
+      nh.hostKeyType = ''
+      return nh
     })
     this.onHostsChanged()
     promptAction.showToast({ message: this.t('已移除，下次连接将重新信任', 'Removed; it will be trusted again next time') })
@@ -175,10 +184,10 @@ export struct SettingsPage {
     ctx.getApplicationContext().setColorMode(dark ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK : ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT)
     window.getLastWindow(getContext(this)).then((w: window.Window) => {
       w.setWindowSystemBarProperties({
-        statusBarColor: dark ? '#0A0C10' : '#F1F3F7',
-        statusBarContentColor: dark ? '#E9EFF7' : '#10151C',
-        navigationBarColor: dark ? '#0A0C10' : '#F1F3F7',
-        navigationBarContentColor: dark ? '#59647A' : '#98A2B3'
+        statusBarColor: dark ? '#08090C' : '#F4F6F9',
+        statusBarContentColor: dark ? '#E8EDF5' : '#0F141B',
+        navigationBarColor: dark ? '#08090C' : '#F4F6F9',
+        navigationBarContentColor: dark ? '#78849B' : '#646F80'
       })
     }).catch(() => {
     })
@@ -204,6 +213,11 @@ export struct SettingsPage {
       this.proxyOn = v
     } else if (key === 'logOn') {
       this.logOn = v
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext
+      SshService.get().refreshLogging(ctx)
+      setTimeout(() => {
+        this.refreshLogs()
+      }, 300)
     }
     this.persistUi()
   }
@@ -271,12 +285,16 @@ export struct SettingsPage {
 
   clearAppLogs(): void {
     const n: number = AppLog.clear()
-    this.refreshLogs()
     if (n === 0) {
+      this.refreshLogs()
       promptAction.showToast({ message: this.t('没有可清除的日志', 'Nothing to clear') })
       return
     }
     AppLog.i('app', `application logs cleared: ${n}`)
+    this.refreshLogs()
+    setTimeout(() => {
+      this.refreshLogs()
+    }, 400)
     promptAction.showToast({ message: this.t(`已清除 ${n} 个日志文件`, `Cleared ${n} log files`) })
   }
 
@@ -314,10 +332,12 @@ export struct SettingsPage {
     }
     let body: string = ''
     const cap: number = 1048576
+    const headLen: number = 65536
+    const tailLen: number = 458752
     for (let i = 0; i < this.appLogs.length && body.length < cap; i++) {
       const f: AppLogFile = this.appLogs[i]
       body += '\n===== ' + f.name + ' (' + clockText(f.mtime) + ') =====\n'
-      body += AppLog.read(f.path, 524288)
+      body += this.logBodyApp(f, headLen, tailLen) + '\n'
     }
     try {
       const f = fs.openSync(uri, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC)
@@ -353,8 +373,14 @@ export struct SettingsPage {
   }
 
   openLog(f: LogFileInfo): void {
+    const cap: number = 131072
     this.logTitle = f.name
-    this.logText = SshService.get().readLog(f.path, 131072)
+    this.logText = SshService.get().readLog(f.path, cap)
+    if (f.size > cap) {
+      const hint: string = this.t(`（仅显示末尾 ${sizeText(cap)}，共 ${sizeText(f.size)}）\n`,
+        `(last ${sizeText(cap)} of ${sizeText(f.size)})\n`)
+      this.logText = hint + this.logText
+    }
     this.logOpen = f.path
   }
 
@@ -362,6 +388,28 @@ export struct SettingsPage {
     this.logOpen = ''
     this.logTitle = ''
     this.logText = ''
+  }
+
+  logBody(f: LogFileInfo, headLen: number, tailLen: number): string {
+    if (f.size <= headLen + tailLen) {
+      return SshService.get().readLogHead(f.path, headLen + tailLen)
+    }
+    const head: string = SshService.get().readLogHead(f.path, headLen)
+    const tail: string = SshService.get().readLog(f.path, tailLen)
+    const omitted: string = this.t(`\n… 省略中间 ${sizeText(f.size - headLen - tailLen)} …\n`,
+      `\n… ${sizeText(f.size - headLen - tailLen)} omitted …\n`)
+    return head + omitted + tail
+  }
+
+  logBodyApp(f: AppLogFile, headLen: number, tailLen: number): string {
+    if (f.size <= headLen + tailLen) {
+      return AppLog.read(f.path, headLen + tailLen)
+    }
+    const head: string = AppLog.readHead(f.path, headLen)
+    const tail: string = AppLog.read(f.path, tailLen)
+    const omitted: string = this.t(`\n… 省略中间 ${sizeText(f.size - headLen - tailLen)} …\n`,
+      `\n… ${sizeText(f.size - headLen - tailLen)} omitted …\n`)
+    return head + omitted + tail
   }
 
   async exportLogs(): Promise<void> {
@@ -386,10 +434,13 @@ export struct SettingsPage {
     }
     let body: string = ''
     const cap: number = 1048576
+    const headLen: number = 65536
+    const tailLen: number = 458752
     for (let i = 0; i < this.logs.length && body.length < cap; i++) {
       const f: LogFileInfo = this.logs[i]
       body += '\n===== ' + f.name + ' (' + clockText(f.mtime) + ') =====\n'
-      body += SshService.get().readLog(f.path, 524288)
+      const part: string = this.logBody(f, headLen, tailLen)
+      body += part + '\n'
     }
     try {
       const f = fs.openSync(uri, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC)
@@ -724,19 +775,23 @@ export struct SettingsPage {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .constraintSize({ maxWidth: 160 })
-      Stack() {
-        Arrow({ dir: 'right', color: $r('app.color.csx_text3') , len: 15 })
+      if (key !== 'none') {
+        Stack() {
+          Arrow({ dir: 'right', color: $r('app.color.csx_text3') , len: 15 })
+        }
+        .width(20)
+        .height(20)
+        .margin({ left: 4 })
       }
-      .width(20)
-      .height(20)
-      .margin({ left: 4 })
     }
     .width('100%')
     .height(52)
     .padding({ left: 16, right: 16 })
     .alignItems(VerticalAlign.Center)
     .onClick(() => {
-      this.goSub(key)
+      if (key !== 'none') {
+        this.goSub(key)
+      }
     })
   }
 
@@ -932,7 +987,7 @@ export struct SettingsPage {
             .margin({ bottom: 10 })
             .borderRadius(MT.radiusCard)
             .backgroundColor($r('app.color.csx_surface'))
-          }, (k: KnownHostItem) => k.id.toString())
+          }, (k: KnownHostItem) => `${k.id}-${k.fp}-${k.keyType}`)
         }
         .width('100%')
         .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 6, bottom: MT.tabbarSpace })
@@ -1058,7 +1113,7 @@ export struct SettingsPage {
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          Text(this.t('日志固定写在应用沙箱内，一条会话一个文件，最多保留 20 个，超出自动清理最旧的。', 'Logs live inside the app sandbox, one file per session, keeping the newest 20.'))
+          Text(this.t('日志固定写在应用沙箱内，一条会话一个文件，最多保留 19 个，超出自动清理最旧的。', 'Logs live inside the app sandbox, one file per session, keeping the newest 19.'))
             .fontSize(MT.fsCaption)
             .fontColor($r('app.color.csx_text3'))
             .lineHeight(18)
@@ -1334,6 +1389,8 @@ export struct SettingsPage {
       .onClick(() => {
         this.logType = t
         this.persistUi()
+        const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext
+        SshService.get().refreshLogging(ctx)
       })
   }
 

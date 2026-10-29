@@ -187,10 +187,10 @@ export default class EntryAbility extends UIAbility {
     try {
       const dark: boolean = AppStorage.get<boolean>('csx_themeDark') ?? true
       win.setWindowSystemBarProperties({
-        statusBarColor: dark ? '#0A0C10' : '#F1F3F7',
-        statusBarContentColor: dark ? '#E9EFF7' : '#10151C',
-        navigationBarColor: dark ? '#0A0C10' : '#F1F3F7',
-        navigationBarContentColor: dark ? '#59647A' : '#98A2B3'
+        statusBarColor: dark ? '#08090C' : '#F4F6F9',
+        statusBarContentColor: dark ? '#E8EDF5' : '#0F141B',
+        navigationBarColor: dark ? '#08090C' : '#F4F6F9',
+        navigationBarContentColor: dark ? '#78849B' : '#646F80'
       })
       const sys = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM)
       const nav = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR)
@@ -269,19 +269,6 @@ export default class EntryAbility extends UIAbility {
     AppLog.i('ability', 'onForeground');
     const prevTick: number | undefined = AppStorage.get<number>('sk_fgTick')
     AppStorage.setOrCreate('sk_fgTick', (prevTick === undefined ? 0 : prevTick) + 1)
-     // 每次回到前台时检查权限
-  const hasClipboardPermission = permissionManager.checkPermissions(['ohos.permission.READ_PASTEBOARD']);
-  if (!hasClipboardPermission) {
-    permissionManager.requestPermissions(['ohos.permission.READ_PASTEBOARD']).then(granted => {
-      console.log('前台运行时申请剪贴板权限结果:', granted);
-      AppStorage.setOrCreate('clipboardPermissionGranted', granted);
-    }).catch((error:Error) => {
-      console.error('申请剪贴板权限出错:', error);
-      AppStorage.setOrCreate('clipboardPermissionGranted', false);
-    });
-  } else {
-    AppStorage.setOrCreate('clipboardPermissionGranted', true);
-  }
   }
 
   onBackground(): void {

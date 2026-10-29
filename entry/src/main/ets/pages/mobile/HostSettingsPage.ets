@@ -20,6 +20,7 @@ interface FieldSpec {
 export struct HostSettingsPage {
   @Link hosts: HostItem[]
   @Prop @Watch('reload') editId: number = 0
+  @Prop @Watch('reload') pendingHost: HostItem | null = null
   onBack: () => void = () => {}
   onSaved: () => void = () => {}
   @State fName: string = ''
@@ -44,7 +45,10 @@ export struct HostSettingsPage {
   }
 
   reload(): void {
-    const h: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === this.editId)
+    let h: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === this.editId)
+    if (h === undefined && this.pendingHost !== null && this.pendingHost.id === this.editId) {
+      h = this.pendingHost
+    }
     if (h === undefined) {
       return
     }
@@ -130,6 +134,7 @@ export struct HostSettingsPage {
       return
     }
     const prev: HostItem | undefined = this.hosts.find((h: HostItem) => h.id === this.editId)
+    const isNew: boolean = prev === undefined && this.pendingHost !== null && this.pendingHost.id === this.editId
     const addrChanged: boolean = prev !== undefined &&
       (prev.host !== this.fHost.trim() || prev.port !== p)
     if (addrChanged && prev !== undefined && prev.state === 'connected') {
@@ -145,6 +150,24 @@ export struct HostSettingsPage {
         nh.stats = { cpu: 0, ram: 0, net: '', netp: 0 }
         return nh
       })
+    }
+    if (isNew) {
+      const base: HostItem = this.pendingHost as HostItem
+      const nh: HostItem = cloneHost(base, base.tunnels)
+      nh.name = this.fName.trim()
+      nh.host = this.fHost.trim()
+      nh.port = p
+      nh.user = this.fUser.trim()
+      nh.auth = this.fAuth
+      nh.password = this.fPass
+      nh.keyPath = this.fKeyPath
+      nh.hostKey = this.fHostKey
+      nh.hostKeyType = this.fHostKeyType
+      this.hosts = this.hosts.concat([nh])
+      promptAction.showToast({ message: this.t('主机已添加', 'Host added') })
+      this.onSaved()
+      this.onBack()
+      return
     }
     this.hosts = this.hosts.map((h: HostItem) => {
       if (h.id !== this.editId) {

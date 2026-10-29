@@ -44,6 +44,7 @@ struct MobileIndex {
   @State filesDlg: string = ''
   @State tunSheet: boolean = false
   @State setSub: string = ''
+  @State pendingHost: HostItem | null = null
   @StorageLink('csx_themeDark') themeDark: boolean = true
   @StorageLink('sk_fgTick') @Watch('onFgTick') fgTick: number = 0
   private retry: Map<number, number> = new Map<number, number>()
@@ -71,10 +72,9 @@ struct MobileIndex {
     const fn: SshDataHandler = (hid: number, data: string, closed: boolean) => {
       if (closed && this.isConnected(hid)) {
         AppLog.w('ui', `session closed by remote host=${hid}`)
-        this.setState(hid, 'idle')
-        promptAction.showToast({ message: this.t('连接已断开', 'Connection closed') })
-        if (AppStorage.get<boolean>('sk_autoReconnect') ?? false) {
-          this.scheduleReconnect(hid)
+        const reason: string = this.t('连接已断开', 'Connection closed')
+        if (this.markLost(hid, reason)) {
+          promptAction.showToast({ message: reason })
         }
       }
     }
@@ -105,6 +105,11 @@ struct MobileIndex {
   onBackPress(): boolean {
     if (this.showBrowser) {
       this.showBrowser = false
+      return true
+    }
+    if (this.view === 2) {
+      this.pendingHost = null
+      this.view = 0
       return true
     }
     if (this.view === 3 && this.setSub.length > 0) {
@@ -599,8 +604,8 @@ struct MobileIndex {
       this.setState(h.id, 'connected')
       AppLog.i('ui', `connected ${h.name} fp=${fp}`)
       this.retry.delete(h.id)
-      if (fp.length > 0 && !hadKey) {
-        this.persistHosts()
+      if (fp.length > 0) {
+        this.applyHostKey(h.id, fp, h.hostKeyType, !hadKey)
       }
       this.sessionSeq = this.sessionSeq + 1
       this.restoreForwards(h)
@@ -631,6 +636,22 @@ struct MobileIndex {
         duration: 4000
       })
     })
+  }
+
+  applyHostKey(id: number, fp: string, keyType: string, persist: boolean): void {
+    AppLog.i('ssh', `apply host key host=${id} fp=${fp} persist=${persist}`)
+    this.hosts = this.hosts.map((h: HostItem) => {
+      if (h.id !== id) {
+        return h
+      }
+      const nh: HostItem = cloneHost(h, h.tunnels)
+      nh.hostKey = fp
+      nh.hostKeyType = keyType
+      return nh
+    })
+    if (persist) {
+      this.persistHosts()
+    }
   }
 
   markTunnelsOff(id: number, failed: number[]): void {
@@ -891,10 +912,13 @@ struct MobileIndex {
       HostSettingsPage({
         hosts: $hosts,
         editId: this.editId,
+        pendingHost: this.pendingHost,
         onBack: () => {
+          this.pendingHost = null
           this.view = 0
         },
         onSaved: () => {
+          this.pendingHost = null
           this.persistHosts()
         }
       })
@@ -970,8 +994,7 @@ struct MobileIndex {
         },
         onNewHost: () => {
           const nid: number = this.hosts.reduce((m: number, x: HostItem) => (x.id > m ? x.id : m), 0) + 1
-          this.hosts = this.hosts.concat([emptyHost(nid, this.t('新主机', 'New Host'))])
-          this.persistHosts()
+          this.pendingHost = emptyHost(nid, this.t('新主机', 'New Host'))
           this.editId = nid
           this.view = 2
         },

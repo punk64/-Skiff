@@ -1,9 +1,21 @@
 import { promptAction } from '@kit.ArkUI'
+import { common } from '@kit.AbilityKit'
+import { fileIo as fs } from '@kit.CoreFileKit'
 import { MT } from '../../common/MobileTheme'
 import { Ic } from '../../common/Icons'
 import { HostItem, TunnelItem } from '../../common/Models'
 import { SshService } from '../../common/SshService'
 import { L, Bi } from '../../common/I18n'
+
+function dropHostKeys(hostId: number): void {
+  try {
+    const dir: string = (getContext() as common.UIAbilityContext).filesDir + '/keys/h' + hostId.toString()
+    if (fs.accessSync(dir)) {
+      fs.rmdirSync(dir)
+    }
+  } catch (e) {
+  }
+}
 
 @Component
 export struct HostsPage {
@@ -60,6 +72,7 @@ export struct HostsPage {
         return
       }
       SshService.get().disconnect(h.id)
+      dropHostKeys(h.id)
       this.hosts = this.hosts.filter((x: HostItem) => x.id !== h.id)
       this.onChanged()
       promptAction.showToast({ message: this.t(`已删除 ${h.name}`, `Deleted ${h.name}`) })

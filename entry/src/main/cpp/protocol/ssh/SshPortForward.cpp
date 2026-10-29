@@ -414,6 +414,37 @@ void SshPortForward::disconnectSession() {
     OH_LOG_INFO(LOG_APP, "SshPortForward::disconnectSession() started.");
     std::lock_guard<std::recursive_mutex> lock(m_pfMutex); // Lock PF resources
 
+    {
+        std::vector<std::shared_ptr<PortForwardData>> portsToRelease;
+        {
+            std::lock_guard<std::mutex> fwdLock(m_forwardingMutex);
+            portsToRelease = m_forwardingPorts;
+            m_forwardingPorts.clear();
+        }
+        for (auto& data : portsToRelease) {
+            if (!data) {
+                continue;
+            }
+            data->shouldStop.store(true);
+            data->running.store(false);
+            if (!data->isRemote && data->listenSocket >= 0) {
+                closeListenSocket(data->listenSocket);
+                data->listenSocket = -1;
+                OH_LOG_INFO(LOG_APP, "disconnectSession: released local listen socket for port %{public}d", data->localPort);
+            }
+            if (data->isRemote && data->listener) {
+                data->listener = nullptr;
+            }
+            if (data->forwardThread.joinable()) {
+                try {
+                    data->forwardThread.detach();
+                } catch (const std::system_error& e) {
+                    OH_LOG_ERROR(LOG_APP, "disconnectSession: detach forwarder failed: %{public}s", e.what());
+                }
+            }
+        }
+    }
+
     if (!m_pfConnected.load()) {
         OH_LOG_INFO(LOG_APP, "disconnectSession: Already disconnected or never connected.");
         return;

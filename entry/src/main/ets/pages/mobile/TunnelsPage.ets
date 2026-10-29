@@ -408,55 +408,78 @@ export struct TunnelsPage {
     if (this.editingId > 0) {
       const before: TunnelItem | undefined = host.tunnels.find((t: TunnelItem) => t.id === this.editingId)
       const wasOn: boolean = before !== undefined && before.on
-      this.hosts = this.hosts.map((h: HostItem) => {
-        if (h.id !== this.activeId) {
-          return h
-        }
-        const ts: TunnelItem[] = h.tunnels.map((t: TunnelItem) => {
-          if (t.id !== this.editingId) {
-            return t
-          }
-          const nt: TunnelItem = { id: t.id, type: this.fType, port: this.fPort, dest: dest, on: t.on }
-          return nt
-        })
-        return cloneHost(h, ts)
-      })
-      promptAction.showToast({ message: this.t('已保存', 'Saved') })
       if (host.online && before !== undefined && wasOn) {
-        const cur: HostItem | undefined = this.curHost()
-        if (cur !== undefined) {
-          const after: TunnelItem | undefined = cur.tunnels.find((t: TunnelItem) => t.id === this.editingId)
-          if (after !== undefined) {
-            const target: TunnelItem = after
-            SshService.get().stopForward(host.id, before).then(() => {
-              return SshService.get().startForward(host.id, target)
-            }).catch((e: Error) => {
-              this.applyToggle(this.editingId, false)
-              promptAction.showToast({ message: this.fwdErr(e.message), duration: 4000 })
+        const target: TunnelItem = {
+          id: this.editingId, type: this.fType, port: this.fPort, dest: dest, on: true
+        }
+        this.sheetOpen = false
+        this.masking = false
+        SshService.get().stopForward(host.id, before).then(() => {
+          return SshService.get().startForward(host.id, target)
+        }).then(() => {
+          this.applyEdit(target)
+          promptAction.showToast({ message: this.t('已保存并重新启动转发', 'Saved and restarted forwarding') })
+        }).catch((e: Error) => {
+          SshService.get().startForward(host.id, before).then(() => {
+            this.applyEdit(before)
+            promptAction.showToast({
+              message: this.t('新配置启动失败，已恢复原配置', 'New config failed; previous config restored'),
+              duration: 4000
             })
-          }
-        }
-      }
-    } else {
-      const nextId: number = Date.now()
-      const nt: TunnelItem = { id: nextId, type: this.fType, port: this.fPort, dest: dest, on: host.online }
-      this.hosts = this.hosts.map((h: HostItem) => {
-        if (h.id !== this.activeId) {
-          return h
-        }
-        return cloneHost(h, h.tunnels.concat([nt]))
-      })
-      promptAction.showToast({ message: this.t('已添加转发', 'Forwarding added') })
-      if (host.online) {
-        SshService.get().startForward(host.id, nt).catch((e: Error) => {
-          this.applyToggle(nextId, false)
-          promptAction.showToast({ message: this.fwdErr(e.message), duration: 4000 })
+          }).catch(() => {
+            this.applyEdit(before)
+            this.applyToggle(this.editingId, false)
+            promptAction.showToast({ message: this.fwdErr(e.message), duration: 4000 })
+          })
         })
+        return
       }
+      const applyOnly: TunnelItem = {
+        id: this.editingId, type: this.fType, port: this.fPort, dest: dest,
+        on: before === undefined ? false : before.on
+      }
+      this.applyEdit(applyOnly)
+      promptAction.showToast({ message: this.t('已保存', 'Saved') })
+      this.onChanged()
+      this.sheetOpen = false
+      this.masking = false
+      return
+    }
+    const nextId: number = Date.now()
+    const nt: TunnelItem = { id: nextId, type: this.fType, port: this.fPort, dest: dest, on: host.online }
+    this.hosts = this.hosts.map((h: HostItem) => {
+      if (h.id !== this.activeId) {
+        return h
+      }
+      return cloneHost(h, h.tunnels.concat([nt]))
+    })
+    promptAction.showToast({ message: this.t('已添加转发', 'Forwarding added') })
+    if (host.online) {
+      SshService.get().startForward(host.id, nt).catch((e: Error) => {
+        this.applyToggle(nextId, false)
+        promptAction.showToast({ message: this.fwdErr(e.message), duration: 4000 })
+      })
     }
     this.onChanged()
     this.sheetOpen = false
     this.masking = false
+  }
+
+  applyEdit(t: TunnelItem): void {
+    this.hosts = this.hosts.map((h: HostItem) => {
+      if (h.id !== this.activeId) {
+        return h
+      }
+      const ts: TunnelItem[] = h.tunnels.map((x: TunnelItem) => {
+        if (x.id !== t.id) {
+          return x
+        }
+        const nt: TunnelItem = { id: t.id, type: t.type, port: t.port, dest: t.dest, on: t.on }
+        return nt
+      })
+      return cloneHost(h, ts)
+    })
+    this.onChanged()
   }
 
   build() {

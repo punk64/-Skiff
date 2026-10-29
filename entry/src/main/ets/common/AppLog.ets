@@ -157,6 +157,24 @@ export class AppLog {
     }
   }
 
+  static readHead(path: string, maxBytes: number): string {
+    try {
+      const st: fs.Stat = fs.statSync(path)
+      const size: number = Math.min(st.size, maxBytes)
+      if (size <= 0) {
+        return ''
+      }
+      const f = fs.openSync(path, fs.OpenMode.READ_ONLY)
+      const buf: ArrayBuffer = new ArrayBuffer(size)
+      const n: number = fs.readSync(f.fd, buf)
+      fs.closeSync(f.fd)
+      const dec: util.TextDecoder = util.TextDecoder.create('utf-8', { fatal: false, ignoreBOM: true })
+      return dec.decodeToString(new Uint8Array(buf, 0, n > 0 ? n : size))
+    } catch (e) {
+      return ''
+    }
+  }
+
   static clear(): number {
     const list: AppLogFile[] = AppLog.files()
     let n: number = 0

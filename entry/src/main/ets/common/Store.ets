@@ -49,12 +49,13 @@ async function get(ctx: common.Context): Promise<preferences.Preferences> {
 function toHost(s: PersistHost): HostItem {
   return {
     id: s.id, name: s.name, user: s.user, host: s.host, port: s.port,
-    auth: s.auth, password: s.password, keyFd: -1, keyPath: s.keyPath,
+    auth: s.auth, password: s.password === undefined ? '' : s.password,
+    keyFd: -1, keyPath: s.keyPath === undefined ? '' : s.keyPath,
     hostKey: s.hostKey === undefined ? '' : s.hostKey,
     hostKeyType: s.hostKeyType === undefined ? '' : s.hostKeyType,
     latency: '', online: false, state: 'idle',
     stats: { cpu: 0, ram: 0, net: '', netp: 0 },
-    tunnels: s.tunnels
+    tunnels: Array.isArray(s.tunnels) ? s.tunnels : []
   }
 }
 
@@ -74,7 +75,20 @@ export async function loadHosts(ctx: common.Context): Promise<HostItem[]> {
   if (text.length === 0) {
     return []
   }
-  const saved: PersistHost[] = JSON.parse(text) as PersistHost[]
+  let saved: PersistHost[] = []
+  try {
+    saved = JSON.parse(text) as PersistHost[]
+  } catch (e) {
+    try {
+      await p.put(KEY_HOSTS + '_broken', text)
+      await p.flush()
+    } catch (e2) {
+    }
+    return []
+  }
+  if (!Array.isArray(saved)) {
+    return []
+  }
   return saved.map((s: PersistHost) => toHost(s))
 }
 

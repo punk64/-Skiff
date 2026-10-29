@@ -174,6 +174,13 @@ export struct FilesPage {
     return path.substring(0, q)
   }
 
+  joinUri(dir: string, name: string): string {
+    if (dir.length === 0 || dir === '/') {
+      return '/' + name
+    }
+    return dir + '/' + name
+  }
+
   closeDlg(): void {
     this.dlg = ''
     this.dlgTitle = ''
@@ -386,6 +393,9 @@ export struct FilesPage {
     if (t.state === 'fail') {
       return this.t('失败', 'Failed')
     }
+    if (t.state === 'cancelled') {
+      return this.t('已取消', 'Cancelled')
+    }
     if (t.state === 'pause') {
       return this.t('已暂停', 'Paused')
     }
@@ -399,6 +409,10 @@ export struct FilesPage {
           'Failed · Permission denied: the target belongs to another user or the directory is not writable')
       }
       return t.speed.length > 0 ? `${this.stateText(t)} · ${t.speed}` : this.stateText(t)
+    }
+    if (t.state === 'cancelled') {
+      return this.t('已取消（会话级取消，同会话其他任务已一并停止）',
+        'Cancelled (session-level cancel also stopped other tasks in this session)')
     }
     return this.stateText(t) + (t.speed.length > 0 ? ' · ' + t.speed : '')
   }
@@ -520,8 +534,57 @@ export struct FilesPage {
       promptAction.showToast({ message: this.t('请选择文件，文件夹暂不支持下载', 'Select files; folders are not supported') })
       return
     }
+    let uri: string = ''
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext
+      const dp: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx)
+      const opt: picker.DocumentSaveOptions = new picker.DocumentSaveOptions()
+      opt.newFileNames = targets.map((x: SftpEntry) => x.name)
+      const uris: string[] = await dp.save(opt)
+      if (uris.length === 0) {
+        return
+      }
+      uri = uris[0]
+    } catch (err) {
+      promptAction.showToast({ message: this.t('打开保存对话框失败', 'Cannot open the save dialog') })
+      return
+    }
+    const base: string = this.parentOf(uri)
+    let failed: number = 0
+    let firstErr: string = ''
+    let firstBad: string = ''
     for (let i = 0; i < targets.length; i++) {
-      await this.downloadOne(targets[i])
+      const id: number = this.seq
+      this.seq = this.seq + 1
+      this.transfers = [this.newTask(id, targets[i].name, false)].concat(this.transfers)
+      this.view = 'xfer'
+      let f: fs.File | null = null
+      try {
+        f = fs.openSync(this.joinUri(base, targets[i].name), fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC)
+        await SshService.get().download(this.hostId, targets[i].path, f.fd,
+          (pct: number, speed: string) => {
+            this.patch(id, pct, 'run', speed)
+          })
+        this.patch(id, 100, 'done', '')
+      } catch (err) {
+        const raw: string = this.errText(err)
+        this.patch(id, 0, 'fail', raw)
+        failed = failed + 1
+        if (firstErr.length === 0) {
+          firstErr = raw
+          firstBad = targets[i].path
+        }
+      } finally {
+        if (f !== null) {
+          try {
+            fs.closeSync(f.fd)
+          } catch (err) {
+          }
+        }
+      }
+    }
+    if (failed > 0 && this.isPermErr(firstErr)) {
+      this.openPerm(this.t('下载', 'download'), firstBad, firstErr)
     }
   }
 
@@ -535,6 +598,7 @@ export struct FilesPage {
     }
     let failed: number = 0
     let firstErr: string = ''
+    let firstBad: string = ''
     for (let i = 0; i < targets.length; i++) {
       try {
         await SshService.get().remove(this.hostId, targets[i].path, targets[i].isDir)
@@ -542,12 +606,13 @@ export struct FilesPage {
         failed = failed + 1
         if (firstErr.length === 0) {
           firstErr = this.errText(e)
+          firstBad = targets[i].path
         }
       }
     }
     this.setSelect(false)
     if (failed > 0 && this.isPermErr(firstErr)) {
-      this.openPerm(this.t('删除', 'delete'), targets[0].path, firstErr)
+      this.openPerm(this.t('删除', 'delete'), firstBad, firstErr)
       await this.refresh()
       return
     }
@@ -560,7 +625,7 @@ export struct FilesPage {
 
   cancelTask(t: TransferTask): void {
     SshService.get().cancel(this.hostId)
-    this.patch(t.id, t.pct, 'fail', '')
+    this.patch(t.id, t.pct, 'cancelled', '')
   }
 
   clearDone(): void {
@@ -1210,7 +1275,8 @@ export struct FilesPage {
                     .width(`${Math.round(t.pct)}%`)
                     .height(4)
                     .borderRadius(2)
-                    .backgroundColor(t.state === 'fail' ? $r('app.color.csx_danger') : $r('app.color.csx_accent'))
+                    .backgroundColor(t.state === 'fail' ? $r('app.color.csx_danger') :
+                      (t.state === 'cancelled' ? $r('app.color.csx_text3') : $r('app.color.csx_accent')))
                 }
                 .width('100%')
                 .height(4)
