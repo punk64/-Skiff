@@ -349,6 +349,9 @@ bool SshSession::openConnect(const std::string& napiInput) {
     if (keepAliveInterval == 0) {
         keepAliveInterval = 60; // 默认值为60秒
         OH_LOG_INFO(LOG_APP, "保活间隔为0，使用默认值: %{public}d秒", keepAliveInterval);
+    } else if (keepAliveInterval < 0) {
+        keepAliveInterval = 0;
+        OH_LOG_INFO(LOG_APP, "保活已显式禁用");
     }
 
     expectedHostKey = SessionAnalyseHandle->expectedHostKey ? std::string(SessionAnalyseHandle->expectedHostKey) : std::string();

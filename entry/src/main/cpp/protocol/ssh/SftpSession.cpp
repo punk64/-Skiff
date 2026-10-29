@@ -39,7 +39,7 @@ SftpSession::~SftpSession() {
     
     // Set flags to stop any ongoing operations and timers
     cancelRequested.store(true);
-    stopThread.store(true); // 停止keepalive线程
+    stopKeepAlive();
     if (currentOperationActiveFlag) {
         currentOperationActiveFlag->store(false);
         OH_LOG_INFO(LOG_APP, "SftpSession 析构: Marked current operation inactive.");
@@ -115,6 +115,7 @@ SftpSession::~SftpSession() {
 }
 
 bool SftpSession::connect() {
+    stopKeepAlive();
     std::lock_guard<std::mutex> lock(sessionMutex);
     OH_LOG_INFO(LOG_APP, "SFTP 开始连接过程...");
 
@@ -499,9 +500,9 @@ bool SftpSession::connect() {
         
         // --- 新增：启动 Keepalive 线程 ---
         stopThread.store(false); // 确保线程不会立即退出
-        std::thread([this]() {
+        keepAliveThreadObj = std::thread([this]() {
             this->keepAliveThread();
-        }).detach();
+        });
         OH_LOG_INFO(LOG_APP, "SFTP Keepalive线程已启动");
         // --- 新增完毕 ---
     } else {
@@ -1975,6 +1976,18 @@ void SftpSession::requestCancel() {
 // --------------------------------
 
 // --- 新增：keepAliveThread方法实现 ---
+void SftpSession::stopKeepAlive() {
+    stopThread.store(true);
+    if (!keepAliveThreadObj.joinable()) {
+        return;
+    }
+    if (keepAliveThreadObj.get_id() == std::this_thread::get_id()) {
+        keepAliveThreadObj.detach();
+        return;
+    }
+    keepAliveThreadObj.join();
+}
+
 void SftpSession::keepAliveThread() {
     auto threadId = std::this_thread::get_id();
     OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][SFTP Session %{public}d] keepAliveThread 开始执行", threadId, sessionId.load());

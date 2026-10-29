@@ -159,7 +159,7 @@ function buildConfig(h: HostItem, keyFd: number): string {
       expectedHostKey: h.hostKey
     },
     Connection: {
-      keepalive: ka ? 30 : 0,
+      keepalive: ka ? 30 : -1,
       tcpOptions: ['1', '2'],
       version: 'Auto',
       SHHKeyHost: ''
@@ -190,6 +190,7 @@ export class SshService {
   private bound: boolean = false
   private started: Map<number, TunnelItem[]> = new Map<number, TunnelItem[]>()
   private sftpSids: Set<number> = new Set<number>()
+  private syncing: Set<number> = new Set<number>()
   private logFds: Map<number, number> = new Map<number, number>()
   private rxLogged: Set<number> = new Set<number>()
 
@@ -367,6 +368,7 @@ export class SshService {
   disconnect(hostId: number): Promise<void> {
     const sid: number = this.sessionOf(hostId)
     this.started.delete(hostId)
+    this.syncing.delete(hostId)
     AppLog.i('ssh', `disconnect host=${hostId} sid=${sid}`)
     if (sid < 0) {
       return Promise.resolve()
@@ -889,20 +891,29 @@ export class SshService {
     await stopPortForwarding(sid, Number(t.port), t.type === 'R')
   }
 
+  isSyncing(hostId: number): boolean {
+    return this.syncing.has(hostId)
+  }
+
   async syncForwards(hostId: number, tunnels: TunnelItem[]): Promise<number[]> {
     const failed: number[] = []
-    for (let i = 0; i < tunnels.length; i++) {
-      const t: TunnelItem = tunnels[i]
-      if (!t.on) {
-        continue
+    this.syncing.add(hostId)
+    try {
+      for (let i = 0; i < tunnels.length; i++) {
+        const t: TunnelItem = tunnels[i]
+        if (!t.on) {
+          continue
+        }
+        try {
+          await this.startForward(hostId, t)
+        } catch (e) {
+          const msg: string = e instanceof Error ? e.message : String(e)
+          AppLog.e('fwd', `restore ${t.type}${t.port} failed: ${msg}`)
+          failed.push(t.id)
+        }
       }
-      try {
-        await this.startForward(hostId, t)
-      } catch (e) {
-        const msg: string = e instanceof Error ? e.message : String(e)
-        AppLog.e('fwd', `restore ${t.type}${t.port} failed: ${msg}`)
-        failed.push(t.id)
-      }
+    } finally {
+      this.syncing.delete(hostId)
     }
     return failed
   }

@@ -158,7 +158,9 @@ private:
     // --- 新增: keepalive相关成员变量 ---
     std::atomic<bool> stopThread{false};    // 控制线程停止的标志
     std::atomic<int> sessionId{0};          // 会话ID，用于日志标识
+    std::thread keepAliveThreadObj;
     void keepAliveThread();                 // keepalive线程方法
+    void stopKeepAlive();
     // ---------------------------------
     
     // 等待socket就绪

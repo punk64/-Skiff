@@ -117,7 +117,7 @@ export struct HostsPage {
           .fontSize(MT.fsDisplay)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.csx_text'))
-        Text(this.t(`${this.hosts.length} 台主机 · ${this.connectedCount()} 台已连接`, `${this.hosts.length} hosts · ${this.connectedCount()} connected`))
+        Text(this.t(`${this.hosts.length} 台主机 · ${this.connectedCount()} 台已连接`, `${this.hosts.length} host${this.hosts.length === 1 ? '' : 's'} · ${this.connectedCount()} connected`))
           .fontSize(MT.fsSmall)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 5 })

@@ -50,12 +50,8 @@ export default class EntryAbility extends UIAbility {
      AppLog.init(this.context)
      AppLog.i('ability', 'onCreate')
      preferencesUtil.init(this.context)
-     // 启动时应用已保存的界面语言（zh/en/default，default 回退中文）
      try {
-       const savedLanguage = await preferencesUtil.getPreference('language', 'Appear')
-       if (savedLanguage !== 'DATA NOT FOUND' && savedLanguage) {
-         this.applySavedLanguage(savedLanguage)
-       }
+       this.applySavedLanguage(loadUiPrefsSync(this.context).lang)
      } catch (e) {
        console.error('读取并应用语言失败', e)
      }

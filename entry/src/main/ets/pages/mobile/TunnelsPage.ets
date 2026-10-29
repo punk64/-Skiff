@@ -3,9 +3,17 @@ import { isPortForwardingActive } from 'libentry.so'
 import { MT } from '../../common/MobileTheme'
 import { HostItem, TunnelItem, cloneHost, tunnelCmdLine } from '../../common/Models'
 import { SshService } from '../../common/SshService'
-import { probeHttp, ProbeState } from '../../common/PortProbe'
+import { probeTcp } from '../../common/PortProbe'
 import { AppLog } from '../../common/AppLog'
 import { L, Bi } from '../../common/I18n'
+
+interface RunState {
+  st: string
+  fails: number
+  nextAt: number
+}
+
+const FWD_BACKOFF: number[] = [10, 20, 40, 60]
 
 @Component
 export struct TunnelsPage {
@@ -17,9 +25,11 @@ export struct TunnelsPage {
   @State fType: string = 'L'
   @State fPort: string = '8888'
   @State fDest: string = '127.0.0.1:8888'
-  @State probeSeq: number = 0
+  @State stateVer: number = 0
   @StorageLink('csx_lang') csxLang: string = 'zh'
-  private probeMap: Map<string, string> = new Map<string, string>()
+  private runStates: Map<string, RunState> = new Map<string, RunState>()
+  private patrolling: boolean = false
+  private gone: boolean = false
   private recTimer: number = -1
   onBrowse: (url: string) => void = () => {}
   onToggleHost: () => void = () => {}
@@ -39,10 +49,18 @@ export struct TunnelsPage {
   }
 
   aboutToAppear(): void {
-    this.startReconcile()
+    this.gone = false
+    this.startPatrol()
+    setTimeout(() => {
+      if (this.gone) {
+        return
+      }
+      this.patrol(true)
+    }, 400)
   }
 
   aboutToDisappear(): void {
+    this.gone = true
     if (this.recTimer >= 0) {
       clearInterval(this.recTimer)
       this.recTimer = -1
@@ -50,8 +68,14 @@ export struct TunnelsPage {
   }
 
   onHostSwitch(): void {
-    this.probeMap.clear()
-    this.probeSeq = this.probeSeq + 1
+    this.runStates.clear()
+    this.stateVer = this.stateVer + 1
+    setTimeout(() => {
+      if (this.gone) {
+        return
+      }
+      this.patrol(true)
+    }, 400)
   }
 
   hostReady(): boolean {
@@ -59,62 +83,213 @@ export struct TunnelsPage {
     return h !== undefined && h.online
   }
 
+  hostOnline(): boolean {
+    return this.hostReady()
+  }
+
+  hostAddr(): string {
+    const h: HostItem | undefined = this.curHost()
+    return h === undefined ? '' : `${h.user}@${h.host}:${h.port}`
+  }
+
+  tunnelList(): TunnelItem[] {
+    const h: HostItem | undefined = this.curHost()
+    return h === undefined ? [] : h.tunnels
+  }
+
+  cmdLine(): string {
+    const h: HostItem | undefined = this.curHost()
+    return h === undefined ? '' : tunnelCmdLine(h)
+  }
+
   probeKey(t: TunnelItem): string {
     return this.activeId.toString() + ':' + t.id.toString()
   }
 
-  probeStateOf(t: TunnelItem): string {
-    if (t.type !== 'L' || !t.on || !this.hostReady()) {
-      return 'idle'
+  runOf(t: TunnelItem): RunState {
+    const v: RunState | undefined = this.runStates.get(this.probeKey(t))
+    if (v === undefined) {
+      return { st: t.on ? 'idle' : 'off', fails: 0, nextAt: 0 }
     }
-    const v: string | undefined = this.probeMap.get(this.probeKey(t))
-    return v === undefined ? 'unknown' : v
+    return v
   }
 
-  probeText(t: TunnelItem): string {
-    const st: string = this.probeStateOf(t)
-    if (st === 'UP') {
+  setRun(key: string, st: string, fails: number, nextAt: number): void {
+    const old: RunState | undefined = this.runStates.get(key)
+    if (old !== undefined && old.st === st && old.fails === fails && old.nextAt === nextAt) {
+      return
+    }
+    this.runStates.set(key, { st: st, fails: fails, nextAt: nextAt })
+    this.stateVer = this.stateVer + 1
+    AppLog.i('probe', `tunnel ${key} -> ${st}`)
+  }
+
+  runText(t: TunnelItem): string {
+    const st: string = this.runOf(t).st
+    if (st === 'up') {
       return this.t('可达', 'Up')
     }
-    if (st === 'LISTEN') {
-      return this.t('仅监听', 'Listen only')
+    if (st === 'listen') {
+      return this.t('通道未通', 'No channel')
     }
-    if (st === 'DOWN') {
+    if (st === 'down') {
       return this.t('未通', 'Down')
     }
-    if (st === 'unknown') {
-      return this.t('未探测', 'Unprobed')
+    if (st === 'retry') {
+      return this.t('恢复中', 'Recovering')
     }
-    return ''
+    if (st === 'starting') {
+      return this.t('启动中', 'Starting')
+    }
+    if (st === 'off') {
+      return this.t('已关闭', 'Off')
+    }
+    return this.hostReady() ? this.t('未探测', 'Unprobed') : this.t('待连接', 'Waiting')
   }
 
-  probeColorOf(t: TunnelItem): ResourceColor {
-    const st: string = this.probeStateOf(t)
-    if (st === 'UP') {
+  runColor(t: TunnelItem): ResourceColor {
+    const st: string = this.runOf(t).st
+    if (st === 'up') {
       return $r('app.color.csx_accent')
     }
-    if (st === 'LISTEN') {
+    if (st === 'listen' || st === 'retry' || st === 'starting') {
       return $r('app.color.csx_warn')
     }
-    if (st === 'DOWN') {
+    if (st === 'down') {
       return $r('app.color.csx_danger')
     }
     return $r('app.color.csx_text3')
   }
 
-  setProbe(key: string, st: string): void {
-    this.probeMap.set(key, st)
-    this.probeSeq = this.probeSeq + 1
-    AppLog.i('probe', `tunnel ${key} -> ${st}`)
+  fwdCounts(hostId: number): number[] {
+    const parts: string[] = SshService.get().forwardStats(hostId).split(',')
+    const a: number = parts.length > 0 ? Number(parts[0]) : 0
+    const b: number = parts.length > 1 ? Number(parts[1]) : 0
+    return [Number.isNaN(a) ? 0 : a, Number.isNaN(b) ? 0 : b]
   }
 
-  probeOne(t: TunnelItem): void {
+  sleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve: (v: void) => void) => {
+      setTimeout(() => {
+        resolve()
+      }, ms)
+    })
+  }
+
+  async reachOf(t: TunnelItem, port: number, hostId: number): Promise<string> {
+    if (t.type === 'R') {
+      return 'up'
+    }
+    if (t.type === 'D') {
+      const ok: boolean = await probeTcp('127.0.0.1', port, 1200)
+      return ok ? 'up' : 'down'
+    }
+    const base: number[] = this.fwdCounts(hostId)
+    const ok: boolean = await probeTcp('127.0.0.1', port, 1200)
+    if (!ok) {
+      return 'down'
+    }
+    for (let i = 0; i < 6; i++) {
+      await this.sleep(120)
+      const now: number[] = this.fwdCounts(hostId)
+      if (now[1] > base[1]) {
+        return 'listen'
+      }
+      if (now[0] > base[0]) {
+        return 'up'
+      }
+    }
+    return 'up'
+  }
+
+  async patrol(force: boolean): Promise<void> {
+    if (this.patrolling) {
+      return
+    }
+    this.patrolling = true
+    try {
+      const h: HostItem | undefined = this.curHost()
+      if (h === undefined) {
+        return
+      }
+      const sid: number = SshService.get().sessionOf(h.id)
+      if (!h.online || sid < 0 || SshService.get().isSyncing(h.id)) {
+        for (let i = 0; i < h.tunnels.length; i++) {
+          const t: TunnelItem = h.tunnels[i]
+          this.setRun(this.probeKey(t), t.on ? 'idle' : 'off', 0, 0)
+        }
+        return
+      }
+      for (let i = 0; i < h.tunnels.length; i++) {
+        await this.patrolOne(h.id, h.tunnels[i].id, sid, force)
+      }
+    } catch (e) {
+      const msg: string = e instanceof Error ? e.message : String(e)
+      AppLog.w('fwd', `patrol failed: ${msg}`)
+    } finally {
+      this.patrolling = false
+    }
+  }
+
+  async patrolOne(hostId: number, tid: number, sid: number, force: boolean): Promise<void> {
+    const h: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === hostId)
+    if (h === undefined) {
+      return
+    }
+    const t: TunnelItem | undefined = h.tunnels.find((x: TunnelItem) => x.id === tid)
+    if (t === undefined) {
+      return
+    }
+    const key: string = this.probeKey(t)
+    if (!t.on) {
+      this.setRun(key, 'off', 0, 0)
+      return
+    }
     if (!/^\d+$/.test(t.port)) {
       return
     }
-    probeHttp('127.0.0.1', Number(t.port), 1500).then((st: ProbeState) => {
-      this.setProbe(this.probeKey(t), st)
-    })
+    const port: number = Number(t.port)
+    if (port < 1 || port > 65535) {
+      return
+    }
+    const rs: RunState = this.runOf(t)
+    if (!force && rs.nextAt > Date.now()) {
+      return
+    }
+    let active: boolean = true
+    try {
+      active = await isPortForwardingActive(sid, port, t.type === 'R')
+    } catch (e) {
+      return
+    }
+    if (active) {
+      const st: string = await this.reachOf(t, port, h.id)
+      this.setRun(key, st, 0, 0)
+      return
+    }
+    const fails: number = rs.fails
+    const wait: number = FWD_BACKOFF[fails < FWD_BACKOFF.length ? fails : FWD_BACKOFF.length - 1]
+    this.setRun(key, 'retry', fails + 1, Date.now() + wait * 1000)
+    AppLog.w('fwd', `heal ${t.type}${t.port} attempt ${fails + 1}`)
+    try {
+      await SshService.get().stopForward(h.id, t)
+      await SshService.get().startForward(h.id, t)
+    } catch (e) {
+      const msg: string = e instanceof Error ? e.message : String(e)
+      AppLog.e('fwd', `heal ${t.type}${t.port} failed: ${msg}`)
+      this.setRun(key, 'down', fails + 1, Date.now() + wait * 1000)
+      return
+    }
+    const st: string = await this.reachOf(t, port, h.id)
+    this.setRun(key, st, 0, 0)
+  }
+
+  probeOne(t: TunnelItem): void {
+    const h: HostItem | undefined = this.curHost()
+    if (h === undefined) {
+      return
+    }
+    this.patrolOne(h.id, t.id, SshService.get().sessionOf(h.id), true)
   }
 
   probeAll(): void {
@@ -123,59 +298,16 @@ export struct TunnelsPage {
       promptAction.showToast({ message: this.t('请先连接主机', 'Connect a host first') })
       return
     }
-    for (let i = 0; i < h.tunnels.length; i++) {
-      const t: TunnelItem = h.tunnels[i]
-      if (t.type === 'L' && t.on) {
-        this.probeOne(t)
-      }
-    }
+    this.patrol(true)
   }
 
-  startReconcile(): void {
+  startPatrol(): void {
     if (this.recTimer >= 0) {
       return
     }
     this.recTimer = setInterval(() => {
-      this.reconcileForwards()
-    }, 15000)
-  }
-
-  async reconcileForwards(): Promise<void> {
-    const h: HostItem | undefined = this.curHost()
-    if (h === undefined || !h.online) {
-      return
-    }
-    const sid: number = SshService.get().sessionOf(h.id)
-    if (sid < 0) {
-      return
-    }
-    let changed: boolean = false
-    for (let i = 0; i < h.tunnels.length; i++) {
-      const t: TunnelItem = h.tunnels[i]
-      if (!t.on) {
-        continue
-      }
-      let active: boolean = true
-      try {
-        active = await isPortForwardingActive(sid, Number(t.port), t.type === 'R')
-      } catch (e) {
-        continue
-      }
-      if (active) {
-        continue
-      }
-      AppLog.w('fwd', `reconcile ${t.type}${t.port} not active, mark off`)
-      this.applyToggle(t.id, false)
-      this.probeMap.delete(this.probeKey(t))
-      this.probeSeq = this.probeSeq + 1
-      changed = true
-    }
-    if (changed) {
-      promptAction.showToast({
-        message: this.t('有转发已失效，已自动关闭', 'Some forwards were lost and turned off'),
-        duration: 4000
-      })
-    }
+      this.patrol(false)
+    }, 10000)
   }
 
   askReset(port: number): Promise<boolean> {
@@ -203,10 +335,11 @@ export struct TunnelsPage {
     } catch (e) {
       const msg: string = e instanceof Error ? e.message : String(e)
       AppLog.e('probe', `reset tunnel ${t.type}${t.port} failed: ${msg}`)
+      this.setRun(this.probeKey(t), 'down', 0, 0)
       return 'DOWN'
     }
-    const st: ProbeState = await probeHttp('127.0.0.1', Number(t.port), 2000)
-    this.setProbe(this.probeKey(t), st)
+    const st: string = await this.reachOf(t, Number(t.port), h.id)
+    this.setRun(this.probeKey(t), st, 0, 0)
     return st
   }
 
@@ -227,19 +360,19 @@ export struct TunnelsPage {
         return
       }
     }
-    const st: ProbeState = await probeHttp('127.0.0.1', port, 1500)
-    this.setProbe(this.probeKey(t), st)
-    if (st === 'UP') {
+    const st: string = await this.reachOf(t, port, h.id)
+    this.setRun(this.probeKey(t), st, 0, 0)
+    if (st === 'up') {
       this.onBrowse(`http://127.0.0.1:${port}`)
       return
     }
-    if (st === 'LISTEN') {
+    if (st === 'listen') {
       const go: boolean = await this.askReset(port)
       if (!go) {
         return
       }
       const st2: string = await this.resetTunnel(h, t)
-      if (st2 === 'UP') {
+      if (st2 === 'up') {
         this.onBrowse(`http://127.0.0.1:${port}`)
         return
       }
@@ -272,20 +405,21 @@ export struct TunnelsPage {
       promptAction.showToast({ message: this.t('请先连接主机', 'Connect a host first') })
       return
     }
-    const prev: boolean = t.on
     this.applyToggle(tid, turnOn)
+    const key: string = this.probeKey(t)
+    this.setRun(key, turnOn ? 'starting' : 'off', 0, turnOn ? Date.now() + 3000 : 0)
     const job: Promise<void> = turnOn
       ? SshService.get().startForward(h.id, t)
       : SshService.get().stopForward(h.id, t)
     job.then(() => {
-      if (turnOn && t.type === 'L') {
-        this.probeOne(t)
-      }
       promptAction.showToast({ message: turnOn
         ? this.t(`已开启 ${t.type}${t.port}`, `Enabled ${t.type}${t.port}`)
         : this.t(`已停止 ${t.type}${t.port}`, `Stopped ${t.type}${t.port}`) })
+      if (turnOn) {
+        this.patrolOne(h.id, t.id, SshService.get().sessionOf(h.id), true)
+      }
     }).catch((e: Error) => {
-      this.applyToggle(tid, prev)
+      this.setRun(key, 'down', 0, 0)
       promptAction.showToast({ message: this.fwdErr(e.message), duration: 4000 })
     })
   }
@@ -428,7 +562,6 @@ export struct TunnelsPage {
             })
           }).catch(() => {
             this.applyEdit(before)
-            this.applyToggle(this.editingId, false)
             promptAction.showToast({ message: this.fwdErr(e.message), duration: 4000 })
           })
         })
@@ -446,7 +579,7 @@ export struct TunnelsPage {
       return
     }
     const nextId: number = Date.now()
-    const nt: TunnelItem = { id: nextId, type: this.fType, port: this.fPort, dest: dest, on: host.online }
+    const nt: TunnelItem = { id: nextId, type: this.fType, port: this.fPort, dest: dest, on: true }
     this.hosts = this.hosts.map((h: HostItem) => {
       if (h.id !== this.activeId) {
         return h
@@ -455,8 +588,10 @@ export struct TunnelsPage {
     })
     promptAction.showToast({ message: this.t('已添加转发', 'Forwarding added') })
     if (host.online) {
-      SshService.get().startForward(host.id, nt).catch((e: Error) => {
-        this.applyToggle(nextId, false)
+      SshService.get().startForward(host.id, nt).then(() => {
+        this.patrolOne(host.id, nt.id, SshService.get().sessionOf(host.id), true)
+      }).catch((e: Error) => {
+        this.setRun(this.probeKey(nt), 'down', 0, 0)
         promptAction.showToast({ message: this.fwdErr(e.message), duration: 4000 })
       })
     }
@@ -491,7 +626,7 @@ export struct TunnelsPage {
           Scroll() {
             Column() {
               this.StatusCard()
-              if (!this.curHost()!.online) {
+              if (!this.hostOnline()) {
                 Row() {
                   Text(this.t('主机未连接，转发开关当前不可用', 'Host not connected; forwarding is unavailable'))
                     .fontSize(MT.fsCaption)
@@ -527,9 +662,9 @@ export struct TunnelsPage {
               .width('100%')
               .margin({ left: 4, right: 4, bottom: 8 })
 
-              ForEach(this.curHost()!.tunnels, (t: TunnelItem) => {
+              ForEach(this.tunnelList(), (t: TunnelItem) => {
                 this.TunnelRow(t)
-              }, (t: TunnelItem) => `${t.id}-${t.on}-${t.type}-${t.port}-${t.dest}-${this.curHost()!.online}-${this.probeSeq}`)
+              }, (t: TunnelItem) => `${t.id}-${t.on}-${t.type}-${t.port}-${t.dest}-${this.hostOnline()}-${this.stateVer}`)
               Row() {
                 Text(this.t('+ 新建端口转发', '+ New port forwarding'))
                   .fontSize(MT.fsBody)
@@ -544,7 +679,7 @@ export struct TunnelsPage {
               .onClick(() => {
                 this.openSheet(undefined)
               })
-              Text(tunnelCmdLine(this.curHost()!))
+              Text(this.cmdLine())
                 .fontSize(MT.fsCaption)
                 .fontColor($r('app.color.csx_text3'))
                 .fontFamily('monospace')
@@ -576,13 +711,13 @@ export struct TunnelsPage {
   @Builder StatusCard() {
     Row() {
       Circle({ width: 8, height: 8 })
-        .fill(this.curHost()!.online ? $r('app.color.csx_accent') : $r('app.color.csx_text3'))
+        .fill(this.hostOnline() ? $r('app.color.csx_accent') : $r('app.color.csx_text3'))
       Column() {
-        Text(this.curHost()!.online ? this.t('SSH 已连接', 'SSH connected') : this.t('未连接', 'Not connected'))
+        Text(this.hostOnline() ? this.t('SSH 已连接', 'SSH connected') : this.t('未连接', 'Not connected'))
           .fontSize(MT.fsBody)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.csx_text'))
-        Text(`${this.curHost()!.user}@${this.curHost()!.host}:${this.curHost()!.port}`)
+        Text(this.hostAddr())
           .fontSize(MT.fsCaption)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 5 })
@@ -591,9 +726,9 @@ export struct TunnelsPage {
       .layoutWeight(1)
       .margin({ left: 10 })
 
-      Text(this.curHost()!.online ? this.t('断开', 'Disconnect') : this.t('连接', 'Connect'))
+      Text(this.hostOnline() ? this.t('断开', 'Disconnect') : this.t('连接', 'Connect'))
         .fontSize(MT.fsSmall)
-        .fontColor(this.curHost()!.online ? $r('app.color.csx_danger') : $r('app.color.csx_accent'))
+        .fontColor(this.hostOnline() ? $r('app.color.csx_danger') : $r('app.color.csx_accent'))
         .padding({ left: 12, right: 12, top: 7, bottom: 7 })
         .borderRadius(MT.radiusCtrl)
         .backgroundColor($r('app.color.csx_surface2'))
@@ -633,10 +768,10 @@ export struct TunnelsPage {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
-          if (this.probeText(t).length > 0) {
-            Text(this.probeText(t))
+          if (this.runText(t).length > 0) {
+            Text(this.runText(t))
               .fontSize(MT.fsMicro)
-              .fontColor(this.probeColorOf(t))
+              .fontColor(this.runColor(t))
               .padding({ left: 6, right: 6, top: 2, bottom: 2 })
               .borderRadius(6)
               .backgroundColor($r('app.color.csx_surface2'))
@@ -658,7 +793,7 @@ export struct TunnelsPage {
       if (t.type === 'L') {
         Text(this.t('浏览', 'Browse'))
           .fontSize(MT.fsCaption)
-          .fontColor(t.on && this.curHost()!.online ? $r('app.color.csx_accent') : $r('app.color.csx_text3'))
+          .fontColor(t.on && this.hostOnline() ? $r('app.color.csx_accent') : $r('app.color.csx_text3'))
           .height(28)
           .padding({ left: 11, right: 11 })
           .borderRadius(MT.radiusCtrl)
@@ -670,10 +805,10 @@ export struct TunnelsPage {
           })
       }
 
-      Toggle({ type: ToggleType.Switch, isOn: t.on && this.curHost()!.online })
+      Toggle({ type: ToggleType.Switch, isOn: t.on })
         .selectedColor($r('app.color.csx_accent'))
         .switchPointColor('#FFFFFF')
-        .enabled(this.curHost()!.online)
+        .enabled(this.hostOnline())
         .onChange(() => {
           this.toggleTunnel(t.id)
         })

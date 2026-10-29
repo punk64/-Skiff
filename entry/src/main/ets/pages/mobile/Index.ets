@@ -2,7 +2,7 @@ import { window, promptAction } from '@kit.ArkUI'
 import { common, ConfigurationConstant } from '@kit.AbilityKit'
 import { inputMethod } from '@kit.IMEKit'
 import { MT } from '../../common/MobileTheme'
-import { HostItem, TunnelItem, cloneHost, emptyHost } from '../../common/Models'
+import { HostItem, cloneHost, emptyHost } from '../../common/Models'
 import { loadHosts, saveHosts } from '../../common/Store'
 import { SshService, SshDataHandler, SessionLostHandler } from '../../common/SshService'
 import { Ic } from '../../common/Icons'
@@ -630,9 +630,10 @@ struct MobileIndex {
       if (failed.length === 0) {
         return
       }
-      this.markTunnelsOff(h.id, failed)
+      AppLog.w('fwd', `${failed.length} forward(s) not restored for ${h.name}`)
       promptAction.showToast({
-        message: this.t(`${failed.length} 条转发未能自动恢复`, `${failed.length} forward(s) could not be restored`),
+        message: this.t(`${failed.length} 条转发未能自动恢复，将在隧道页自动重试`,
+          `${failed.length} forward(s) not restored; will retry automatically`),
         duration: 4000
       })
     })
@@ -652,23 +653,6 @@ struct MobileIndex {
     if (persist) {
       this.persistHosts()
     }
-  }
-
-  markTunnelsOff(id: number, failed: number[]): void {
-    this.hosts = this.hosts.map((h: HostItem) => {
-      if (h.id !== id) {
-        return h
-      }
-      const ts: TunnelItem[] = h.tunnels.map((t: TunnelItem) => {
-        if (failed.indexOf(t.id) < 0) {
-          return t
-        }
-        const off: TunnelItem = { id: t.id, type: t.type, port: t.port, dest: t.dest, on: false }
-        return off
-      })
-      return cloneHost(h, ts)
-    })
-    this.persistHosts()
   }
 
   scheduleReconnect(id: number): void {

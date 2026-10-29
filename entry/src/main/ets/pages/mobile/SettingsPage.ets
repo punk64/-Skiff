@@ -1,5 +1,6 @@
 import { promptAction, window } from '@kit.ArkUI'
 import { common, ConfigurationConstant } from '@kit.AbilityKit'
+import { i18n } from '@kit.LocalizationKit'
 import { fileIo as fs, picker } from '@kit.CoreFileKit'
 import { saveUiPrefs } from '../../common/Store'
 import { HostItem, cloneHost } from '../../common/Models'
@@ -10,6 +11,7 @@ import { probeTcp } from '../../common/PortProbe'
 import { MT } from '../../common/MobileTheme'
 import { Arrow } from '../../common/Arrow'
 import { L, Bi } from '../../common/I18n'
+import { APP_VERSION } from '../../common/AppInfo'
 
 export interface KnownHostItem {
   id: number
@@ -36,6 +38,14 @@ function clockText(ms: number): string {
   const p = (n: number): string => n < 10 ? '0' + n.toString() : n.toString()
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
     p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+}
+
+function applySysLang(lang: string): void {
+  try {
+    i18n.System.setAppPreferredLanguage(lang === 'en' ? 'en-US' : 'zh-CN')
+  } catch (e) {
+    AppLog.w('i18n', `setAppPreferredLanguage failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 @Component
@@ -200,6 +210,7 @@ export struct SettingsPage {
     this.csxLang = lang
     L.lang = lang
     this.persistUi()
+    applySysLang(lang)
   }
 
   setSwitch(key: string, v: boolean): void {
@@ -599,9 +610,9 @@ export struct SettingsPage {
 
           this.GroupTitle(L.b('安全与网络', 'Security & network'))
           Column() {
-            this.NavRow(L.b('密钥管理', 'Keys'), L.b(`${this.keys.length} 个密钥`, `${this.keys.length} keys`), 'keys')
+            this.NavRowDyn(L.b('密钥管理', 'Keys'), (): string => this.t(`${this.keys.length} 个密钥`, `${this.keys.length} keys`), 'keys')
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
-            this.NavRow(L.b('主机指纹', 'Known hosts'), L.b(`${this.knownList().length} 条记录`, `${this.knownList().length} records`), 'known')
+            this.NavRowDyn(L.b('主机指纹', 'Known hosts'), (): string => this.t(`${this.knownList().length} 条记录`, `${this.knownList().length} records`), 'known')
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
             this.NavRow(L.b('代理', 'Proxy'), this.proxyOn ? L.s(`${this.proxyType.toUpperCase()} ${this.proxyHost}:${this.proxyPort}`) : L.b('未启用', 'Disabled'), 'proxy')
           }
@@ -617,7 +628,8 @@ export struct SettingsPage {
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          Text(this.t('轻舟 Skiff · 鸿蒙原生 SSH 客户端\n内核 libssh2 1.11.1 · arm64-v8a + x86_64', 'Skiff · Native SSH client for HarmonyOS\nlibssh2 1.11.1 · arm64-v8a + x86_64'))
+          Text(this.t(`轻舟 Skiff · 鸿蒙原生 SSH 客户端\n版本 ${APP_VERSION} · 内核 libssh2 1.11.1`,
+            `Skiff · Native SSH client for HarmonyOS\nVersion ${APP_VERSION} · libssh2 1.11.1`))
             .fontSize(MT.fsCaption)
             .fontColor($r('app.color.csx_text3'))
             .textAlign(TextAlign.Center)
@@ -770,6 +782,38 @@ export struct SettingsPage {
         .fontColor($r('app.color.csx_text'))
         .layoutWeight(1)
       Text(this.pick(value))
+        .fontSize(MT.fsSmall)
+        .fontColor($r('app.color.csx_text3'))
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .constraintSize({ maxWidth: 160 })
+      if (key !== 'none') {
+        Stack() {
+          Arrow({ dir: 'right', color: $r('app.color.csx_text3') , len: 15 })
+        }
+        .width(20)
+        .height(20)
+        .margin({ left: 4 })
+      }
+    }
+    .width('100%')
+    .height(52)
+    .padding({ left: 16, right: 16 })
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => {
+      if (key !== 'none') {
+        this.goSub(key)
+      }
+    })
+  }
+
+  @Builder NavRowDyn(title: Bi, dyn: () => string, key: string) {
+    Row() {
+      Text(this.pick(title))
+        .fontSize(MT.fsBody)
+        .fontColor($r('app.color.csx_text'))
+        .layoutWeight(1)
+      Text(dyn())
         .fontSize(MT.fsSmall)
         .fontColor($r('app.color.csx_text3'))
         .maxLines(1)

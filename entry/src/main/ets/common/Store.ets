@@ -21,6 +21,14 @@ export interface UiPrefs {
   proxyPort: string
 }
 
+interface PersistTunnel {
+  id: number
+  type: string
+  port: string
+  dest?: string
+  on?: boolean
+}
+
 interface PersistHost {
   id: number
   name: string
@@ -32,7 +40,7 @@ interface PersistHost {
   keyPath: string
   hostKey: string
   hostKeyType: string
-  tunnels: TunnelItem[]
+  tunnels: PersistTunnel[]
 }
 
 let store: preferences.Preferences | null = null
@@ -46,6 +54,14 @@ async function get(ctx: common.Context): Promise<preferences.Preferences> {
   return p
 }
 
+function toTunnel(s: PersistTunnel): TunnelItem {
+  return {
+    id: s.id, type: s.type, port: s.port,
+    dest: s.dest === undefined ? '' : s.dest,
+    on: s.on === undefined ? true : s.on
+  }
+}
+
 function toHost(s: PersistHost): HostItem {
   return {
     id: s.id, name: s.name, user: s.user, host: s.host, port: s.port,
@@ -55,7 +71,7 @@ function toHost(s: PersistHost): HostItem {
     hostKeyType: s.hostKeyType === undefined ? '' : s.hostKeyType,
     latency: '', online: false, state: 'idle',
     stats: { cpu: 0, ram: 0, net: '', netp: 0 },
-    tunnels: Array.isArray(s.tunnels) ? s.tunnels : []
+    tunnels: Array.isArray(s.tunnels) ? s.tunnels.map((t: PersistTunnel) => toTunnel(t)) : []
   }
 }
 
