@@ -85,6 +85,8 @@ public:
     
     // 上传文件
     bool uploadFile(int localFd, const std::string& remotePath, std::function<void(int)> progressCallback = nullptr);
+
+    std::string getLastUploadError() const { return lastUploadError; }
     
     // 下载文件
     bool downloadFile(const std::string& remotePath, int localFd, std::function<void(off_t)> progressCallback);
@@ -141,6 +143,7 @@ private:
     std::unique_ptr<libssh2_socket_t> socket_fd;            // 套接字
     
     std::string currentPath = "/";                         // 当前工作目录
+    std::string lastUploadError;                           // 最近一次上传失败原因
     bool nonBlocking = true;                               // 默认使用非阻塞模式
     int maxRetryCount = 10;                                 // 最大重试次数
     int retryTimeout = 1;                                  // 每次等待超时秒数

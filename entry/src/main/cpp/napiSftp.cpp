@@ -1058,6 +1058,7 @@ static napi_value UploadFile(napi_env env, napi_callback_info info) {
 
                      if (!fileSuccess) {
                          // uploadItem.errorMsg = sshSession->getLastSftpError();
+                         if (uploadItem.errorMsg.empty()) uploadItem.errorMsg = sshSession->getLastUploadError();
                          if (uploadItem.errorMsg.empty()) uploadItem.errorMsg = "SFTP 上传操作失败";
                          OH_LOG_ERROR(LOG_APP, "SftpMultiUpload Execute: Failed to upload '%s': %s", uploadItem.remotePath.c_str(), uploadItem.errorMsg.c_str());
                          // Correct total bytes if upload failed partially

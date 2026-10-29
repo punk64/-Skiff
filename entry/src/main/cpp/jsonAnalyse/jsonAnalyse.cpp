@@ -1,4 +1,5 @@
 #include "jsonAnalyse.h"
+#include <cstring>
 
 SessionAnalyse* encapsulateSSHFromJson(std::string inputSessionJson) {
     
@@ -6,6 +7,7 @@ SessionAnalyse* encapsulateSSHFromJson(std::string inputSessionJson) {
     if (SessionHandle == NULL) {
         return NULL;
     }
+    memset(SessionHandle, 0, sizeof(SessionAnalyse));
 
     cJSON *sesionJson = NULL;
     cJSON *connection = NULL;
@@ -74,6 +76,11 @@ SessionAnalyse* encapsulateSSHFromJson(std::string inputSessionJson) {
     item = cJSON_GetObjectItemCaseSensitive(session, "privateKeyFd");
     if (item && item->type == cJSON_Number) {
         SessionHandle->privateKeyFd = item->valueint;
+    }
+
+    item = cJSON_GetObjectItemCaseSensitive(session, "expectedHostKey");
+    if (item && cJSON_IsString(item) && item->valuestring != NULL) {
+        SessionHandle->expectedHostKey = strdup(item->valuestring);
     }
     
     item = cJSON_GetObjectItemCaseSensitive(connection, "keepalive");

@@ -11,6 +11,76 @@
 #include <string>      // 确保 string 包含
 #include <atomic> // 需要包含 atomic 头文件
 #include <netdb.h> // For getaddrinfo and gai_strerror
+#include <openssl/sha.h>
+
+static std::string base64NoPad(const unsigned char* data, size_t len) {
+    static const char TBL[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    size_t i = 0;
+    while (i + 2 < len) {
+        unsigned int v = (static_cast<unsigned int>(data[i]) << 16) |
+                         (static_cast<unsigned int>(data[i + 1]) << 8) |
+                         static_cast<unsigned int>(data[i + 2]);
+        out.push_back(TBL[(v >> 18) & 63]);
+        out.push_back(TBL[(v >> 12) & 63]);
+        out.push_back(TBL[(v >> 6) & 63]);
+        out.push_back(TBL[v & 63]);
+        i += 3;
+    }
+    if (len - i == 1) {
+        unsigned int v = static_cast<unsigned int>(data[i]) << 16;
+        out.push_back(TBL[(v >> 18) & 63]);
+        out.push_back(TBL[(v >> 12) & 63]);
+    } else if (len - i == 2) {
+        unsigned int v = (static_cast<unsigned int>(data[i]) << 16) |
+                         (static_cast<unsigned int>(data[i + 1]) << 8);
+        out.push_back(TBL[(v >> 18) & 63]);
+        out.push_back(TBL[(v >> 12) & 63]);
+        out.push_back(TBL[(v >> 6) & 63]);
+    }
+    return out;
+}
+
+bool SshSession::verifyHostKey() {
+    size_t keyLen = 0;
+    int keyType = 0;
+    const char* rawKey = libssh2_session_hostkey(session.get(), &keyLen, &keyType);
+    if (rawKey == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "verifyHostKey: host key unavailable, skip verification");
+        return true;
+    }
+
+    switch (keyType) {
+        case LIBSSH2_HOSTKEY_TYPE_RSA: hostKeyTypeName = "ssh-rsa"; break;
+        case LIBSSH2_HOSTKEY_TYPE_DSS: hostKeyTypeName = "ssh-dss"; break;
+        case LIBSSH2_HOSTKEY_TYPE_ECDSA_256: hostKeyTypeName = "ecdsa-sha2-nistp256"; break;
+        case LIBSSH2_HOSTKEY_TYPE_ECDSA_384: hostKeyTypeName = "ecdsa-sha2-nistp384"; break;
+        case LIBSSH2_HOSTKEY_TYPE_ECDSA_521: hostKeyTypeName = "ecdsa-sha2-nistp521"; break;
+        case LIBSSH2_HOSTKEY_TYPE_ED25519: hostKeyTypeName = "ssh-ed25519"; break;
+        default: hostKeyTypeName = "unknown"; break;
+    }
+
+    const char* hash = libssh2_hostkey_hash(session.get(), LIBSSH2_HOSTKEY_HASH_SHA256);
+    if (hash != nullptr) {
+        hostKeyFingerprint = "SHA256:" + base64NoPad(reinterpret_cast<const unsigned char*>(hash), 32);
+    } else {
+        unsigned char digest[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(rawKey), keyLen, digest);
+        hostKeyFingerprint = "SHA256:" + base64NoPad(digest, SHA256_DIGEST_LENGTH);
+    }
+
+    OH_LOG_INFO(LOG_APP, "host key: type=%{public}s fp=%{public}s", hostKeyTypeName.c_str(), hostKeyFingerprint.c_str());
+
+    if (expectedHostKey.empty()) {
+        return true;
+    }
+    if (expectedHostKey == hostKeyFingerprint) {
+        return true;
+    }
+    OH_LOG_ERROR(LOG_APP, "host key mismatch: expected=%{public}s actual=%{public}s",
+                 expectedHostKey.c_str(), hostKeyFingerprint.c_str());
+    return false;
+}
 
 SshSession::SshSession()
     : session(nullptr, &libssh2_session_free),
@@ -276,6 +346,8 @@ bool SshSession::openConnect(const std::string& napiInput) {
         OH_LOG_INFO(LOG_APP, "保活间隔为0，使用默认值: %{public}d秒", keepAliveInterval);
     }
 
+    expectedHostKey = SessionAnalyseHandle->expectedHostKey ? std::string(SessionAnalyseHandle->expectedHostKey) : std::string();
+
     OH_LOG_INFO(LOG_APP, "SSH连接配置: %{public}s@%{public}s:%{public}d, 保活间隔: %{public}d秒",
                username.c_str(), hostname.c_str(), port, keepAliveInterval);
 
@@ -523,6 +595,11 @@ bool SshSession::openConnect(const std::string& napiInput) {
             OH_LOG_INFO(LOG_APP, "Session handshake failed due to timeout");
             return false;
         }
+    }
+
+    if (!verifyHostKey()) {
+        lastConnectError = "HOSTKEY_ERR:" + hostKeyFingerprint;
+        return false;
     }
 
     userAuthList = libssh2_userauth_list(session.get(), SessionAnalyseHandle->userName, (unsigned int)strlen(SessionAnalyseHandle->userName));
@@ -1648,6 +1725,13 @@ bool SshSession::uploadFile(int localFd, const std::string& remotePath, std::fun
     bool result = transferSftpSession->uploadFile(localFd, remotePath, progressCallback);
 
     return result;
+}
+
+std::string SshSession::getLastUploadError() const {
+    if (!transferSftpSession) {
+        return std::string();
+    }
+    return transferSftpSession->getLastUploadError();
 }
 
 bool SshSession::downloadFile(const std::string& remotePath, int localFd, std::function<void(off_t)> progressCallback) {

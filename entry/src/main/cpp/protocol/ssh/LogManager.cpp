@@ -397,7 +397,7 @@ void LogManager::writeHeader() {
         strftime(timeBuffer, sizeof(timeBuffer), "%Y.%m.%d %H:%M:%S", timeinfo);
     }
     
-    std::string header = "=~=~=~=~=~=~=~=~=~=~=~= CrossShellNext log " + std::string(timeBuffer) + " =~=~=~=~=~=~=~=~=~=~=~=\n";
+    std::string header = "=~=~=~=~=~=~=~=~=~=~=~= Skiff log " + std::string(timeBuffer) + " =~=~=~=~=~=~=~=~=~=~=~=\n";
     
     // 写入头部信息
     if (write(logFd, header.c_str(), header.length()) < 0) {

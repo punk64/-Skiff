@@ -1190,6 +1190,13 @@
                   // 接收ets侧发送过来的消息
                   const result = event.data;
                   if (typeof result == "string") {
+                    if (result.charCodeAt(0) === 1) {
+                      if (!isTerminalOpened) {
+                        openTerminal();
+                      }
+                      term.write(result.substring(1));
+                      return;
+                    }
                     try {
                       // 尝试解析为JSON对象
                       let obj = JSON.parse(result);

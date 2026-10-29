@@ -1,5 +1,5 @@
 import {
-  AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
+  AbilityConstant, ConfigurationConstant, UIAbility, Want, errorManager } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import {permissionManager} from 'ets/common/utils/repPermissionsFromUser'
@@ -16,6 +16,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { warmupProxyDns } from 'libentry.so';
 import { decryptProxyPassword, ensureProxyHuskKey } from '../common/utils/ProxyCredentialUtil';
 import { ProxyType } from '../common/types/dataType';
+import { loadUiPrefsSync, UiPrefs } from '../common/Store';
 
 let LanguageMode:string
 export default class EntryAbility extends UIAbility {
@@ -86,7 +87,6 @@ export default class EntryAbility extends UIAbility {
         // 启动预热：代理配置加载完成后预热 HUKS，缩短首次建连耗时
         this.warmupProxy()
       })
-    this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     AppStorage.setOrCreate('TerminalType',false)
     AppStorage.setOrCreate('currentColorMode', this.context.config.colorMode);
 
@@ -123,6 +123,26 @@ export default class EntryAbility extends UIAbility {
       console.error('处理剪贴板权限时发生错误:', error);
       // 默认为false，防止在后续流程中出现异常
       AppStorage.setOrCreate('clipboardPermissionGranted', false);
+    }
+    this.installErrorGuard()
+  }
+
+  private installErrorGuard(): void {
+    try {
+      const observer: errorManager.ErrorObserver = {
+        onUnhandledException: (errMsg: string): void => {
+          hilog.error(0x0000, 'SkiffCrash', 'unhandled: %{public}s', errMsg)
+          AppStorage.setOrCreate('sk_lastCrash', errMsg.length > 400 ? errMsg.substring(0, 400) : errMsg)
+        },
+        onException: (errObject: Error): void => {
+          const msg: string = errObject.message === undefined ? '' : errObject.message
+          hilog.error(0x0000, 'SkiffCrash', 'exception: %{public}s', msg)
+          AppStorage.setOrCreate('sk_lastCrash', msg.length > 400 ? msg.substring(0, 400) : msg)
+        }
+      }
+      errorManager.on('error', observer)
+    } catch (e) {
+      hilog.error(0x0000, 'SkiffCrash', 'install error guard failed')
     }
   }
 
@@ -183,6 +203,22 @@ export default class EntryAbility extends UIAbility {
     // Main window is created, set main page for this ability
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
     AppStorage.setOrCreate('TerminalType',false)
+    const uiPrefs: UiPrefs = loadUiPrefsSync(this.context)
+    AppStorage.setOrCreate('csx_themeDark', uiPrefs.themeDark)
+    AppStorage.setOrCreate('csx_lang', uiPrefs.lang)
+    AppStorage.setOrCreate('csx_termFont', uiPrefs.termFont)
+    AppStorage.setOrCreate('sk_keepAlive', uiPrefs.keepAlive)
+    AppStorage.setOrCreate('sk_bgTunnel', uiPrefs.bgTunnel)
+    AppStorage.setOrCreate('sk_autoReconnect', uiPrefs.autoReconnect)
+    AppStorage.setOrCreate('sk_logOn', uiPrefs.logOn)
+    AppStorage.setOrCreate('sk_logType', uiPrefs.logType)
+    AppStorage.setOrCreate('sk_proxyOn', uiPrefs.proxyOn)
+    AppStorage.setOrCreate('sk_proxyType', uiPrefs.proxyType)
+    AppStorage.setOrCreate('sk_proxyHost', uiPrefs.proxyHost)
+    AppStorage.setOrCreate('sk_proxyPort', uiPrefs.proxyPort)
+    this.context.getApplicationContext().setColorMode(uiPrefs.themeDark
+      ? ConfigurationConstant.ColorMode.COLOR_MODE_DARK
+      : ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT)
     windowStage.loadContent('pages/mobile/Index', (err) => {
       if (err.code) {
         hilog.error(0x0000, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err) ?? '');
@@ -224,6 +260,8 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onForeground');
+    const prevTick: number | undefined = AppStorage.get<number>('sk_fgTick')
+    AppStorage.setOrCreate('sk_fgTick', (prevTick === undefined ? 0 : prevTick) + 1)
      // 每次回到前台时检查权限
   const hasClipboardPermission = permissionManager.checkPermissions(['ohos.permission.READ_PASTEBOARD']);
   if (!hasClipboardPermission) {

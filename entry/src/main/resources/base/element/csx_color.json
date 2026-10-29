@@ -1,0 +1,22 @@
+{
+  "color": [
+    { "name": "csx_bg", "value": "#F4F6F9" },
+    { "name": "csx_surface", "value": "#FFFFFF" },
+    { "name": "csx_surface2", "value": "#EDF0F5" },
+    { "name": "csx_line", "value": "#E2E7EF" },
+    { "name": "csx_text", "value": "#0F141B" },
+    { "name": "csx_text2", "value": "#5A6474" },
+    { "name": "csx_text3", "value": "#646F80" },
+    { "name": "csx_accent", "value": "#0E9F6E" },
+    { "name": "csx_accent_fg", "value": "#FFFFFF" },
+    { "name": "csx_accent_soft", "value": "#1A0E9F6E" },
+    { "name": "csx_blue", "value": "#C2711D" },
+    { "name": "csx_blue_soft", "value": "#1AC2711D" },
+    { "name": "csx_violet", "value": "#7C3AED" },
+    { "name": "csx_violet_soft", "value": "#1A7C3AED" },
+    { "name": "csx_warn", "value": "#B45309" },
+    { "name": "csx_danger", "value": "#DC2626" },
+    { "name": "csx_glass", "value": "#FFFFFFFF" },
+    { "name": "csx_scrim", "value": "#66000000" }
+  ]
+}

@@ -3,7 +3,7 @@ import { MT } from './MobileTheme'
 @Component
 export struct Arrow {
   @Prop dir: string = 'right'
-  @Prop color: string = MT.text3
+  @Prop color: ResourceColor = $r('app.color.csx_text3')
   @Prop len: number = 18
 
   build() {

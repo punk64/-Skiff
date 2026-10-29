@@ -30,6 +30,7 @@ typedef struct SessionAnalyseStr{
     int keepAlive;
     AUTH_TYPE authType;  // 认证方式
     int privateKeyFd;    // 私钥文件描述符
+    const char* expectedHostKey;
 }SessionAnalyse;
 
 SessionAnalyse* encapsulateSSHFromJson(std::string inputSessionJson);

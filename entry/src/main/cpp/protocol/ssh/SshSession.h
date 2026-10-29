@@ -150,6 +150,12 @@ private:
     // 代理配置
     ProxyConfig proxyConfig;
     std::string lastConnectError; // 最近一次建连失败原因（供 UI 提示）
+
+    std::string expectedHostKey;
+    std::string hostKeyFingerprint;
+    std::string hostKeyTypeName;
+
+    bool verifyHostKey();
     
     // 保活相关参数
     int keepAliveInterval = 60;  // 保活时间间隔（秒）
@@ -209,6 +215,10 @@ public:
     // 获取最近一次建连失败原因（供 UI 提示映射）
     std::string getLastConnectError() const { return lastConnectError; }
 
+    std::string getHostKeyFingerprint() const { return hostKeyFingerprint; }
+
+    std::string getHostKeyType() const { return hostKeyTypeName; }
+
     SshSession();
     
     ~SshSession() override;
@@ -238,6 +248,8 @@ public:
     bool initSftp();
     bool listDirectory(const std::string& path, std::function<void(const FileInfo&)> callback);
     bool uploadFile(int localFd, const std::string& remotePath, std::function<void(int)> progressCallback = nullptr);
+
+    std::string getLastUploadError() const;
     bool downloadFile(const std::string& remotePath, int localFd, std::function<void(off_t)> progressCallback);
     bool deleteFile(const std::string& path);
     bool createDirectory(const std::string& path);
@@ -270,6 +282,7 @@ public:
 
     std::recursive_mutex& getLibssh2Mutex() { return libssh2Mutex; }
     LIBSSH2_SESSION* getInternalSession() { return session.get(); }
+    int waitReadable() { return waitSocket(); }
 
     /**
      * @brief 调整远程伪终端 (PTY) 的大小。

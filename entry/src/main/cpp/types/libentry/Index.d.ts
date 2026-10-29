@@ -169,8 +169,8 @@ export interface LoggingResult {
 
 export interface LoggingConfig {
     fd: number;
-    logType: LogType;
-    existOperation: LogExistOperation;
+    logType: number;
+    existOperation: number;
     includeHeader?: boolean;
     omitKnownPassword?: boolean;
     omitSessionData?: boolean;
@@ -229,6 +229,17 @@ export function generateKeyPair(algorithm: string, password: string | null | und
  * @throws 如果参数无效、密码错误或解密失败。
  */
 export function decryptPrivateKey(privateKeyFd: number, password: string): Promise<string>;
+
+export function getHostKeyFingerprint(sessionId: number): string;
+
+/**
+ * 在已建立的会话上执行一条远程命令并返回标准输出。
+ * 使用独立 exec 通道，不干扰终端交互；命令应快速返回。
+ * @param sessionId 已连接的会话 ID。
+ * @param command 要执行的远程命令。
+ * @returns 命令的标准输出文本。
+ */
+export function execCommand(sessionId: number, command: string): Promise<string>;
 
 /**
  * 描述一个活动的端口转发规则的信息。

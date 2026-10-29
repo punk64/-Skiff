@@ -6,8 +6,10 @@
 #include "napiPortForward.h"
 #include "napiSftp.h"
 #include "key_manager.h"
+#include "jsonAnalyse/jsonAnalyse.h"
 #include <hilog/log.h>
 #include <string>
+#include <vector>
 #include <uv.h>
 #include <thread>
 #include <memory>
@@ -1988,6 +1990,197 @@ static napi_value NAPI_RegisterDirectoryChangeCallback(napi_env env, napi_callba
     return result;
 }
 
+static napi_value NAPI_GetHostKeyFingerprint(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_status status = napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (status != napi_ok || argc < 1) {
+        napi_throw_type_error(env, nullptr, "需要 1 个参数: sessionId");
+        return nullptr;
+    }
+
+    int sessionId = SafeGetInt32FromNapi(env, args[0]);
+    std::string fp;
+    std::string keyType;
+    auto session = sessionManager.getSession(sessionId);
+    if (session) {
+        if (auto* sshSession = dynamic_cast<SshSession*>(session.get())) {
+            fp = sshSession->getHostKeyFingerprint();
+            keyType = sshSession->getHostKeyType();
+        }
+    }
+
+    OH_LOG_INFO(LOG_APP, "NAPI_GetHostKeyFingerprint: sid=%{public}d fp=%{public}s type=%{public}s",
+                sessionId, fp.c_str(), keyType.c_str());
+
+    cJSON* root = cJSON_CreateObject();
+    if (root == nullptr) {
+        napi_value empty;
+        napi_create_string_utf8(env, "", 0, &empty);
+        return empty;
+    }
+    cJSON_AddStringToObject(root, "fp", fp.c_str());
+    cJSON_AddStringToObject(root, "type", keyType.c_str());
+    char* text = cJSON_PrintUnformatted(root);
+    napi_value result;
+    napi_create_string_utf8(env, text != nullptr ? text : "", NAPI_AUTO_LENGTH, &result);
+    if (text != nullptr) {
+        cJSON_free(text);
+    }
+    cJSON_Delete(root);
+    return result;
+}
+
+struct ExecWorkData {
+    napi_deferred deferred;
+    std::shared_ptr<Session> session;
+    std::string command;
+    std::string output;
+    bool success = false;
+    std::string errorMsg;
+};
+
+static napi_value NAPI_Global_execCommand(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_status status = napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (status != napi_ok || argc < 2) {
+        napi_throw_type_error(env, nullptr, "需要 2 个参数: sessionId, command");
+        return nullptr;
+    }
+
+    int sessionId = SafeGetInt32FromNapi(env, args[0], -1);
+    size_t len = 0;
+    napi_get_value_string_utf8(env, args[1], nullptr, 0, &len);
+    std::vector<char> textBuf(len + 1, '\0');
+    napi_get_value_string_utf8(env, args[1], textBuf.data(), len + 1, &len);
+    std::string command(textBuf.data(), len);
+
+    napi_deferred deferred;
+    napi_value promise;
+    if (napi_create_promise(env, &deferred, &promise) != napi_ok) {
+        napi_throw_error(env, nullptr, "Failed to create promise");
+        return nullptr;
+    }
+
+    auto* wd = new ExecWorkData();
+    wd->deferred = deferred;
+    wd->command = command;
+    wd->session = sessionManager.getSession(sessionId);
+
+    napi_value resourceName;
+    napi_create_string_utf8(env, "ExecCommandAsync", NAPI_AUTO_LENGTH, &resourceName);
+
+    napi_async_work work = nullptr;
+    status = napi_create_async_work(
+        env, nullptr, resourceName,
+        [](napi_env env, void* data) {
+            auto* w = static_cast<ExecWorkData*>(data);
+            if (!w->session) {
+                w->errorMsg = "SESSION_NOT_FOUND";
+                return;
+            }
+            auto* ssh = dynamic_cast<SshSession*>(w->session.get());
+            if (ssh == nullptr) {
+                w->errorMsg = "SESSION_INVALID";
+                return;
+            }
+            std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
+            LIBSSH2_SESSION* sess = ssh->getInternalSession();
+            if (sess == nullptr) {
+                w->errorMsg = "SESSION_INVALID";
+                return;
+            }
+            libssh2_session_set_timeout(sess, 2000);
+            LIBSSH2_CHANNEL* ch = libssh2_channel_open_session(sess);
+            if (ch == nullptr) {
+                char* msg = nullptr;
+                int err = libssh2_session_last_error(sess, &msg, nullptr, 0);
+                OH_LOG_ERROR(LOG_APP, "execCommand: open_session failed code=%{public}d msg=%{public}s",
+                             err, msg != nullptr ? msg : "");
+                libssh2_session_set_timeout(sess, 0);
+                w->errorMsg = "CHANNEL_OPEN_FAILED";
+                return;
+            }
+            int rc = libssh2_channel_exec(ch, w->command.c_str());
+            if (rc != 0) {
+                char* msg = nullptr;
+                int err = libssh2_session_last_error(sess, &msg, nullptr, 0);
+                OH_LOG_ERROR(LOG_APP, "execCommand: exec failed rc=%{public}d code=%{public}d msg=%{public}s",
+                             rc, err, msg != nullptr ? msg : "");
+                libssh2_channel_send_eof(ch);
+                libssh2_channel_wait_eof(ch);
+                libssh2_channel_wait_closed(ch);
+                libssh2_channel_free(ch);
+                libssh2_session_set_timeout(sess, 0);
+                w->errorMsg = "EXEC_FAILED";
+                return;
+            }
+            char buf[4096];
+            std::string out;
+            int idle = 0;
+            for (int guard = 0; guard < 512 && idle < 20; ++guard) {
+                ssize_t n = libssh2_channel_read(ch, buf, sizeof(buf));
+                if (n > 0) {
+                    out.append(buf, static_cast<size_t>(n));
+                    idle = 0;
+                    if (out.size() > 262144) {
+                        break;
+                    }
+                    continue;
+                }
+                if (n == LIBSSH2_ERROR_EAGAIN) {
+                    if (ssh->waitReadable() < 0) {
+                        break;
+                    }
+                    ++idle;
+                    continue;
+                }
+                break;
+            }
+            char errBuf[256];
+            for (int guard = 0; guard < 64; ++guard) {
+                ssize_t n = libssh2_channel_read_stderr(ch, errBuf, sizeof(errBuf));
+                if (n > 0) {
+                    continue;
+                }
+                if (n == LIBSSH2_ERROR_EAGAIN && ssh->waitReadable() >= 0) {
+                    continue;
+                }
+                break;
+            }
+            libssh2_channel_send_eof(ch);
+            libssh2_channel_wait_eof(ch);
+            libssh2_channel_wait_closed(ch);
+            libssh2_channel_free(ch);
+            libssh2_session_set_timeout(sess, 0);
+            OH_LOG_INFO(LOG_APP, "execCommand: ok bytes=%{public}d", static_cast<int>(out.size()));
+            w->output = out;
+            w->success = true;
+        },
+        [](napi_env env, napi_status status, void* data) {
+            auto* w = static_cast<ExecWorkData*>(data);
+            if (w->success) {
+                napi_value v;
+                napi_create_string_utf8(env, w->output.c_str(), w->output.size(), &v);
+                napi_resolve_deferred(env, w->deferred, v);
+            } else {
+                napi_value err = CreateNapiError(env, w->errorMsg.empty() ? "EXEC_FAILED" : w->errorMsg.c_str());
+                napi_reject_deferred(env, w->deferred, err);
+            }
+            delete w;
+        },
+        wd, &work);
+
+    if (status != napi_ok) {
+        delete wd;
+        napi_throw_error(env, nullptr, "Failed to create async work");
+        return nullptr;
+    }
+    napi_queue_async_work(env, work);
+    return promise;
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
     // 保存主环境和事件循环
@@ -2020,6 +2213,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         { "enableDirectoryTracking", nullptr, NAPI_EnableDirectoryTracking, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "registerDirectoryChangeCallback", nullptr, NAPI_RegisterDirectoryChangeCallback, nullptr, nullptr, nullptr, napi_default, nullptr }, // 已修改 (JS侧需适配)
         { "warmupProxyDns", nullptr, NAPI_Global_warmupProxyDns, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getHostKeyFingerprint", nullptr, NAPI_GetHostKeyFingerprint, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "execCommand", nullptr, NAPI_Global_execCommand, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 

@@ -7,12 +7,12 @@ import { L } from '../../common/I18n'
 @Component
 export struct HostsPage {
   @Link hosts: HostItem[]
-  @StorageProp('csx_themeVer') themeVer: number = 0
   onConnectToggle: (id: number) => void = () => {}
   onOpenSession: (id: number, tab: number) => void = () => {}
   onHostSettings: (id: number) => void = () => {}
   onAppSettings: () => void = () => {}
   onNewHost: () => void = () => {}
+  onChanged: () => void = () => {}
   @State keyword: string = ''
 
   filtered(): HostItem[] {
@@ -36,45 +36,53 @@ export struct HostsPage {
   }
 
   removeHost(h: HostItem): void {
-    this.hosts = this.hosts.filter((x: HostItem) => x.id !== h.id)
-    promptAction.showToast({ message: L.t(`已删除 ${h.name}`, `Deleted ${h.name}`) })
+    const opts: promptAction.ShowDialogOptions = {
+      title: L.t('删除主机', 'Delete host'),
+      message: L.t(`确定删除「${h.name}」？该操作无法撤销。`, `Delete "${h.name}"? This cannot be undone.`),
+      buttons: [
+        { text: L.t('取消', 'Cancel'), color: $r('app.color.csx_text2') },
+        { text: L.t('删除', 'Delete'), color: $r('app.color.csx_danger') }
+      ]
+    }
+    promptAction.showDialog(opts).then((res: promptAction.ShowDialogSuccessResponse) => {
+      if (res.index !== 1) {
+        return
+      }
+      this.hosts = this.hosts.filter((x: HostItem) => x.id !== h.id)
+      this.onChanged()
+      promptAction.showToast({ message: L.t(`已删除 ${h.name}`, `Deleted ${h.name}`) })
+    })
   }
 
   openQuick(h: HostItem, tab: number): void {
-    if (h.state !== 'connected') {
-      promptAction.showToast({ message: L.t('请先连接该主机', 'Connect this host first') })
-      return
-    }
     this.onOpenSession(h.id, tab)
   }
 
   build() {
-    if (this.themeVer >= 0) {
-      Column() {
-        this.Header()
-        this.SearchBar()
-        if (this.filtered().length === 0) {
-          this.EmptyHint()
-        } else {
-          List() {
-            ForEach(this.filtered(), (h: HostItem) => {
-              ListItem() {
-                this.HostCard(h)
-              }
-              .swipeAction({ end: this.SwipeActions(h) })
-            }, (h: HostItem) => `${h.id}-${h.state}-${h.name}-${h.host}-${h.port}`)
-          }
-          .width('100%')
-          .layoutWeight(1)
-          .scrollBar(BarState.Off)
-          .edgeEffect(EdgeEffect.Spring)
-          .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 12, bottom: 30 })
-          .alignListItem(ListItemAlign.Start)
+    Column() {
+      this.Header()
+      this.SearchBar()
+      if (this.filtered().length === 0) {
+        this.EmptyHint()
+      } else {
+        List() {
+          ForEach(this.filtered(), (h: HostItem) => {
+            ListItem() {
+              this.HostCard(h)
+            }
+            .swipeAction({ end: this.SwipeActions(h) })
+          }, (h: HostItem) => `${h.id}-${h.state}-${h.name}-${h.host}-${h.port}-${h.stats.cpu}-${h.stats.ram}-${h.stats.net}`)
         }
+        .width('100%')
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
+        .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 12, bottom: 30 })
+        .alignListItem(ListItemAlign.Start)
       }
-      .width('100%')
-      .height('100%')
     }
+    .width('100%')
+    .height('100%')
   }
 
   @Builder Header() {
@@ -83,34 +91,34 @@ export struct HostsPage {
         Text(L.t('主机', 'Hosts'))
           .fontSize(MT.fsDisplay)
           .fontWeight(FontWeight.Bold)
-          .fontColor(MT.text)
+          .fontColor($r('app.color.csx_text'))
         Text(L.t(`${this.hosts.length} 台主机 · ${this.connectedCount()} 台已连接`, `${this.hosts.length} hosts · ${this.connectedCount()} connected`))
           .fontSize(MT.fsSmall)
-          .fontColor(MT.text3)
+          .fontColor($r('app.color.csx_text3'))
           .margin({ top: 5 })
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
 
       Stack() {
-        Ic({ name: 'gear', icSize: 18, color: MT.text2 })
+        Ic({ name: 'gear', icSize: 18, color: $r('app.color.csx_text2'), filled: true })
       }
       .width(36)
       .height(36)
       .borderRadius(12)
-      .backgroundColor(MT.surface)
+      .backgroundColor($r('app.color.csx_surface'))
       .margin({ left: 8 })
       .onClick(() => {
         this.onAppSettings()
       })
 
       Stack() {
-        Ic({ name: 'plus', icSize: 18, color: MT.accentFg, sw: 2.2 })
+        Ic({ name: 'plus', icSize: 18, color: $r('app.color.csx_accent_fg'), sw: 2.2 })
       }
       .width(36)
       .height(36)
       .borderRadius(12)
-      .backgroundColor(MT.accent)
+      .backgroundColor($r('app.color.csx_accent'))
       .margin({ left: 8 })
       .onClick(() => {
         this.onNewHost()
@@ -124,8 +132,8 @@ export struct HostsPage {
   @Builder SearchBar() {
     Row() {
       TextInput({ placeholder: L.t('搜索主机名或地址', 'Search host or address'), text: this.keyword })
-        .placeholderColor(MT.text3)
-        .fontColor(MT.text)
+        .placeholderColor($r('app.color.csx_text3'))
+        .fontColor($r('app.color.csx_text'))
         .fontSize(MT.fsBody)
         .backgroundColor(MT.transparent)
         .padding({ left: 0, right: 0 })
@@ -140,51 +148,51 @@ export struct HostsPage {
     .padding({ left: 14, right: 14 })
     .margin({ left: MT.pagePadding, right: MT.pagePadding })
     .borderRadius(MT.radiusCard)
-    .backgroundColor(MT.surface)
+    .backgroundColor($r('app.color.csx_surface'))
   }
 
   @Builder SwipeActions(h: HostItem) {
     Row() {
       Stack() {
-        Ic({ name: 'gear', icSize: 17, color: MT.text2 })
+        Ic({ name: 'gear', icSize: 16, color: $r('app.color.csx_text2'), filled: true })
       }
-      .width(46)
-      .height(46)
-      .borderRadius(15)
-      .backgroundColor(MT.surface2)
+      .width(44)
+      .height(44)
+      .borderRadius(14)
+      .backgroundColor($r('app.color.csx_surface2'))
       .onClick(() => {
         this.onHostSettings(h.id)
       })
 
       Stack() {
-        Ic({ name: 'trash', icSize: 17, color: MT.danger })
+        Ic({ name: 'trash', icSize: 16, color: $r('app.color.csx_danger') })
       }
-      .width(46)
-      .height(46)
-      .borderRadius(15)
+      .width(44)
+      .height(44)
+      .borderRadius(14)
       .backgroundColor('#21F87171')
       .onClick(() => {
         this.removeHost(h)
       })
     }
     .height('100%')
-    .padding({ left: 9, right: MT.pagePadding })
+    .padding({ left: 7, right: 10 })
     .alignItems(VerticalAlign.Center)
   }
 
   @Builder QuickBtn(h: HostItem, tab: number, icon: string, label: string) {
     Column() {
-      Ic({ name: icon, icSize: 19, color: this.isOn(h) ? MT.accent : MT.text3 })
+      Ic({ name: icon, icSize: 18, color: this.isOn(h) ? $r('app.color.csx_accent') : $r('app.color.csx_text3') })
       Text(label)
         .fontSize(MT.fsMicro)
-        .fontColor(this.isOn(h) ? MT.text2 : MT.text3)
+        .fontColor(this.isOn(h) ? $r('app.color.csx_text2') : $r('app.color.csx_text3'))
         .margin({ top: 4 })
     }
     .justifyContent(FlexAlign.Center)
     .layoutWeight(1)
     .height(56)
     .borderRadius(13)
-    .backgroundColor(MT.surface2)
+    .backgroundColor($r('app.color.csx_surface2'))
     .opacity(this.isOn(h) ? 1 : 0.38)
     .onClick(() => {
       this.openQuick(h, tab)
@@ -196,24 +204,25 @@ export struct HostsPage {
       Text(label)
         .fontSize(MT.fsMicro)
         .fontWeight(FontWeight.Medium)
-        .fontColor(MT.text3)
+        .fontColor($r('app.color.csx_text3'))
       Text(value)
         .fontSize(MT.fsCaption)
         .fontWeight(FontWeight.Medium)
-        .fontColor(this.isOn(h) ? MT.text : MT.text3)
+        .fontColor(this.isOn(h) ? $r('app.color.csx_text') : $r('app.color.csx_text3'))
         .fontFamily('monospace')
+        .animation({ duration: 300, curve: Curve.EaseOut })
         .margin({ top: 2 })
       Stack({ alignContent: Alignment.Start }) {
         Column()
           .width('100%')
           .height(3)
           .borderRadius(2)
-          .backgroundColor(MT.surface2)
+          .backgroundColor($r('app.color.csx_surface2'))
         Column()
           .width(`${pct}%`)
           .height(3)
           .borderRadius(2)
-          .backgroundColor(this.isOn(h) ? MT.accent : MT.text3)
+          .backgroundColor(this.isOn(h) ? $r('app.color.csx_accent') : $r('app.color.csx_text3'))
           .opacity(this.isOn(h) ? 1 : 0.3)
           .animation({ duration: 350, curve: Curve.EaseOut })
       }
@@ -228,13 +237,15 @@ export struct HostsPage {
     Column() {
       Row() {
         Circle({ width: 8, height: 8 })
-          .fill(this.isOn(h) ? MT.accent : (this.isBusy(h) ? MT.warn : MT.text3))
+          .fill(this.isOn(h) ? $r('app.color.csx_accent') : (this.isBusy(h) ? $r('app.color.csx_warn') : $r('app.color.csx_text3')))
           .opacity(this.isBusy(h) ? 0.9 : 1)
+          .shadow({ radius: this.isOn(h) ? 6 : 0, color: $r('app.color.csx_accent') })
+          .animation({ duration: 320, curve: Curve.EaseOut })
 
         Text(h.name)
           .fontSize(MT.fsTitle)
           .fontWeight(FontWeight.Medium)
-          .fontColor(MT.text)
+          .fontColor($r('app.color.csx_text'))
           .margin({ left: 9 })
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -244,18 +255,18 @@ export struct HostsPage {
           LoadingProgress()
             .width(14)
             .height(14)
-            .color(MT.warn)
+            .color($r('app.color.csx_warn'))
             .margin({ right: 8 })
         }
 
         Text(this.isBusy(h) ? L.t('连接中', 'Connecting') : (this.isOn(h) ? L.t('断开连接', 'Disconnect') : L.t('连接', 'Connect')))
           .fontSize(MT.fsCaption)
           .fontWeight(FontWeight.Medium)
-          .fontColor(this.isOn(h) ? MT.danger : MT.accentFg)
+          .fontColor(this.isOn(h) ? $r('app.color.csx_danger') : $r('app.color.csx_accent_fg'))
           .height(30)
           .padding({ left: 14, right: 14 })
           .borderRadius(999)
-          .backgroundColor(this.isOn(h) ? '#21F87171' : MT.accent)
+          .backgroundColor(this.isOn(h) ? '#21F87171' : $r('app.color.csx_accent'))
           .onClick(() => {
             this.onConnectToggle(h.id)
           })
@@ -263,9 +274,9 @@ export struct HostsPage {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      Text(`${h.user}@${h.host}:${h.port}`)
+      Text(h.host.length === 0 ? L.t('未设置地址', 'No address set') : `${h.user}@${h.host}:${h.port}`)
         .fontSize(MT.fsCaption)
-        .fontColor(MT.text2)
+        .fontColor($r('app.color.csx_text2'))
         .margin({ top: 6 })
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -280,9 +291,9 @@ export struct HostsPage {
       .margin({ top: 12 })
 
       Row() {
-        this.StatCell(h, 'CPU', this.isOn(h) ? `${h.stats.cpu}%` : '--', this.isOn(h) ? h.stats.cpu : 0)
-        this.StatCell(h, 'RAM', this.isOn(h) ? `${h.stats.ram}%` : '--', this.isOn(h) ? h.stats.ram : 0)
-        this.StatCell(h, L.t('带宽', 'Bandwidth'), this.isOn(h) ? h.stats.net : '--', this.isOn(h) ? h.stats.netp : 0)
+        this.StatCell(h, 'CPU', h.stats.cpu > 0 ? `${h.stats.cpu}%` : '--', h.stats.cpu)
+        this.StatCell(h, 'RAM', h.stats.ram > 0 ? `${h.stats.ram}%` : '--', h.stats.ram)
+        this.StatCell(h, L.t('带宽', 'Bandwidth'), h.stats.net.length > 0 ? h.stats.net : '--', h.stats.netp)
       }
       .width('100%')
       .margin({ top: 12 })
@@ -292,21 +303,79 @@ export struct HostsPage {
     .padding(14)
     .margin({ bottom: 10 })
     .borderRadius(18)
-    .backgroundColor(MT.surface)
-    .border({ width: 1, color: this.isOn(h) ? MT.accentSoft : MT.transparent })
+    .backgroundColor($r('app.color.csx_surface'))
+    .border({ width: 1, color: this.isOn(h) ? $r('app.color.csx_accent_soft') : MT.transparent })
+  }
+
+  @Builder TipRow(text: string) {
+    Row() {
+      Text('·')
+        .fontSize(MT.fsBody)
+        .fontColor($r('app.color.csx_accent'))
+        .margin({ right: 8 })
+      Text(text)
+        .fontSize(MT.fsSmall)
+        .fontColor($r('app.color.csx_text2'))
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .margin({ top: 6 })
+    .alignItems(VerticalAlign.Center)
   }
 
   @Builder EmptyHint() {
-    Column() {
-      Text(L.t('没有匹配的主机', 'No matching hosts'))
-        .fontSize(MT.fsBody)
-        .fontColor(MT.text2)
-      Text(L.t('换个关键词，或点右上角新建', 'Try another keyword, or tap + at top right'))
-        .fontSize(MT.fsSmall)
-        .fontColor(MT.text3)
-        .margin({ top: 8 })
+    if (this.hosts.length === 0) {
+      Column() {
+        Text('⇅')
+          .fontSize(38)
+          .fontColor($r('app.color.csx_text3'))
+        Text(L.t('还没有主机', 'No hosts yet'))
+          .fontSize(MT.fsTitle)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.csx_text'))
+          .margin({ top: 14 })
+        Text(L.t('添加一台服务器，随时用手机连上去干活', 'Add a server and connect from your phone anytime'))
+          .fontSize(MT.fsSmall)
+          .fontColor($r('app.color.csx_text3'))
+          .margin({ top: 8 })
+          .textAlign(TextAlign.Center)
+        Button(L.t('新建主机', 'Add host'))
+          .fontSize(MT.fsBody)
+          .fontColor($r('app.color.csx_accent_fg'))
+          .width('100%')
+          .height(46)
+          .borderRadius(MT.radiusBtn)
+          .backgroundColor($r('app.color.csx_accent'))
+          .margin({ top: 26 })
+          .onClick(() => {
+            this.onNewHost()
+          })
+        Column() {
+          this.TipRow(L.t('密码或密钥登录，支持 TOFU 指纹校验', 'Password or key login with TOFU host key check'))
+          this.TipRow(L.t('终端、SFTP 文件管理、端口转发', 'Terminal, SFTP files and port forwarding'))
+          this.TipRow(L.t('主机 CPU／内存／带宽实时监控', 'Live CPU, memory and bandwidth'))
+        }
+        .width('100%')
+        .margin({ top: 28 })
+        .padding(14)
+        .borderRadius(MT.radiusCard)
+        .backgroundColor($r('app.color.csx_surface'))
+        .alignItems(HorizontalAlign.Start)
+      }
+      .width('100%')
+      .padding({ top: 44, left: MT.pagePadding, right: MT.pagePadding })
+    } else {
+      Column() {
+        Text(L.t('没有匹配的主机', 'No matching hosts'))
+          .fontSize(MT.fsBody)
+          .fontColor($r('app.color.csx_text2'))
+        Text(L.t('换个关键词试试', 'Try another keyword'))
+          .fontSize(MT.fsSmall)
+          .fontColor($r('app.color.csx_text3'))
+          .margin({ top: 8 })
+      }
+      .width('100%')
+      .padding({ top: 60 })
     }
-    .width('100%')
-    .padding({ top: 60 })
   }
 }

@@ -6,6 +6,7 @@
       "arguments": "",
       "cppFlags": "",
       "abiFilters": [
+        "arm64-v8a",
         "x86_64"
       ]
     }
@@ -16,7 +17,7 @@
       "arkOptions": {
         "obfuscation": {
           "ruleOptions": {
-            "enable": true,
+            "enable": false,
             "files": [
               "./obfuscation-rules.txt"
             ]

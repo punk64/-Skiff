@@ -16,6 +16,14 @@
 #define MSG_NOSIGNAL 0
 #endif
 
+namespace {
+struct ActiveChannelGuard {
+    std::atomic<int>& counter;
+    explicit ActiveChannelGuard(std::atomic<int>& c) : counter(c) { ++counter; }
+    ~ActiveChannelGuard() { --counter; }
+};
+}
+
 SshPortForward::SshPortForward(SshSession* mainSession, const SshPortForwardConfig& config)
     : m_mainSession(mainSession),
       m_config(config),
@@ -827,6 +835,72 @@ void SshPortForward::remotePortForwardingThread(std::shared_ptr<PortForwardData>
     OH_LOG_INFO(LOG_APP, "Remote port forwarding stopped - Remote Port: %d", data->localPort);
 }
 
+LIBSSH2_CHANNEL* SshPortForward::openDirectChannel(int clientSocket, const std::string& targetHost, int targetPort,
+                                                   const std::shared_ptr<PortForwardData>& data, int& rcOut) {
+    rcOut = 0;
+    std::unique_lock<std::recursive_mutex> lock(m_pfMutex);
+
+    LIBSSH2_SESSION* session = m_pfSession.get();
+    if (!session) {
+        OH_LOG_ERROR(LOG_APP, "OpenChannel [Socket %{public}d]: PF session is null.", clientSocket);
+        rcOut = LIBSSH2_ERROR_SOCKET_DISCONNECT;
+        return nullptr;
+    }
+
+    int waitAttempts = 0;
+    const int maxWaitAttempts = 100;
+
+    while (true) {
+        libssh2_session_set_last_error(session, 0, nullptr);
+        LIBSSH2_CHANNEL* ch = libssh2_channel_direct_tcpip_ex(session, targetHost.c_str(), targetPort, "127.0.0.1", 22);
+        if (ch != nullptr) {
+            OH_LOG_INFO(LOG_APP, "OpenChannel [Socket %{public}d]: opened channel %{public}p -> %{public}s:%{public}d",
+                        clientSocket, ch, targetHost.c_str(), targetPort);
+            return ch;
+        }
+
+        char* errmsg = nullptr;
+        int errmsgLen = 0;
+        int code = libssh2_session_last_error(session, &errmsg, &errmsgLen, 1);
+        OH_LOG_WARN(LOG_APP, "OpenChannel [Socket %{public}d]: open returned NULL, code=%{public}d msg=%{public}s",
+                    clientSocket, code, errmsg != nullptr ? errmsg : "N/A");
+
+        if (code != LIBSSH2_ERROR_EAGAIN) {
+            rcOut = code;
+            return nullptr;
+        }
+
+        if (data->shouldStop.load()) {
+            rcOut = LIBSSH2_ERROR_TIMEOUT;
+            return nullptr;
+        }
+
+        if (++waitAttempts > maxWaitAttempts) {
+            OH_LOG_ERROR(LOG_APP, "OpenChannel [Socket %{public}d]: timed out after %{public}d attempts.",
+                         clientSocket, maxWaitAttempts);
+            rcOut = LIBSSH2_ERROR_TIMEOUT;
+            return nullptr;
+        }
+
+        lock.unlock();
+        int wsRc = waitSocket(session, *m_pfSock.get());
+        lock.lock();
+
+        session = m_pfSession.get();
+        if (!session || !m_pfConnected.load()) {
+            OH_LOG_ERROR(LOG_APP, "OpenChannel [Socket %{public}d]: PF session dropped while waiting (ws=%{public}d).",
+                         clientSocket, wsRc);
+            rcOut = LIBSSH2_ERROR_SOCKET_DISCONNECT;
+            return nullptr;
+        }
+        if (wsRc < 0) {
+            OH_LOG_ERROR(LOG_APP, "OpenChannel [Socket %{public}d]: waitSocket failed (%{public}d).", clientSocket, wsRc);
+            rcOut = LIBSSH2_ERROR_SOCKET_RECV;
+            return nullptr;
+        }
+    }
+}
+
 void SshPortForward::handleLocalForwardConnection(int clientSocket, std::shared_ptr<PortForwardData> data) {
     OH_LOG_INFO(LOG_APP, "Local Forward Handler: Entered for client socket %{public}d.", clientSocket);
 
@@ -839,70 +913,26 @@ void SshPortForward::handleLocalForwardConnection(int clientSocket, std::shared_
     OH_LOG_INFO(LOG_APP, "Local Forward: Handling connection for client socket %{public}d -> %{public}s:%{public}d",
                  clientSocket, data->targetHost.c_str(), data->targetPort);
 
-    LIBSSH2_CHANNEL* channel = nullptr;
-    LIBSSH2_SESSION* session = nullptr;
     int rc = 0;
+    LIBSSH2_CHANNEL* channel = openDirectChannel(clientSocket, data->targetHost, data->targetPort, data, rc);
 
-    {
-        std::unique_lock<std::recursive_mutex> lock(m_pfMutex);
-        session = m_pfSession.get();
-        if (!session) {
-            OH_LOG_ERROR(LOG_APP, "Local Forward: Cannot open channel, invalid libssh2 session initially.");
-            close(clientSocket);
-            return;
-        }
-
-        int wait_attempts = 0;
-        const int max_wait_attempts = 100;
-
-        OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: Entering channel creation loop.", clientSocket);
-        while (true) { 
-            channel = libssh2_channel_direct_tcpip_ex(session, data->targetHost.c_str(), data->targetPort, "127.0.0.1", 22);
-            
-            if (channel != NULL) {
-                OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: libssh2_channel_direct_tcpip_ex succeeded. Channel ptr: %{public}p", clientSocket, channel);
-                rc = 0; 
-                break; 
-            }
-
-            rc = libssh2_session_last_error(session, NULL, NULL, 0);
-            OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: libssh2_channel_direct_tcpip_ex returned NULL, rc=%{public}d", clientSocket, rc);
-
-            if (rc == LIBSSH2_ERROR_EAGAIN) {
-                 if (data->shouldStop.load()) {
-                     OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: Forwarding stopped during channel creation.", clientSocket);
-                     break; 
-                 }
-                 if (++wait_attempts > max_wait_attempts) {
-                     OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: Timeout waiting for channel after %{public}d attempts.", clientSocket, max_wait_attempts);
-                     rc = LIBSSH2_ERROR_TIMEOUT; 
-                     break;
-                 }
-
-                 OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: Got EAGAIN, unlocking and waiting (Attempt %{public}d/%{public}d)...", clientSocket, wait_attempts, max_wait_attempts);
-                 lock.unlock(); 
-                 int ws_rc = waitSocket(session, *m_pfSock.get()); 
-                 OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: waitSocket returned %{public}d. Relocking...", clientSocket, ws_rc);
-                 lock.lock(); 
-                 OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: Relocked.", clientSocket);
- 
-                 session = m_pfSession.get(); 
-                 bool stillConnected = m_pfConnected.load(); 
-                 if (!session || !stillConnected) {
-                     OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: Session became invalid (ptr=%{public}p) or disconnected (connected=%{public}d) immediately after wait/relock.", clientSocket, session, stillConnected);
-                     rc = LIBSSH2_ERROR_SOCKET_DISCONNECT; 
-                     break; 
-                 }
-                 OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: Session still valid after wait. Retrying channel creation.", clientSocket);
-
+    if (channel == nullptr && !data->shouldStop.load()) {
+        int active = m_activeChannels.load();
+        OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: channel open failed (code=%{public}d), active=%{public}d.",
+                    clientSocket, rc, active);
+        if (active > 0) {
+            OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: skip PF session rebuild while %{public}d channel(s) active.",
+                        clientSocket, active);
+        } else {
+            disconnectSession();
+            if (connectSession()) {
+                rc = 0;
+                channel = openDirectChannel(clientSocket, data->targetHost, data->targetPort, data, rc);
             } else {
-                 OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: libssh2_channel_direct_tcpip_ex failed: %{public}d", clientSocket, rc);
-                 channel = nullptr; 
-                 break; 
+                OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: PF session rebuild failed.", clientSocket);
             }
-        } 
-        OH_LOG_INFO(LOG_APP, "Local Forward [Socket %{public}d]: Exited channel creation loop. Channel ptr: %{public}p, Final rc: %{public}d", clientSocket, channel, rc);
-    } 
+        }
+    }
 
     if (!channel || rc != 0 || data->shouldStop.load()) {
         OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: Failed to establish SSH channel to %{public}s:%{public}d (rc=%{public}d, stopped=%{public}d).", clientSocket, data->targetHost.c_str(), data->targetPort, rc, data->shouldStop.load());
@@ -1213,6 +1243,7 @@ void SshPortForward::handleDynamicForwardConnection(int clientSocket, std::share
 }
 
 void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, std::shared_ptr<PortForwardData> data) {
+    ActiveChannelGuard activeGuard(m_activeChannels);
     if (!m_mainSession || !channel || socket_fd < 0 || data->shouldStop) {
         OH_LOG_ERROR(LOG_APP, "Forward Loop: Invalid parameters or stopped. Socket: %{public}d, Channel: %{public}p, Stopped: %{public}d",
                      socket_fd, channel, data ? data->shouldStop.load() : -1);

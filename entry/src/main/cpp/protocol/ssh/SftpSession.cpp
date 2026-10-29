@@ -773,6 +773,7 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
     std::string tempRemotePath = remotePath + ".tmp"; // <<<--- 使用临时文件路径
     bool uploadCompletedSuccessfully = false; // Flag to track if the upload part finished ok
     std::string errorMessage; // Store potential error message
+    lastUploadError.clear();
     std::shared_ptr<std::atomic<bool>> activeFlagForCleanup = currentOperationActiveFlag; // Keep a copy for finally block
 
     // --- BEGIN: EMA Speed Calculation Variables ---
@@ -1241,6 +1242,7 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
         }
     }
 
+    lastUploadError = overallResult ? std::string() : errorMessage;
     return overallResult; 
 }
 

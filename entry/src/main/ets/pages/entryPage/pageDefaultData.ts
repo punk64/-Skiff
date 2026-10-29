@@ -3,6 +3,14 @@ import { Environment, fileUri } from '@kit.CoreFileKit';
 
 const date = new Date();
 
+function userDocumentDir(): string {
+  try {
+    return Environment.getUserDocumentDir()
+  } catch (e) {
+    return ''
+  }
+}
+
 export const pageDefaultData:allDataType = {
   Session:{
     userName:'',
@@ -23,7 +31,7 @@ export const pageDefaultData:allDataType = {
   },
   Logging:{
     logType:0,
-    logFileBaseUri:Environment.getUserDocumentDir()+ '/CrossShellNext',
+    logFileBaseUri:userDocumentDir() + '/CrossShellNext',
     logFileName:`CrossShellNext_${date.getFullYear()}${date.getMonth()>8?(date.getMonth()+1):'0'+(date.getMonth()+1)}${date.getDate()>9?date.getDate():'0'+date.getDate()}.log`,
     existOperation:0,
     policiesArray:[],

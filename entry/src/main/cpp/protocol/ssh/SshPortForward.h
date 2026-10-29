@@ -92,11 +92,14 @@ private:
     std::unique_ptr<libssh2_socket_t> m_pfSock;
     std::recursive_mutex m_pfMutex; // Dedicated mutex for the PF session/socket
     std::atomic<bool> m_pfConnected{false};
+    std::atomic<int> m_activeChannels{0};
     // ---------------------------------------
 
     // 工具函数
     int createListenSocket(int port, bool anyInterface);
     void closeListenSocket(int socket);
+    LIBSSH2_CHANNEL* openDirectChannel(int clientSocket, const std::string& targetHost, int targetPort,
+                                       const std::shared_ptr<PortForwardData>& data, int& rcOut);
     int waitSocket(LIBSSH2_SESSION* session, libssh2_socket_t sock);
 
     // 端口转发线程函数
