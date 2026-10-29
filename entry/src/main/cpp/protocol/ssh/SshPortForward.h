@@ -80,6 +80,8 @@ public:
     bool stopPortForwarding(int port, bool isRemote);
     bool isPortForwardingActive(int port, bool isRemote);
     std::vector<std::tuple<int, std::string, int, bool, bool>> listActivePortForwardings();
+    int forwardFailures() const { return m_forwardFailures.load(); }
+    int forwardAccepts() const { return m_forwardAccepts.load(); }
 
 private:
     SshSession* m_mainSession; // Renamed for clarity - primarily for ThreadPool access
@@ -93,6 +95,8 @@ private:
     std::recursive_mutex m_pfMutex; // Dedicated mutex for the PF session/socket
     std::atomic<bool> m_pfConnected{false};
     std::atomic<int> m_activeChannels{0};
+    std::atomic<int> m_forwardFailures{0};
+    std::atomic<int> m_forwardAccepts{0};
     // ---------------------------------------
 
     // 工具函数

@@ -5,7 +5,7 @@ import { MT } from '../../common/MobileTheme'
 import { Arrow } from '../../common/Arrow'
 import { SftpEntry, TransferTask } from '../../common/Models'
 import { SshService, UploadFileItem } from '../../common/SshService'
-import { L } from '../../common/I18n'
+import { L, Bi } from '../../common/I18n'
 
 class EntrySource implements IDataSource {
   private data: SftpEntry[] = []
@@ -49,6 +49,7 @@ export struct FilesPage {
   @Link view: string
   @Link dlg: string
   @State cwd: string = ''
+  @StorageLink('csx_lang') csxLang: string = 'zh'
   @State entries: SftpEntry[] = []
   @State selectMode: boolean = false
   @State selected: string[] = []
@@ -71,6 +72,14 @@ export struct FilesPage {
 
   private loadSeq: number = 0
   private src: EntrySource = new EntrySource()
+
+  t(zh: string, en: string): string {
+    return this.csxLang === 'en' ? en : zh
+  }
+
+  pick(v: Bi): string {
+    return this.csxLang === 'en' ? v.en : v.zh
+  }
 
   setEntries(list: SftpEntry[]): void {
     this.entries = list
@@ -137,10 +146,10 @@ export struct FilesPage {
   errText(e: Object): string {
     const raw: string = e instanceof Error ? e.message : String(e)
     if (raw.indexOf('NOT_CONNECTED') >= 0) {
-      return L.t('主机未连接', 'Host not connected')
+      return this.t('主机未连接', 'Host not connected')
     }
     if (raw.indexOf('SFTP_INIT_FAILED') >= 0) {
-      return L.t('SFTP 初始化失败', 'SFTP init failed')
+      return this.t('SFTP 初始化失败', 'SFTP init failed')
     }
     if (raw.indexOf('SFTP_OP_FAILED') >= 0) {
       const rest: string = raw.substring(raw.indexOf('SFTP_OP_FAILED') + 14)
@@ -177,8 +186,8 @@ export struct FilesPage {
 
   openPerm(op: string, path: string, raw: string): void {
     this.dlg = 'perm'
-    this.dlgTitle = L.t('权限不足', 'Permission denied')
-    this.dlgBody = L.t(
+    this.dlgTitle = this.t('权限不足', 'Permission denied')
+    this.dlgBody = this.t(
       `无法${op}：${path}\n\n当前账号对该路径没有写权限。\n${raw}`,
       `Cannot ${op}: ${path}\n\nThe current account has no write permission on this path.\n${raw}`)
     this.dlgDanger = true
@@ -186,7 +195,7 @@ export struct FilesPage {
 
   openRename(e: SftpEntry): void {
     this.dlg = 'rename'
-    this.dlgTitle = L.t('重命名', 'Rename')
+    this.dlgTitle = this.t('重命名', 'Rename')
     this.renameFrom = e.path
     this.renameIsDir = e.isDir
     this.renameTo = e.name
@@ -194,9 +203,9 @@ export struct FilesPage {
 
   openDetail(e: SftpEntry): void {
     this.dlg = 'detail'
-    this.dlgTitle = L.t('详情', 'Details')
-    const kind: string = e.isDir ? L.t('文件夹', 'Folder') : L.t('文件', 'File')
-    this.dlgBody = L.t(
+    this.dlgTitle = this.t('详情', 'Details')
+    const kind: string = e.isDir ? this.t('文件夹', 'Folder') : this.t('文件', 'File')
+    this.dlgBody = this.t(
       `名称：${e.name}\n类型：${kind}\n大小：${e.size}\n修改时间：${e.time}\n路径：${e.path}`,
       `Name: ${e.name}\nType: ${kind}\nSize: ${e.size}\nModified: ${e.time}\nPath: ${e.path}`)
     this.dlgDanger = false
@@ -204,17 +213,17 @@ export struct FilesPage {
 
   confirmRemove(e: SftpEntry): void {
     AlertDialog.show({
-      title: L.t('删除确认', 'Confirm delete'),
+      title: this.t('删除确认', 'Confirm delete'),
       message: e.isDir
-        ? L.t(`确定删除文件夹「${e.name}」及其内容？`, `Delete folder "${e.name}" and its contents?`)
-        : L.t(`确定删除「${e.name}」？`, `Delete "${e.name}"?`),
+        ? this.t(`确定删除文件夹「${e.name}」及其内容？`, `Delete folder "${e.name}" and its contents?`)
+        : this.t(`确定删除「${e.name}」？`, `Delete "${e.name}"?`),
       primaryButton: {
-        value: L.t('取消', 'Cancel'),
+        value: this.t('取消', 'Cancel'),
         action: () => {
         }
       },
       secondaryButton: {
-        value: L.t('删除', 'Delete'),
+        value: this.t('删除', 'Delete'),
         fontColor: $r('app.color.csx_danger'),
         action: () => {
           this.removeOne(e)
@@ -229,12 +238,12 @@ export struct FilesPage {
     }
     try {
       await SshService.get().remove(this.hostId, e.path, e.isDir)
-      promptAction.showToast({ message: L.t('已删除', 'Deleted') })
+      promptAction.showToast({ message: this.t('已删除', 'Deleted') })
       await this.refresh()
     } catch (err) {
       const raw: string = this.errText(err)
       if (this.isPermErr(raw)) {
-        this.openPerm(L.t('删除', 'delete'), e.path, raw)
+        this.openPerm(this.t('删除', 'delete'), e.path, raw)
         return
       }
       promptAction.showToast({ message: raw })
@@ -248,12 +257,12 @@ export struct FilesPage {
       return
     }
     if (target.indexOf('/') >= 0) {
-      promptAction.showToast({ message: L.t('名称不能包含 /', 'Name cannot contain /') })
+      promptAction.showToast({ message: this.t('名称不能包含 /', 'Name cannot contain /') })
       return
     }
     const dir: string = this.parentOf(this.renameFrom)
     const next: string = (dir === '/' ? '' : dir) + '/' + target
-    const op: string = L.t('重命名', 'rename')
+    const op: string = this.t('重命名', 'rename')
     try {
       await SshService.get().renamePath(this.hostId, this.renameFrom, next)
       this.closeDlg()
@@ -271,11 +280,11 @@ export struct FilesPage {
 
   openMkdir(): void {
     if (!this.connected || this.hostId <= 0) {
-      promptAction.showToast({ message: L.t('先连接一台主机', 'Connect a host first') })
+      promptAction.showToast({ message: this.t('先连接一台主机', 'Connect a host first') })
       return
     }
     this.dlg = 'mkdir'
-    this.dlgTitle = L.t('新建文件夹', 'New folder')
+    this.dlgTitle = this.t('新建文件夹', 'New folder')
     this.mkName = ''
     this.dlgDanger = false
   }
@@ -283,21 +292,21 @@ export struct FilesPage {
   async doMkdir(): Promise<void> {
     const name: string = this.mkName.trim()
     if (name.length === 0) {
-      promptAction.showToast({ message: L.t('请输入文件夹名称', 'Enter a folder name') })
+      promptAction.showToast({ message: this.t('请输入文件夹名称', 'Enter a folder name') })
       return
     }
     if (name.indexOf('/') >= 0) {
-      promptAction.showToast({ message: L.t('名称不能包含 /', 'Name cannot contain /') })
+      promptAction.showToast({ message: this.t('名称不能包含 /', 'Name cannot contain /') })
       return
     }
     const dir: string = this.cwd.length === 0 ? '/' : this.cwd
     const path: string = (dir === '/' ? '' : dir) + '/' + name
-    const op: string = L.t('新建文件夹', 'create folder')
+    const op: string = this.t('新建文件夹', 'create folder')
     try {
       await SshService.get().makeDir(this.hostId, path)
       this.closeDlg()
       await this.refresh()
-      promptAction.showToast({ message: L.t('已创建', 'Created') })
+      promptAction.showToast({ message: this.t('已创建', 'Created') })
     } catch (err) {
       const raw: string = this.errText(err)
       this.closeDlg()
@@ -365,28 +374,28 @@ export struct FilesPage {
 
   subTitle(e: SftpEntry): string {
     if (e.isDir) {
-      return e.time.length > 0 ? e.time : L.t('文件夹', 'Folder')
+      return e.time.length > 0 ? e.time : this.t('文件夹', 'Folder')
     }
     return e.time.length > 0 ? `${e.size} · ${e.time}` : e.size
   }
 
   stateText(t: TransferTask): string {
     if (t.state === 'done') {
-      return L.t('已完成', 'Done')
+      return this.t('已完成', 'Done')
     }
     if (t.state === 'fail') {
-      return L.t('失败', 'Failed')
+      return this.t('失败', 'Failed')
     }
     if (t.state === 'pause') {
-      return L.t('已暂停', 'Paused')
+      return this.t('已暂停', 'Paused')
     }
-    return L.t('传输中', 'Transferring')
+    return this.t('传输中', 'Transferring')
   }
 
   detailText(t: TransferTask): string {
     if (t.state === 'fail') {
       if (this.isPermErr(t.speed)) {
-        return L.t('失败 · 权限不足，目标文件属于其他用户或目录不可写',
+        return this.t('失败 · 权限不足，目标文件属于其他用户或目录不可写',
           'Failed · Permission denied: the target belongs to another user or the directory is not writable')
       }
       return t.speed.length > 0 ? `${this.stateText(t)} · ${t.speed}` : this.stateText(t)
@@ -396,7 +405,7 @@ export struct FilesPage {
 
   async pickUpload(): Promise<void> {
     if (!this.connected || this.hostId <= 0) {
-      promptAction.showToast({ message: L.t('先连接一台主机', 'Connect a host first') })
+      promptAction.showToast({ message: this.t('先连接一台主机', 'Connect a host first') })
       return
     }
     if (this.cwd.length === 0) {
@@ -410,7 +419,7 @@ export struct FilesPage {
       opt.maxSelectNumber = 10
       uris = await dp.select(opt)
     } catch (e) {
-      promptAction.showToast({ message: L.t('打开文件选择器失败', 'Cannot open the file picker') })
+      promptAction.showToast({ message: this.t('打开文件选择器失败', 'Cannot open the file picker') })
       return
     }
     if (uris.length === 0) {
@@ -427,13 +436,13 @@ export struct FilesPage {
       }
     }
     if (items.length === 0) {
-      promptAction.showToast({ message: L.t('无法读取所选文件', 'Cannot read the selected files') })
+      promptAction.showToast({ message: this.t('无法读取所选文件', 'Cannot read the selected files') })
       return
     }
     const id: number = this.seq
     this.seq = this.seq + 1
     const label: string = items.length > 1 ?
-      L.t(`${items[0].name} 等 ${items.length} 个`, `${items[0].name} +${items.length - 1}`) : items[0].name
+      this.t(`${items[0].name} 等 ${items.length} 个`, `${items[0].name} +${items.length - 1}`) : items[0].name
     this.transfers = [this.newTask(id, label, true)].concat(this.transfers)
     this.view = 'xfer'
     try {
@@ -447,7 +456,7 @@ export struct FilesPage {
       const raw: string = this.errText(e)
       this.patch(id, 0, 'fail', raw)
       if (this.isPermErr(raw)) {
-        this.openPerm(L.t('上传', 'upload'), this.cwd, raw)
+        this.openPerm(this.t('上传', 'upload'), this.cwd, raw)
       }
     } finally {
       for (let i = 0; i < fds.length; i++) {
@@ -461,7 +470,7 @@ export struct FilesPage {
 
   async downloadOne(e: SftpEntry): Promise<void> {
     if (!this.connected || this.hostId <= 0) {
-      promptAction.showToast({ message: L.t('先连接一台主机', 'Connect a host first') })
+      promptAction.showToast({ message: this.t('先连接一台主机', 'Connect a host first') })
       return
     }
     let uri: string = ''
@@ -476,7 +485,7 @@ export struct FilesPage {
       }
       uri = uris[0]
     } catch (err) {
-      promptAction.showToast({ message: L.t('打开保存对话框失败', 'Cannot open the save dialog') })
+      promptAction.showToast({ message: this.t('打开保存对话框失败', 'Cannot open the save dialog') })
       return
     }
     const id: number = this.seq
@@ -508,7 +517,7 @@ export struct FilesPage {
     const targets: SftpEntry[] = this.entries.filter((x: SftpEntry) => this.selected.includes(x.name) && !x.isDir)
     this.setSelect(false)
     if (targets.length === 0) {
-      promptAction.showToast({ message: L.t('请选择文件，文件夹暂不支持下载', 'Select files; folders are not supported') })
+      promptAction.showToast({ message: this.t('请选择文件，文件夹暂不支持下载', 'Select files; folders are not supported') })
       return
     }
     for (let i = 0; i < targets.length; i++) {
@@ -538,13 +547,13 @@ export struct FilesPage {
     }
     this.setSelect(false)
     if (failed > 0 && this.isPermErr(firstErr)) {
-      this.openPerm(L.t('删除', 'delete'), targets[0].path, firstErr)
+      this.openPerm(this.t('删除', 'delete'), targets[0].path, firstErr)
       await this.refresh()
       return
     }
     promptAction.showToast({
-      message: failed === 0 ? L.t(`已删除 ${targets.length} 项`, `Deleted ${targets.length} items`) :
-        L.t(`${failed} 项删除失败`, `${failed} items failed`)
+      message: failed === 0 ? this.t(`已删除 ${targets.length} 项`, `Deleted ${targets.length} items`) :
+        this.t(`${failed} 项删除失败`, `${failed} items failed`)
     })
     await this.refresh()
   }
@@ -650,7 +659,7 @@ export struct FilesPage {
             .fontColor($r('app.color.csx_text'))
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.mIsDir ? L.t('文件夹', 'Folder') : `${this.mSize} · ${this.mTime}`)
+          Text(this.mIsDir ? this.t('文件夹', 'Folder') : `${this.mSize} · ${this.mTime}`)
             .fontSize(MT.fsCaption)
             .fontColor($r('app.color.csx_text3'))
             .margin({ top: 3 })
@@ -668,11 +677,11 @@ export struct FilesPage {
       Divider()
         .color($r('app.color.csx_line'))
 
-      this.SheetItem(this.mIsDir ? L.t('打开', 'Open') : L.t('下载', 'Download'),
+      this.SheetItem(this.mIsDir ? L.b('打开', 'Open') : L.b('下载', 'Download'),
         this.mIsDir ? 'dir' : 'down', false)
-      this.SheetItem(L.t('重命名', 'Rename'), 'rename', false)
-      this.SheetItem(L.t('详情', 'Details'), 'detail', false)
-      this.SheetItem(L.t('删除', 'Delete'), 'remove', true)
+      this.SheetItem(L.b('重命名', 'Rename'), 'rename', false)
+      this.SheetItem(L.b('详情', 'Details'), 'detail', false)
+      this.SheetItem(L.b('删除', 'Delete'), 'remove', true)
     }
     .width('100%')
     .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 16, bottom: 30 })
@@ -682,8 +691,8 @@ export struct FilesPage {
     })
   }
 
-  @Builder SheetItem(label: string, act: string, danger: boolean) {
-    Text(label)
+  @Builder SheetItem(label: Bi, act: string, danger: boolean) {
+    Text(this.pick(label))
       .fontSize(MT.fsBody)
       .fontColor(danger ? $r('app.color.csx_danger') : $r('app.color.csx_text'))
       .width('100%')
@@ -717,7 +726,7 @@ export struct FilesPage {
               this.renameTo = v
             })
         } else if (this.dlg === 'mkdir') {
-          TextInput({ text: this.mkName, placeholder: L.t('文件夹名称', 'Folder name') })
+          TextInput({ text: this.mkName, placeholder: this.t('文件夹名称', 'Folder name') })
             .fontSize(MT.fsBody)
             .fontColor($r('app.color.csx_text'))
             .placeholderColor($r('app.color.csx_text3'))
@@ -739,7 +748,7 @@ export struct FilesPage {
         }
 
         Row() {
-          Text(L.t('取消', 'Cancel'))
+          Text(this.t('取消', 'Cancel'))
             .fontSize(MT.fsBody)
             .fontColor($r('app.color.csx_text2'))
             .textAlign(TextAlign.Center)
@@ -751,7 +760,7 @@ export struct FilesPage {
               this.closeDlg()
             })
           if (this.dlg === 'rename') {
-            Text(L.t('确定', 'OK'))
+            Text(this.t('确定', 'OK'))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_accent_fg'))
               .textAlign(TextAlign.Center)
@@ -764,7 +773,7 @@ export struct FilesPage {
                 this.doRename()
               })
           } else if (this.dlg === 'mkdir') {
-            Text(L.t('创建', 'Create'))
+            Text(this.t('创建', 'Create'))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_accent_fg'))
               .textAlign(TextAlign.Center)
@@ -777,7 +786,7 @@ export struct FilesPage {
                 this.doMkdir()
               })
           } else {
-            Text(L.t('知道了', 'Got it'))
+            Text(this.t('知道了', 'Got it'))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_accent_fg'))
               .textAlign(TextAlign.Center)
@@ -814,7 +823,7 @@ export struct FilesPage {
   @Builder BrowseView() {
     Column() {
       Row() {
-        Text(this.connected ? `SFTP · ${this.hostName}` : L.t('SFTP · 未连接', 'SFTP · Not connected'))
+        Text(this.connected ? `SFTP · ${this.hostName}` : this.t('SFTP · 未连接', 'SFTP · Not connected'))
           .fontSize(MT.fsSmall)
           .fontColor($r('app.color.csx_text3'))
           .maxLines(1)
@@ -863,11 +872,11 @@ export struct FilesPage {
 
       if (!this.connected) {
         Column() {
-          Text(L.t('SFTP 未就绪', 'SFTP not ready'))
+          Text(this.t('SFTP 未就绪', 'SFTP not ready'))
             .fontSize(MT.fsTitle)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.csx_text2'))
-          Text(L.t('连接主机后可浏览、上传、下载远程文件', 'Connect a host to browse, upload and download files'))
+          Text(this.t('连接主机后可浏览、上传、下载远程文件', 'Connect a host to browse, upload and download files'))
             .fontSize(MT.fsSmall)
             .fontColor($r('app.color.csx_text3'))
             .margin({ top: 8 })
@@ -906,7 +915,7 @@ export struct FilesPage {
         .width('100%')
 
         Row() {
-          Text(this.selectMode ? L.t('取消', 'Cancel') : L.t('选择', 'Select'))
+          Text(this.selectMode ? this.t('取消', 'Cancel') : this.t('选择', 'Select'))
             .fontSize(MT.fsSmall)
             .fontColor($r('app.color.csx_text2'))
             .padding({ left: 10, right: 10, top: 6, bottom: 6 })
@@ -915,12 +924,12 @@ export struct FilesPage {
             .onClick(() => {
               this.setSelect(!this.selectMode)
             })
-          Text(this.selectMode ? L.t(`已选 ${this.selected.length} 项`, `${this.selected.length} selected`) : '')
+          Text(this.selectMode ? this.t(`已选 ${this.selected.length} 项`, `${this.selected.length} selected`) : '')
             .fontSize(MT.fsSmall)
             .fontColor($r('app.color.csx_text3'))
             .layoutWeight(1)
             .textAlign(TextAlign.End)
-          Text(L.t('刷新', 'Refresh'))
+          Text(this.t('刷新', 'Refresh'))
             .fontSize(MT.fsSmall)
             .fontColor($r('app.color.csx_blue'))
             .padding({ left: 10, right: 10, top: 6, bottom: 6 })
@@ -935,7 +944,7 @@ export struct FilesPage {
         Column() {
           if (this.loading && this.entries.length === 0) {
             Column() {
-              Text(L.t('加载中…', 'Loading…'))
+              Text(this.t('加载中…', 'Loading…'))
                   .fontSize(MT.fsBody)
                   .fontColor($r('app.color.csx_text3'))
               }
@@ -943,7 +952,7 @@ export struct FilesPage {
               .padding({ top: 60 })
             } else if (this.errMsg.length > 0) {
               Column() {
-                Text(L.t('读取目录失败', 'Cannot read directory'))
+                Text(this.t('读取目录失败', 'Cannot read directory'))
                   .fontSize(MT.fsBody)
                   .fontColor($r('app.color.csx_danger'))
                 Text(this.errMsg)
@@ -957,10 +966,10 @@ export struct FilesPage {
               .padding({ top: 60, left: MT.pagePadding, right: MT.pagePadding })
             } else if (this.entries.length === 0) {
               Column() {
-                Text(L.t('暂无文件', 'No files'))
+                Text(this.t('暂无文件', 'No files'))
                   .fontSize(MT.fsBody)
                   .fontColor($r('app.color.csx_text2'))
-                Text(L.t('目录为空', 'Empty directory'))
+                Text(this.t('目录为空', 'Empty directory'))
                   .fontSize(MT.fsSmall)
                   .fontColor($r('app.color.csx_text3'))
                   .margin({ top: 8 })
@@ -1055,7 +1064,7 @@ export struct FilesPage {
 
         if (this.selectMode) {
           Row() {
-            Text(L.t(`下载 ${this.selected.length} 项`, `Download ${this.selected.length} items`))
+            Text(this.t(`下载 ${this.selected.length} 项`, `Download ${this.selected.length} items`))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_accent_fg'))
               .textAlign(TextAlign.Center)
@@ -1066,7 +1075,7 @@ export struct FilesPage {
               .onClick(() => {
                 this.downloadSelected()
               })
-            Text(L.t('删除', 'Delete'))
+            Text(this.t('删除', 'Delete'))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_danger'))
               .textAlign(TextAlign.Center)
@@ -1100,23 +1109,23 @@ export struct FilesPage {
           this.view = 'browse'
         })
         Column() {
-          Text(L.t('传输', 'Transfers'))
+          Text(this.t('传输', 'Transfers'))
             .fontSize(MT.fsTitle)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.csx_text'))
-          Text(this.transfers.length > 0 ? L.t(`${this.transfers.length} 个任务`, `${this.transfers.length} tasks`) : L.t('暂无任务', 'No tasks'))
+          Text(this.transfers.length > 0 ? this.t(`${this.transfers.length} 个任务`, `${this.transfers.length} tasks`) : this.t('暂无任务', 'No tasks'))
             .fontSize(MT.fsCaption)
             .fontColor($r('app.color.csx_text3'))
             .margin({ top: 3 })
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        Text(L.t('清空', 'Clear'))
+        Text(this.t('清空', 'Clear'))
           .fontSize(MT.fsSmall)
           .fontColor($r('app.color.csx_text2'))
           .onClick(() => {
             this.clearDone()
-            promptAction.showToast({ message: L.t('已清空已完成', 'Completed tasks cleared') })
+            promptAction.showToast({ message: this.t('已清空已完成', 'Completed tasks cleared') })
           })
       }
       .width('100%')
@@ -1125,11 +1134,11 @@ export struct FilesPage {
 
       if (this.transfers.length === 0) {
         Column() {
-          Text(L.t('没有传输任务', 'No transfers'))
+          Text(this.t('没有传输任务', 'No transfers'))
             .fontSize(MT.fsTitle)
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.csx_text2'))
-          Text(L.t('上传或下载后会在这里显示进度', 'Progress appears here after upload or download'))
+          Text(this.t('上传或下载后会在这里显示进度', 'Progress appears here after upload or download'))
             .fontSize(MT.fsSmall)
             .fontColor($r('app.color.csx_text3'))
             .margin({ top: 8 })

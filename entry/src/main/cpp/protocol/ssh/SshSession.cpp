@@ -284,6 +284,11 @@ int SshSession::waitSocket() {
         OH_LOG_ERROR(LOG_APP, "waitSocket: select error %{public}d (%{public}s)", select_errno, strerror(select_errno));
     }
 
+    if (rc > 0 && readfd != NULL) {
+        lastRxMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
     return rc;
 }
 
@@ -1448,11 +1453,13 @@ void SshSession::keepAliveThread() {
     OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] keepAliveThread 开始执行", threadId, sessionId);
     
     // 确保间隔大于0
-    if (keepAliveInterval <= 0) {
-        OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] keepAliveInterval 无效 (%d)，线程退出", 
-                    threadId, sessionId, keepAliveInterval);
-        return;
+    const bool idleCheckEnabled = keepAliveInterval > 0;
+    int idleLimitSec = keepAliveInterval * 4;
+    if (idleLimitSec < 120) {
+        idleLimitSec = 120;
     }
+    lastRxMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
 
     // 记录开始时间
     auto startTime = std::chrono::steady_clock::now();
@@ -1470,10 +1477,37 @@ void SshSession::keepAliveThread() {
                        threadId, sessionId);
             break;
         }
-        
+
+        if (idleCheckEnabled) {
+            const long long last = lastRxMs.load();
+            const long long idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count() - last;
+            if (last > 0 && idleMs > (long long)idleLimitSec * 1000) {
+                OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] 空闲 %{public}d 秒超过阈值 %{public}d 秒，判定连接失效", 
+                             threadId, sessionId, (int)(idleMs / 1000), idleLimitSec);
+                {
+                    std::lock_guard<std::mutex> lock(statusMutex);
+                    status = SessionStatus::DISCONNECTED;
+                }
+                pendingCallData("idle timeout", true);
+                libssh2_socket_t deadSock = LIBSSH2_INVALID_SOCKET;
+                {
+                    std::lock_guard<std::recursive_mutex> lock(libssh2Mutex);
+                    if (sock && *sock != LIBSSH2_INVALID_SOCKET) {
+                        deadSock = *sock;
+                    }
+                }
+                if (deadSock != LIBSSH2_INVALID_SOCKET) {
+                    shutdown(deadSock, SHUT_RDWR);
+                    OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] 已关闭失效连接的 socket", threadId, sessionId);
+                }
+                break;
+            }
+        }
+
         // 定期发送 keepalive 消息
-        int next_time = keepAliveInterval; // 默认值
-        {
+        int next_time = keepAliveInterval > 0 ? keepAliveInterval : 30;
+        if (keepAliveInterval > 0) {
             std::lock_guard<std::recursive_mutex> lock(libssh2Mutex);
             if (session) {
                 int rc = libssh2_keepalive_send(session.get(), &next_time);
@@ -1515,7 +1549,7 @@ void SshSession::keepAliveThread() {
             sleepTime = 1; // 至少休眠1秒
             OH_LOG_WARN(LOG_APP, "[Thread %{public}ld][Session %{public}d] 无效的next_time值(%{public}d)，使用最小值1秒", 
                        threadId, sessionId, next_time);
-        } else if (sleepTime > keepAliveInterval) {
+        } else if (keepAliveInterval > 0 && sleepTime > keepAliveInterval) {
             sleepTime = keepAliveInterval; // 不超过配置的最大间隔
             OH_LOG_WARN(LOG_APP, "[Thread %{public}ld][Session %{public}d] next_time值(%{public}d)超过keepAliveInterval，使用%{public}d秒", 
                        threadId, sessionId, next_time, keepAliveInterval);
@@ -1956,6 +1990,20 @@ std::vector<std::tuple<int, std::string, int, bool, bool>> SshSession::listActiv
         return {};
     }
     return portForward->listActivePortForwardings();
+}
+
+int SshSession::getForwardFailures() {
+    if (!portForward) {
+        return 0;
+    }
+    return portForward->forwardFailures();
+}
+
+int SshSession::getForwardAccepts() {
+    if (!portForward) {
+        return 0;
+    }
+    return portForward->forwardAccepts();
 }
 
 // --- 恢复 setLogging 实现 ---

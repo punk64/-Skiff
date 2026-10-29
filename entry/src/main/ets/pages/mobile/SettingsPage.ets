@@ -5,10 +5,11 @@ import { saveUiPrefs } from '../../common/Store'
 import { HostItem } from '../../common/Models'
 import { ManagedKey, listKeys, createKey, removeKey } from '../../common/KeyStore'
 import { SshService, LogFileInfo } from '../../common/SshService'
+import { AppLog, AppLogFile } from '../../common/AppLog'
 import { probeTcp } from '../../common/PortProbe'
 import { MT } from '../../common/MobileTheme'
 import { Arrow } from '../../common/Arrow'
-import { L } from '../../common/I18n'
+import { L, Bi } from '../../common/I18n'
 
 export interface KnownHostItem {
   id: number
@@ -50,6 +51,8 @@ export struct SettingsPage {
   @StorageLink('sk_logOn') logOn: boolean = false
   @StorageLink('sk_logType') logType: number = 2
   @State logs: LogFileInfo[] = []
+  @State appLogs: AppLogFile[] = []
+  @State logTab: number = 0
   @State logOpen: string = ''
   @State logTitle: string = ''
   @State logText: string = ''
@@ -64,6 +67,15 @@ export struct SettingsPage {
   @State genPass: string = ''
   @State genBusy: boolean = false
   @State known: KnownHostItem[] = []
+  @StorageLink('csx_lang') csxLang: string = 'zh'
+
+  t(zh: string, en: string): string {
+    return this.csxLang === 'en' ? en : zh
+  }
+
+  pick(v: Bi): string {
+    return this.csxLang === 'en' ? v.en : v.zh
+  }
 
   aboutToAppear(): void {
     this.refreshKeys()
@@ -90,10 +102,10 @@ export struct SettingsPage {
       this.refreshKeys()
       this.genOpen = false
       this.genPass = ''
-      promptAction.showToast({ message: L.t(`已生成 ${k.name}`, `Generated ${k.name}`) })
+      promptAction.showToast({ message: this.t(`已生成 ${k.name}`, `Generated ${k.name}`) })
     } catch (e) {
       const msg: string = e instanceof Error ? e.message : String(e)
-      promptAction.showToast({ message: L.t(`生成失败：${msg}`, `Failed: ${msg}`) })
+      promptAction.showToast({ message: this.t(`生成失败：${msg}`, `Failed: ${msg}`) })
     } finally {
       this.genBusy = false
     }
@@ -102,7 +114,7 @@ export struct SettingsPage {
   dropKey(k: ManagedKey): void {
     removeKey(k)
     this.refreshKeys()
-    promptAction.showToast({ message: L.t('已删除密钥', 'Key deleted') })
+    promptAction.showToast({ message: this.t('已删除密钥', 'Key deleted') })
   }
 
   knownList(): KnownHostItem[] {
@@ -131,14 +143,14 @@ export struct SettingsPage {
       return h
     })
     this.onHostsChanged()
-    promptAction.showToast({ message: L.t('已移除，下次连接将重新信任', 'Removed; it will be trusted again next time') })
+    promptAction.showToast({ message: this.t('已移除，下次连接将重新信任', 'Removed; it will be trusted again next time') })
   }
 
   persistUi(): void {
     const ctx = getContext(this) as common.UIAbilityContext
     saveUiPrefs(ctx, {
       themeDark: this.themeDark,
-      lang: L.lang,
+      lang: this.csxLang,
       termFont: this.fontScale,
       keepAlive: this.keepAlive,
       bgTunnel: this.bgTunnel,
@@ -173,11 +185,11 @@ export struct SettingsPage {
   }
 
   setLang(lang: string): void {
-    if (L.lang === lang) {
+    if (this.csxLang === lang) {
       return
     }
+    this.csxLang = lang
     L.lang = lang
-    AppStorage.setOrCreate('csx_lang', lang)
     this.persistUi()
   }
 
@@ -218,6 +230,11 @@ export struct SettingsPage {
     } catch (e) {
       this.logs = []
     }
+    try {
+      this.appLogs = AppLog.files()
+    } catch (e) {
+      this.appLogs = []
+    }
   }
 
   logBytes(): number {
@@ -228,12 +245,88 @@ export struct SettingsPage {
     return b
   }
 
-  logSummary(): string {
+  logSummary(): Bi {
     if (this.logs.length === 0) {
-      return L.t('暂无日志', 'No logs')
+      return L.b('暂无日志', 'No logs')
     }
-    return L.t(`${this.logs.length} 个文件 · ${sizeText(this.logBytes())}`,
+    return L.b(`${this.logs.length} 个文件 · ${sizeText(this.logBytes())}`,
       `${this.logs.length} files · ${sizeText(this.logBytes())}`)
+  }
+
+  appLogBytes(): number {
+    let b: number = 0
+    for (let i = 0; i < this.appLogs.length; i++) {
+      b += this.appLogs[i].size
+    }
+    return b
+  }
+
+  appLogSummary(): Bi {
+    if (this.appLogs.length === 0) {
+      return L.b('暂无日志', 'No logs')
+    }
+    return L.b(`${this.appLogs.length} 个文件 · ${sizeText(this.appLogBytes())}`,
+      `${this.appLogs.length} files · ${sizeText(this.appLogBytes())}`)
+  }
+
+  clearAppLogs(): void {
+    const n: number = AppLog.clear()
+    this.refreshLogs()
+    if (n === 0) {
+      promptAction.showToast({ message: this.t('没有可清除的日志', 'Nothing to clear') })
+      return
+    }
+    AppLog.i('app', `application logs cleared: ${n}`)
+    promptAction.showToast({ message: this.t(`已清除 ${n} 个日志文件`, `Cleared ${n} log files`) })
+  }
+
+  openAppLog(f: AppLogFile): void {
+    const cap: number = 131072
+    this.logTitle = f.name
+    this.logText = AppLog.read(f.path, cap)
+    if (f.size > cap) {
+      const hint: string = this.t(`（仅显示末尾 ${sizeText(cap)}，共 ${sizeText(f.size)}）\n`,
+        `(last ${sizeText(cap)} of ${sizeText(f.size)})\n`)
+      this.logText = hint + this.logText
+    }
+    this.logOpen = f.path
+  }
+
+  async exportAppLogs(): Promise<void> {
+    if (this.appLogs.length === 0) {
+      promptAction.showToast({ message: this.t('没有可导出的日志', 'No logs to export') })
+      return
+    }
+    let uri: string = ''
+    try {
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext
+      const dp: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx)
+      const opt: picker.DocumentSaveOptions = new picker.DocumentSaveOptions()
+      opt.newFileNames = ['skiff-app-logs-' + Date.now().toString() + '.txt']
+      const uris: string[] = await dp.save(opt)
+      if (uris.length === 0) {
+        return
+      }
+      uri = uris[0]
+    } catch (e) {
+      promptAction.showToast({ message: this.t('打开保存对话框失败', 'Cannot open the save dialog') })
+      return
+    }
+    let body: string = ''
+    const cap: number = 1048576
+    for (let i = 0; i < this.appLogs.length && body.length < cap; i++) {
+      const f: AppLogFile = this.appLogs[i]
+      body += '\n===== ' + f.name + ' (' + clockText(f.mtime) + ') =====\n'
+      body += AppLog.read(f.path, 524288)
+    }
+    try {
+      const f = fs.openSync(uri, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC)
+      fs.writeSync(f.fd, body)
+      fs.closeSync(f.fd)
+      promptAction.showToast({ message: this.t('已导出全部日志', 'All logs exported') })
+    } catch (e) {
+      promptAction.showToast({ message: this.t('写入失败，请换个位置', 'Write failed, try another location') })
+    }
   }
 
   clearLogs(): void {
@@ -245,7 +338,7 @@ export struct SettingsPage {
       n = 0
     }
     if (n === 0) {
-      promptAction.showToast({ message: L.t('没有可清除的日志', 'Nothing to clear') })
+      promptAction.showToast({ message: this.t('没有可清除的日志', 'Nothing to clear') })
       this.refreshLogs()
       return
     }
@@ -256,7 +349,7 @@ export struct SettingsPage {
         this.refreshLogs()
       }, 400)
     }
-    promptAction.showToast({ message: L.t(`已清除 ${n} 个日志文件`, `Cleared ${n} log files`) })
+    promptAction.showToast({ message: this.t(`已清除 ${n} 个日志文件`, `Cleared ${n} log files`) })
   }
 
   openLog(f: LogFileInfo): void {
@@ -273,7 +366,7 @@ export struct SettingsPage {
 
   async exportLogs(): Promise<void> {
     if (this.logs.length === 0) {
-      promptAction.showToast({ message: L.t('没有可导出的日志', 'No logs to export') })
+      promptAction.showToast({ message: this.t('没有可导出的日志', 'No logs to export') })
       return
     }
     let uri: string = ''
@@ -288,7 +381,7 @@ export struct SettingsPage {
       }
       uri = uris[0]
     } catch (e) {
-      promptAction.showToast({ message: L.t('打开保存对话框失败', 'Cannot open the save dialog') })
+      promptAction.showToast({ message: this.t('打开保存对话框失败', 'Cannot open the save dialog') })
       return
     }
     let body: string = ''
@@ -302,9 +395,9 @@ export struct SettingsPage {
       const f = fs.openSync(uri, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC)
       fs.writeSync(f.fd, body)
       fs.closeSync(f.fd)
-      promptAction.showToast({ message: L.t('已导出全部日志', 'All logs exported') })
+      promptAction.showToast({ message: this.t('已导出全部日志', 'All logs exported') })
     } catch (e) {
-      promptAction.showToast({ message: L.t('写入失败，请换个位置', 'Write failed, try another location') })
+      promptAction.showToast({ message: this.t('写入失败，请换个位置', 'Write failed, try another location') })
     }
   }
 
@@ -312,11 +405,11 @@ export struct SettingsPage {
     const host: string = this.proxyHost.trim()
     const port: number = Number(this.proxyPort)
     if (host.length === 0) {
-      promptAction.showToast({ message: L.t('请填写代理地址', 'Enter the proxy address') })
+      promptAction.showToast({ message: this.t('请填写代理地址', 'Enter the proxy address') })
       return
     }
     if (!/^\d+$/.test(this.proxyPort) || port < 1 || port > 65535) {
-      promptAction.showToast({ message: L.t('端口需为 1-65535 的数字', 'Port must be 1-65535') })
+      promptAction.showToast({ message: this.t('端口需为 1-65535 的数字', 'Port must be 1-65535') })
       return
     }
     if (this.testing) {
@@ -327,8 +420,8 @@ export struct SettingsPage {
       this.testing = false
       promptAction.showToast({
         message: ok
-          ? L.t(`代理 ${host}:${port} 可达`, `Proxy ${host}:${port} is reachable`)
-          : L.t(`无法连接 ${host}:${port}，请检查地址与端口`, `Cannot reach ${host}:${port}`),
+          ? this.t(`代理 ${host}:${port} 可达`, `Proxy ${host}:${port} is reachable`)
+          : this.t(`无法连接 ${host}:${port}，请检查地址与端口`, `Cannot reach ${host}:${port}`),
         duration: 3500
       })
     })
@@ -364,7 +457,7 @@ export struct SettingsPage {
     .height('100%')
   }
 
-  @Builder SubHeader(title: string) {
+  @Builder SubHeader(title: Bi) {
     Row() {
       Stack() {
         Arrow({ dir: 'left', color: $r('app.color.csx_blue') , len: 20 })
@@ -374,7 +467,7 @@ export struct SettingsPage {
       .onClick(() => {
         this.sub = ''
       })
-      Text(title)
+      Text(this.pick(title))
         .fontSize(MT.fsTitle)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.csx_text'))
@@ -391,11 +484,11 @@ export struct SettingsPage {
   @Builder MainList() {
     Column() {
       Column() {
-        Text(L.t('设置', 'Settings'))
+        Text(this.t('设置', 'Settings'))
           .fontSize(MT.fsDisplay)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.csx_text'))
-        Text(L.t('外观、安全与会话行为', 'Appearance, security and sessions'))
+        Text(this.t('外观、安全与会话行为', 'Appearance, security and sessions'))
           .fontSize(MT.fsSmall)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 6 })
@@ -406,14 +499,14 @@ export struct SettingsPage {
 
       Scroll() {
         Column() {
-          this.GroupTitle(L.t('外观', 'Appearance'))
+          this.GroupTitle(L.b('外观', 'Appearance'))
           Column() {
             this.ThemeRow()
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
             this.LangRow()
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
             Row() {
-              Text(L.t('终端字号', 'Terminal font size'))
+              Text(this.t('终端字号', 'Terminal font size'))
                 .fontSize(MT.fsBody)
                 .fontColor($r('app.color.csx_text'))
                 .width(88)
@@ -441,39 +534,39 @@ export struct SettingsPage {
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          this.GroupTitle(L.t('连接行为', 'Connection'))
+          this.GroupTitle(L.b('连接行为', 'Connection'))
           Column() {
-            this.SwitchRow(L.t('保活', 'Keep-alive'), L.t('定时发送探测包防止连接被回收', 'Send probes periodically to keep the connection alive'), this.keepAlive, 'keepAlive')
+            this.SwitchRow(L.b('保活', 'Keep-alive'), L.b('定时发送探测包防止连接被回收', 'Send probes periodically to keep the connection alive'), this.keepAlive, 'keepAlive')
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
-            this.SwitchRow(L.t('后台保持隧道', 'Keep tunnels in background'), L.t('切到后台后不主动断开转发', 'Do not drop forwarding when app goes to background'), this.bgTunnel, 'bgTunnel')
+            this.SwitchRow(L.b('后台保持隧道', 'Keep tunnels in background'), L.b('切到后台后不主动断开转发', 'Do not drop forwarding when app goes to background'), this.bgTunnel, 'bgTunnel')
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
-            this.SwitchRow(L.t('断线自动重连', 'Auto reconnect'), L.t('网络抖动后自动恢复会话', 'Restore the session after network jitter'), this.autoReconnect, 'autoReconnect')
+            this.SwitchRow(L.b('断线自动重连', 'Auto reconnect'), L.b('网络抖动后自动恢复会话', 'Restore the session after network jitter'), this.autoReconnect, 'autoReconnect')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          this.GroupTitle(L.t('安全与网络', 'Security & network'))
+          this.GroupTitle(L.b('安全与网络', 'Security & network'))
           Column() {
-            this.NavRow(L.t('密钥管理', 'Keys'), L.t(`${this.keys.length} 个密钥`, `${this.keys.length} keys`), 'keys')
+            this.NavRow(L.b('密钥管理', 'Keys'), L.b(`${this.keys.length} 个密钥`, `${this.keys.length} keys`), 'keys')
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
-            this.NavRow(L.t('主机指纹', 'Known hosts'), L.t(`${this.knownList().length} 条记录`, `${this.knownList().length} records`), 'known')
+            this.NavRow(L.b('主机指纹', 'Known hosts'), L.b(`${this.knownList().length} 条记录`, `${this.knownList().length} records`), 'known')
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
-            this.NavRow(L.t('代理', 'Proxy'), this.proxyOn ? `${this.proxyType.toUpperCase()} ${this.proxyHost}:${this.proxyPort}` : L.t('未启用', 'Disabled'), 'proxy')
+            this.NavRow(L.b('代理', 'Proxy'), this.proxyOn ? L.s(`${this.proxyType.toUpperCase()} ${this.proxyHost}:${this.proxyPort}`) : L.b('未启用', 'Disabled'), 'proxy')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          this.GroupTitle(L.t('诊断', 'Diagnostics'))
+          this.GroupTitle(L.b('诊断', 'Diagnostics'))
           Column() {
-            this.NavRow(L.t('会话日志', 'Session log'), this.logOn ? L.t('已开启', 'On') : L.t('已关闭', 'Off'), 'logs')
+            this.NavRow(L.b('会话日志', 'Session log'), this.logOn ? L.b('已开启', 'On') : L.b('已关闭', 'Off'), 'logs')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          Text(L.t('轻舟 Skiff · 鸿蒙原生 SSH 客户端\n内核 libssh2 1.11.1 · arm64-v8a + x86_64', 'Skiff · Native SSH client for HarmonyOS\nlibssh2 1.11.1 · arm64-v8a + x86_64'))
+          Text(this.t('轻舟 Skiff · 鸿蒙原生 SSH 客户端\n内核 libssh2 1.11.1 · arm64-v8a + x86_64', 'Skiff · Native SSH client for HarmonyOS\nlibssh2 1.11.1 · arm64-v8a + x86_64'))
             .fontSize(MT.fsCaption)
             .fontColor($r('app.color.csx_text3'))
             .textAlign(TextAlign.Center)
@@ -492,8 +585,8 @@ export struct SettingsPage {
     .height('100%')
   }
 
-  @Builder GroupTitle(t: string) {
-    Text(t)
+  @Builder GroupTitle(title: Bi) {
+    Text(this.pick(title))
       .fontSize(MT.fsCaption)
       .fontWeight(FontWeight.Medium)
       .fontColor($r('app.color.csx_text3'))
@@ -504,10 +597,10 @@ export struct SettingsPage {
   @Builder ThemeRow() {
     Row() {
       Column() {
-        Text(L.t('颜色主题', 'Theme'))
+        Text(this.t('颜色主题', 'Theme'))
           .fontSize(MT.fsBody)
           .fontColor($r('app.color.csx_text'))
-        Text(this.themeDark ? L.t('深色 · 夜间与低光环境', 'Dark · Night and low light') : L.t('浅色 · 白天与强光环境', 'Light · Day and bright light'))
+        Text(this.themeDark ? this.t('深色 · 夜间与低光环境', 'Dark · Night and low light') : this.t('浅色 · 白天与强光环境', 'Light · Day and bright light'))
           .fontSize(MT.fsCaption)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 4 })
@@ -516,7 +609,7 @@ export struct SettingsPage {
       .layoutWeight(1)
 
       Row() {
-        Text(L.t('深色', 'Dark'))
+        Text(this.t('深色', 'Dark'))
           .fontSize(MT.fsCaption)
           .fontWeight(this.themeDark ? FontWeight.Medium : FontWeight.Normal)
           .fontColor(this.themeDark ? $r('app.color.csx_accent_fg') : $r('app.color.csx_text2'))
@@ -528,7 +621,7 @@ export struct SettingsPage {
           .onClick(() => {
             this.setTheme(true)
           })
-        Text(L.t('浅色', 'Light'))
+        Text(this.t('浅色', 'Light'))
           .fontSize(MT.fsCaption)
           .fontWeight(this.themeDark ? FontWeight.Normal : FontWeight.Medium)
           .fontColor(this.themeDark ? $r('app.color.csx_text2') : $r('app.color.csx_accent_fg'))
@@ -553,31 +646,31 @@ export struct SettingsPage {
 
   @Builder LangRow() {
     Row() {
-      Text(L.t('界面语言', 'Language'))
+      Text(this.t('界面语言', 'Language'))
         .fontSize(MT.fsBody)
         .fontColor($r('app.color.csx_text'))
         .layoutWeight(1)
       Row() {
         Text('简体中文')
           .fontSize(MT.fsCaption)
-          .fontWeight(L.lang === 'zh' ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(L.lang === 'zh' ? $r('app.color.csx_accent_fg') : $r('app.color.csx_text2'))
+          .fontWeight(this.csxLang === 'zh' ? FontWeight.Medium : FontWeight.Normal)
+          .fontColor(this.csxLang === 'zh' ? $r('app.color.csx_accent_fg') : $r('app.color.csx_text2'))
           .height(28)
           .padding({ left: 11, right: 11 })
           .borderRadius(MT.radiusCtrl)
-          .backgroundColor(L.lang === 'zh' ? $r('app.color.csx_accent') : MT.transparent)
+          .backgroundColor(this.csxLang === 'zh' ? $r('app.color.csx_accent') : MT.transparent)
           .textAlign(TextAlign.Center)
           .onClick(() => {
             this.setLang('zh')
           })
         Text('English')
           .fontSize(MT.fsCaption)
-          .fontWeight(L.lang === 'en' ? FontWeight.Medium : FontWeight.Normal)
-          .fontColor(L.lang === 'en' ? $r('app.color.csx_accent_fg') : $r('app.color.csx_text2'))
+          .fontWeight(this.csxLang === 'en' ? FontWeight.Medium : FontWeight.Normal)
+          .fontColor(this.csxLang === 'en' ? $r('app.color.csx_accent_fg') : $r('app.color.csx_text2'))
           .height(28)
           .padding({ left: 11, right: 11 })
           .borderRadius(MT.radiusCtrl)
-          .backgroundColor(L.lang === 'en' ? $r('app.color.csx_accent') : MT.transparent)
+          .backgroundColor(this.csxLang === 'en' ? $r('app.color.csx_accent') : MT.transparent)
           .textAlign(TextAlign.Center)
           .onClick(() => {
             this.setLang('en')
@@ -593,13 +686,13 @@ export struct SettingsPage {
     .alignItems(VerticalAlign.Center)
   }
 
-  @Builder SwitchRow(title: string, desc: string, on: boolean, key: string) {
+  @Builder SwitchRow(title: Bi, desc: Bi, on: boolean, key: string) {
     Row() {
       Column() {
-        Text(title)
+        Text(this.pick(title))
           .fontSize(MT.fsBody)
           .fontColor($r('app.color.csx_text'))
-        Text(desc)
+        Text(this.pick(desc))
           .fontSize(MT.fsCaption)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 4 })
@@ -619,13 +712,13 @@ export struct SettingsPage {
     .alignItems(VerticalAlign.Center)
   }
 
-  @Builder NavRow(title: string, value: string, key: string) {
+  @Builder NavRow(title: Bi, value: Bi, key: string) {
     Row() {
-      Text(title)
+      Text(this.pick(title))
         .fontSize(MT.fsBody)
         .fontColor($r('app.color.csx_text'))
         .layoutWeight(1)
-      Text(value)
+      Text(this.pick(value))
         .fontSize(MT.fsSmall)
         .fontColor($r('app.color.csx_text3'))
         .maxLines(1)
@@ -664,7 +757,7 @@ export struct SettingsPage {
 
   @Builder KeysPage() {
     Column() {
-      this.SubHeader(L.t('密钥管理', 'Keys'))
+      this.SubHeader(L.b('密钥管理', 'Keys'))
       Scroll() {
         Column() {
           ForEach(this.keys, (k: ManagedKey) => {
@@ -682,7 +775,7 @@ export struct SettingsPage {
                 Text(k.name)
                   .fontSize(MT.fsBody)
                   .fontColor($r('app.color.csx_text'))
-                Text(L.t(`${k.alg} ${k.bits} 位${k.encrypted ? ' · 带口令' : ''}`, `${k.alg} ${k.bits} bit${k.encrypted ? ' · passphrase' : ''}`))
+                Text(this.t(`${k.alg} ${k.bits} 位${k.encrypted ? ' · 带口令' : ''}`, `${k.alg} ${k.bits} bit${k.encrypted ? ' · passphrase' : ''}`))
                   .fontSize(MT.fsCaption)
                   .fontColor($r('app.color.csx_text3'))
                   .margin({ top: 4 })
@@ -691,7 +784,7 @@ export struct SettingsPage {
               .layoutWeight(1)
               .margin({ left: 12 })
 
-              Text(L.t('删除', 'Delete'))
+              Text(this.t('删除', 'Delete'))
                 .fontSize(MT.fsCaption)
                 .fontColor($r('app.color.csx_danger'))
                 .padding({ left: 10, right: 10, top: 6, bottom: 6 })
@@ -718,7 +811,7 @@ export struct SettingsPage {
               }
               .width('100%')
 
-              TextInput({ placeholder: L.t('私钥口令，可留空', 'Passphrase, optional'), text: this.genPass })
+              TextInput({ placeholder: this.t('私钥口令，可留空', 'Passphrase, optional'), text: this.genPass })
                 .type(InputType.Password)
                 .placeholderColor($r('app.color.csx_text3'))
                 .fontColor($r('app.color.csx_text'))
@@ -731,7 +824,7 @@ export struct SettingsPage {
                 })
 
               Row() {
-                Text(L.t('取消', 'Cancel'))
+                Text(this.t('取消', 'Cancel'))
                   .fontSize(MT.fsBody)
                   .fontColor($r('app.color.csx_text2'))
                   .textAlign(TextAlign.Center)
@@ -742,7 +835,7 @@ export struct SettingsPage {
                   .onClick(() => {
                     this.genOpen = false
                   })
-                Text(this.genBusy ? L.t('生成中…', 'Generating…') : L.t('生成', 'Generate'))
+                Text(this.genBusy ? this.t('生成中…', 'Generating…') : this.t('生成', 'Generate'))
                   .fontSize(MT.fsBody)
                   .fontWeight(FontWeight.Medium)
                   .fontColor($r('app.color.csx_accent_fg'))
@@ -765,7 +858,7 @@ export struct SettingsPage {
             .borderRadius(MT.radiusCard)
             .backgroundColor($r('app.color.csx_surface'))
           } else {
-            Text(L.t('+ 生成新密钥', '+ Generate new key'))
+            Text(this.t('+ 生成新密钥', '+ Generate new key'))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_accent'))
               .textAlign(TextAlign.Center)
@@ -791,10 +884,10 @@ export struct SettingsPage {
 
   @Builder KnownPage() {
     Column() {
-      this.SubHeader(L.t('主机指纹', 'Known hosts'))
+      this.SubHeader(L.b('主机指纹', 'Known hosts'))
       Scroll() {
         Column() {
-          Text(L.t('首次连接新主机会自动记录对方指纹并保存在本机，之后每次连接都会比对。指纹发生变化时会拒绝连接并提示，说明对方密钥已更换，可能被中间人劫持。', 'The fingerprint of a new host is recorded on first connect and compared on every later connect. If it changes, the connection is rejected — the remote key changed and this may indicate a man-in-the-middle attack.'))
+          Text(this.t('首次连接新主机会自动记录对方指纹并保存在本机，之后每次连接都会比对。指纹发生变化时会拒绝连接并提示，说明对方密钥已更换，可能被中间人劫持。', 'The fingerprint of a new host is recorded on first connect and compared on every later connect. If it changes, the connection is rejected — the remote key changed and this may indicate a man-in-the-middle attack.'))
             .fontSize(MT.fsCaption)
             .fontColor($r('app.color.csx_text3'))
             .lineHeight(18)
@@ -820,7 +913,7 @@ export struct SettingsPage {
                 .width('100%')
                 .margin({ top: 6 })
               Row() {
-                Text(L.t('移除', 'Remove'))
+                Text(this.t('移除', 'Remove'))
                   .fontSize(MT.fsCaption)
                   .fontColor($r('app.color.csx_danger'))
                   .padding({ left: 10, right: 10, top: 6, bottom: 6 })
@@ -854,38 +947,38 @@ export struct SettingsPage {
 
   @Builder ProxyPage() {
     Column() {
-      this.SubHeader(L.t('代理', 'Proxy'))
+      this.SubHeader(L.b('代理', 'Proxy'))
       Scroll() {
         Column() {
-          this.GroupTitle(L.t('启用', 'Enable'))
+          this.GroupTitle(L.b('启用', 'Enable'))
           Column() {
-            this.SwitchRow(L.t('通过代理连接', 'Connect via proxy'), L.t('先经代理建立 TCP，再在隧道内握手 SSH', 'Establish TCP through the proxy, then handshake SSH inside the tunnel'), this.proxyOn, 'proxyOn')
+            this.SwitchRow(L.b('通过代理连接', 'Connect via proxy'), L.b('先经代理建立 TCP，再在隧道内握手 SSH', 'Establish TCP through the proxy, then handshake SSH inside the tunnel'), this.proxyOn, 'proxyOn')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          this.GroupTitle(L.t('类型', 'Type'))
+          this.GroupTitle(L.b('类型', 'Type'))
           Row() {
-            this.ProxyChip('socks5', 'SOCKS5')
-            this.ProxyChip('http', 'HTTP CONNECT')
+            this.ProxyChip('socks5', L.s('SOCKS5'))
+            this.ProxyChip('http', L.s('HTTP CONNECT'))
           }
           .width('100%')
           .padding(4)
           .borderRadius(MT.radiusCard)
           .backgroundColor($r('app.color.csx_surface2'))
 
-          this.GroupTitle(L.t('服务器', 'Server'))
+          this.GroupTitle(L.b('服务器', 'Server'))
           Column() {
-            this.InputRow(L.t('地址', 'Address'), this.proxyHost, 'proxyHost')
+            this.InputRow(L.b('地址', 'Address'), this.proxyHost, 'proxyHost')
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
-            this.InputRow(L.t('端口', 'Port'), this.proxyPort, 'proxyPort')
+            this.InputRow(L.b('端口', 'Port'), this.proxyPort, 'proxyPort')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          Text(this.testing ? L.t('测试中…', 'Testing…') : L.t('测试连通', 'Test'))
+          Text(this.testing ? this.t('测试中…', 'Testing…') : this.t('测试连通', 'Test'))
             .fontSize(MT.fsBody)
             .fontColor($r('app.color.csx_accent_fg'))
             .textAlign(TextAlign.Center)
@@ -910,8 +1003,8 @@ export struct SettingsPage {
     .height('100%')
   }
 
-  @Builder ProxyChip(tp: string, label: string) {
-    Text(label)
+  @Builder ProxyChip(tp: string, label: Bi) {
+    Text(this.pick(label))
       .fontSize(MT.fsSmall)
       .fontColor(this.proxyType === tp ? $r('app.color.csx_text') : $r('app.color.csx_text2'))
       .textAlign(TextAlign.Center)
@@ -928,28 +1021,29 @@ export struct SettingsPage {
 
   @Builder LogsPage() {
     Column() {
-      this.SubHeader(L.t('会话日志', 'Session log'))
+      this.SubHeader(L.b('日志', 'Logs'))
+      this.LogTabs()
       Scroll() {
         Column() {
-          this.GroupTitle(L.t('记录', 'Record'))
+          this.GroupTitle(L.b('记录', 'Record'))
           Column() {
-            this.SwitchRow(L.t('记录会话日志', 'Record session log'), L.t('把终端输入输出写入沙箱文件', 'Write terminal I/O into sandbox files'), this.logOn, 'logOn')
+            this.SwitchRow(L.b('记录会话日志', 'Record session log'), L.b('把终端输入输出写入沙箱文件', 'Write terminal I/O into sandbox files'), this.logOn, 'logOn')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          this.GroupTitle(L.t('记录范围', 'Scope'))
+          this.GroupTitle(L.b('记录范围', 'Scope'))
           Row() {
-            this.LogChip(2, L.t('全部输出', 'All output'))
-            this.LogChip(1, L.t('仅可打印', 'Printable only'))
+            this.LogChip(2, L.b('全部输出', 'All output'))
+            this.LogChip(1, L.b('仅可打印', 'Printable only'))
           }
           .width('100%')
           .padding(4)
           .borderRadius(MT.radiusCard)
           .backgroundColor($r('app.color.csx_surface2'))
 
-          this.GroupTitle(L.t('保存位置', 'Location'))
+          this.GroupTitle(L.b('保存位置', 'Location'))
           Column() {
             Text(this.logDir())
               .fontSize(MT.fsMicro)
@@ -958,13 +1052,13 @@ export struct SettingsPage {
               .width('100%')
               .padding({ left: 16, right: 16, top: 13, bottom: 13 })
             Divider().color($r('app.color.csx_line')).margin({ left: 16 })
-            this.NavRow(L.t('已记录', 'Recorded'), this.logSummary(), 'none')
+            this.NavRow(L.b('已记录', 'Recorded'), this.logSummary(), 'none')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
           .clip(true)
 
-          Text(L.t('日志固定写在应用沙箱内，一条会话一个文件，最多保留 20 个，超出自动清理最旧的。', 'Logs live inside the app sandbox, one file per session, keeping the newest 20.'))
+          Text(this.t('日志固定写在应用沙箱内，一条会话一个文件，最多保留 20 个，超出自动清理最旧的。', 'Logs live inside the app sandbox, one file per session, keeping the newest 20.'))
             .fontSize(MT.fsCaption)
             .fontColor($r('app.color.csx_text3'))
             .lineHeight(18)
@@ -993,7 +1087,7 @@ export struct SettingsPage {
                   .alignItems(HorizontalAlign.Start)
                   .layoutWeight(1)
 
-                  Text(L.t('查看', 'View'))
+                  Text(this.t('查看', 'View'))
                     .fontSize(MT.fsCaption)
                     .fontColor($r('app.color.csx_blue'))
                     .padding({ left: 12, right: 2, top: 6, bottom: 6 })
@@ -1014,7 +1108,7 @@ export struct SettingsPage {
           }
 
           Row() {
-            Text(L.t('清除日志', 'Clear logs'))
+            Text(this.t('清除日志', 'Clear logs'))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_danger'))
               .textAlign(TextAlign.Center)
@@ -1025,7 +1119,7 @@ export struct SettingsPage {
               .onClick(() => {
                 this.clearLogs()
               })
-            Text(L.t('导出日志', 'Export logs'))
+            Text(this.t('导出日志', 'Export logs'))
               .fontSize(MT.fsBody)
               .fontColor($r('app.color.csx_accent'))
               .textAlign(TextAlign.Center)
@@ -1047,9 +1141,145 @@ export struct SettingsPage {
       .layoutWeight(1)
       .align(Alignment.Top)
       .scrollBar(BarState.Off)
+      .visibility(this.logTab === 0 ? Visibility.Visible : Visibility.None)
+
+      this.AppLogsPage()
     }
     .width('100%')
     .height('100%')
+  }
+
+  @Builder LogTabs() {
+    Row() {
+      Row() {
+        this.LogTabChip(0, L.b('会话日志', 'Session'))
+        this.LogTabChip(1, L.b('应用日志', 'App'))
+      }
+      .padding(3)
+      .borderRadius(14)
+      .backgroundColor($r('app.color.csx_surface'))
+    }
+    .width('100%')
+    .padding({ left: MT.pagePadding, right: MT.pagePadding, bottom: 8 })
+  }
+
+  @Builder LogTabChip(t: number, label: Bi) {
+    Text(this.pick(label))
+      .fontSize(MT.fsSmall)
+      .fontColor(this.logTab === t ? $r('app.color.csx_text') : $r('app.color.csx_text2'))
+      .textAlign(TextAlign.Center)
+      .height(34)
+      .layoutWeight(1)
+      .borderRadius(11)
+      .backgroundColor(this.logTab === t ? $r('app.color.csx_surface2') : MT.transparent)
+      .onClick(() => {
+        this.logTab = t
+        this.refreshLogs()
+      })
+  }
+
+  @Builder AppLogsPage() {
+    Scroll() {
+      Column() {
+        this.GroupTitle(L.b('应用运行日志', 'Application log'))
+        Column() {
+          Text(AppLog.dirOf())
+            .fontSize(MT.fsMicro)
+            .fontColor($r('app.color.csx_text2'))
+            .fontFamily('monospace')
+            .width('100%')
+            .padding({ left: 16, right: 16, top: 13, bottom: 13 })
+          Divider().color($r('app.color.csx_line')).margin({ left: 16 })
+          this.NavRow(L.b('已记录', 'Recorded'), this.appLogSummary(), 'none')
+        }
+        .backgroundColor($r('app.color.csx_surface'))
+        .borderRadius(MT.radiusCard)
+        .clip(true)
+
+        Text(this.t('记录连接、转发、异常与崩溃信息，按天写文件，最多保留 7 天。', 'Records connects, forwards, exceptions and crashes; one file per day, keeping the newest 7.'))
+          .fontSize(MT.fsCaption)
+          .fontColor($r('app.color.csx_text3'))
+          .lineHeight(18)
+          .width('100%')
+          .margin({ top: 10, left: 4 })
+
+        if (this.appLogs.length > 0) {
+          Column() {
+            ForEach(this.appLogs, (f: AppLogFile) => {
+              Row() {
+                Column() {
+                  Text(f.name)
+                    .fontSize(MT.fsSmall)
+                    .fontColor($r('app.color.csx_text'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                    .textAlign(TextAlign.Start)
+                  Text(sizeText(f.size) + ' · ' + clockText(f.mtime))
+                    .fontSize(MT.fsMicro)
+                    .fontColor($r('app.color.csx_text3'))
+                    .margin({ top: 4 })
+                    .width('100%')
+                    .textAlign(TextAlign.Start)
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Text(this.t('查看', 'View'))
+                  .fontSize(MT.fsCaption)
+                  .fontColor($r('app.color.csx_blue'))
+                  .padding({ left: 12, right: 2, top: 6, bottom: 6 })
+                  .onClick(() => {
+                    this.openAppLog(f)
+                  })
+              }
+              .width('100%')
+              .padding({ left: 16, right: 16, top: 11, bottom: 11 })
+              .alignItems(VerticalAlign.Center)
+            }, (f: AppLogFile) => f.path)
+          }
+          .width('100%')
+          .margin({ top: 10 })
+          .borderRadius(MT.radiusCard)
+          .backgroundColor($r('app.color.csx_surface'))
+          .clip(true)
+        }
+
+        Row() {
+          Text(this.t('清除日志', 'Clear logs'))
+            .fontSize(MT.fsBody)
+            .fontColor($r('app.color.csx_danger'))
+            .textAlign(TextAlign.Center)
+            .height(48)
+            .layoutWeight(1)
+            .borderRadius(MT.radiusBtn)
+            .backgroundColor($r('app.color.csx_surface'))
+            .onClick(() => {
+              this.clearAppLogs()
+            })
+          Text(this.t('导出日志', 'Export logs'))
+            .fontSize(MT.fsBody)
+            .fontColor($r('app.color.csx_accent'))
+            .textAlign(TextAlign.Center)
+            .height(48)
+            .layoutWeight(1)
+            .margin({ left: 12 })
+            .borderRadius(MT.radiusBtn)
+            .backgroundColor($r('app.color.csx_accent_soft'))
+            .onClick(() => {
+              this.exportAppLogs()
+            })
+        }
+        .width('100%')
+        .margin({ top: 20 })
+      }
+      .width('100%')
+      .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 6, bottom: MT.tabbarSpace })
+    }
+    .layoutWeight(1)
+    .align(Alignment.Top)
+    .scrollBar(BarState.Off)
+    .visibility(this.logTab === 1 ? Visibility.Visible : Visibility.None)
   }
 
   @Builder LogViewer() {
@@ -1061,7 +1291,7 @@ export struct SettingsPage {
           .layoutWeight(1)
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(L.t('关闭', 'Close'))
+        Text(this.t('关闭', 'Close'))
           .fontSize(MT.fsCaption)
           .fontColor($r('app.color.csx_accent'))
           .padding({ left: 12, right: 4, top: 6, bottom: 6 })
@@ -1074,7 +1304,7 @@ export struct SettingsPage {
       .alignItems(VerticalAlign.Center)
 
       Scroll() {
-        Text(this.logText.length > 0 ? this.logText : L.t('日志文件为空', 'The log file is empty'))
+        Text(this.logText.length > 0 ? this.logText : this.t('日志文件为空', 'The log file is empty'))
           .fontSize(10)
           .fontColor($r('app.color.csx_text2'))
           .fontFamily('monospace')
@@ -1092,8 +1322,8 @@ export struct SettingsPage {
     .backgroundColor($r('app.color.csx_bg'))
   }
 
-  @Builder LogChip(t: number, label: string) {
-    Text(label)
+  @Builder LogChip(t: number, label: Bi) {
+    Text(this.pick(label))
       .fontSize(MT.fsSmall)
       .fontColor(this.logType === t ? $r('app.color.csx_text') : $r('app.color.csx_text2'))
       .textAlign(TextAlign.Center)
@@ -1107,9 +1337,9 @@ export struct SettingsPage {
       })
   }
 
-  @Builder InputRow(label: string, value: string, key: string) {
+  @Builder InputRow(label: Bi, value: string, key: string) {
     Row() {
-      Text(label)
+      Text(this.pick(label))
         .fontSize(MT.fsBody)
         .fontColor($r('app.color.csx_text'))
         .width(76)

@@ -17,6 +17,7 @@ import { warmupProxyDns } from 'libentry.so';
 import { decryptProxyPassword, ensureProxyHuskKey } from '../common/utils/ProxyCredentialUtil';
 import { ProxyType } from '../common/types/dataType';
 import { loadUiPrefsSync, UiPrefs } from '../common/Store';
+import { AppLog } from '../common/AppLog';
 
 let LanguageMode:string
 export default class EntryAbility extends UIAbility {
@@ -46,6 +47,8 @@ export default class EntryAbility extends UIAbility {
     }
   }
    async  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void>{
+     AppLog.init(this.context)
+     AppLog.i('ability', 'onCreate')
      preferencesUtil.init(this.context)
      // 启动时应用已保存的界面语言（zh/en/default，default 回退中文）
      try {
@@ -132,11 +135,13 @@ export default class EntryAbility extends UIAbility {
       const observer: errorManager.ErrorObserver = {
         onUnhandledException: (errMsg: string): void => {
           hilog.error(0x0000, 'SkiffCrash', 'unhandled: %{public}s', errMsg)
+          AppLog.e('crash', 'unhandled: ' + errMsg)
           AppStorage.setOrCreate('sk_lastCrash', errMsg.length > 400 ? errMsg.substring(0, 400) : errMsg)
         },
         onException: (errObject: Error): void => {
           const msg: string = errObject.message === undefined ? '' : errObject.message
           hilog.error(0x0000, 'SkiffCrash', 'exception: %{public}s', msg)
+          AppLog.e('crash', 'exception: ' + msg + ' | stack: ' + (errObject.stack === undefined ? '' : errObject.stack))
           AppStorage.setOrCreate('sk_lastCrash', msg.length > 400 ? msg.substring(0, 400) : msg)
         }
       }
@@ -202,6 +207,7 @@ export default class EntryAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     // Main window is created, set main page for this ability
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+    AppLog.i('ability', 'onWindowStageCreate');
     AppStorage.setOrCreate('TerminalType',false)
     const uiPrefs: UiPrefs = loadUiPrefsSync(this.context)
     AppStorage.setOrCreate('csx_themeDark', uiPrefs.themeDark)
@@ -260,6 +266,7 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onForeground');
+    AppLog.i('ability', 'onForeground');
     const prevTick: number | undefined = AppStorage.get<number>('sk_fgTick')
     AppStorage.setOrCreate('sk_fgTick', (prevTick === undefined ? 0 : prevTick) + 1)
      // 每次回到前台时检查权限
@@ -280,6 +287,7 @@ export default class EntryAbility extends UIAbility {
   onBackground(): void {
     // Ability has back to background
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability onBackground');
+    AppLog.i('ability', 'onBackground');
   }
 };
 

@@ -4,7 +4,7 @@ import { inputMethod } from '@kit.IMEKit'
 import { MT } from '../../common/MobileTheme'
 import { HostItem, TunnelItem, cloneHost, emptyHost } from '../../common/Models'
 import { loadHosts, saveHosts } from '../../common/Store'
-import { SshService, SshDataHandler } from '../../common/SshService'
+import { SshService, SshDataHandler, SessionLostHandler } from '../../common/SshService'
 import { Ic } from '../../common/Icons'
 import { HostsPage } from './HostsPage'
 import { HostSettingsPage } from './HostSettingsPage'
@@ -14,6 +14,7 @@ import { SettingsPage } from './SettingsPage'
 import { TerminalPro } from './TerminalPro'
 import { BrowserPage } from './BrowserPage'
 import { L } from '../../common/I18n'
+import { AppLog } from '../../common/AppLog'
 
 interface StatSnap {
   total: number
@@ -28,6 +29,7 @@ const STAT_CMD: string =
 @Entry
 @Component
 struct MobileIndex {
+  @StorageLink('csx_lang') csxLang: string = 'zh'
   @State view: number = 0
   @State sessTab: number = 0
   @State hosts: HostItem[] = []
@@ -50,6 +52,14 @@ struct MobileIndex {
   private statFail: Map<number, number> = new Map<number, number>()
   private statSkip: Map<number, number> = new Map<number, number>()
   private dataFn: SshDataHandler | null = null
+  private lostFn: SessionLostHandler | null = null
+  private hbTimer: number = -1
+  private verifying: Set<number> = new Set<number>()
+  private connSeq: Map<number, number> = new Map<number, number>()
+
+  t(zh: string, en: string): string {
+    return this.csxLang === 'en' ? en : zh
+  }
 
   aboutToAppear(): void {
     L.lang = AppStorage.get<string>('csx_lang') ?? 'zh'
@@ -60,8 +70,9 @@ struct MobileIndex {
     this.startStats()
     const fn: SshDataHandler = (hid: number, data: string, closed: boolean) => {
       if (closed && this.isConnected(hid)) {
+        AppLog.w('ui', `session closed by remote host=${hid}`)
         this.setState(hid, 'idle')
-        promptAction.showToast({ message: L.t('连接已断开', 'Connection closed') })
+        promptAction.showToast({ message: this.t('连接已断开', 'Connection closed') })
         if (AppStorage.get<boolean>('sk_autoReconnect') ?? false) {
           this.scheduleReconnect(hid)
         }
@@ -69,10 +80,21 @@ struct MobileIndex {
     }
     this.dataFn = fn
     SshService.get().onData(fn)
+    const lost: SessionLostHandler = (hid: number, reason: string) => {
+      this.verifyHost(hid, reason)
+    }
+    this.lostFn = lost
+    SshService.get().onSessionLost(lost)
+    this.startHeartbeat()
   }
 
   aboutToDisappear(): void {
     this.stopStats()
+    this.stopHeartbeat()
+    if (this.lostFn !== null) {
+      SshService.get().offSessionLost(this.lostFn)
+      this.lostFn = null
+    }
     if (this.dataFn !== null) {
       SshService.get().offData(this.dataFn)
       this.dataFn = null
@@ -157,7 +179,7 @@ struct MobileIndex {
 
   activeName(): string {
     const h: HostItem | undefined = this.curHost()
-    return h === undefined ? L.t('未连接', 'Not connected') : h.name
+    return h === undefined ? this.t('未连接', 'Not connected') : h.name
   }
 
   activeAddr(): string {
@@ -217,15 +239,167 @@ struct MobileIndex {
   }
 
   reconcile(): void {
+    this.reconcileProbe()
+  }
+
+  markLost(id: number, reason: string): boolean {
+    const h: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === id)
+    if (h === undefined || h.state !== 'connected') {
+      return false
+    }
+    AppLog.w('ssh', `mark lost host=${id} reason=${reason}`)
+    this.setState(id, 'idle')
+    SshService.get().disconnect(id)
+    if (AppStorage.get<boolean>('sk_autoReconnect') ?? false) {
+      this.scheduleReconnect(id)
+    }
+    return true
+  }
+
+  lostToast(id: number, reason: string): void {
+    const h: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === id)
+    const name: string = h === undefined ? 'host' : h.name
+    promptAction.showToast({
+      message: this.t(`${name} 连接已断开（${reason}）`, `${name} disconnected (${reason})`),
+      duration: 4000
+    })
+  }
+
+  async verifyHost(id: number, reason: string): Promise<void> {
+    if (!this.isConnected(id) || this.verifying.has(id)) {
+      return
+    }
+    this.verifying.add(id)
+    try {
+      const ok: boolean = await this.pingHost(id)
+      if (!ok && this.markLost(id, reason)) {
+        this.lostToast(id, reason)
+      }
+    } finally {
+      this.verifying.delete(id)
+    }
+  }
+
+  async probeHostNow(id: number): Promise<void> {
+    const h: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === id)
+    if (h === undefined) {
+      return
+    }
+    if (h.state !== 'connected') {
+      promptAction.showToast({ message: this.t(`${h.name} 当前未连接`, `${h.name} is not connected`) })
+      return
+    }
+    if (this.verifying.has(id)) {
+      return
+    }
+    this.verifying.add(id)
+    let ok: boolean = false
+    try {
+      ok = await this.pingHost(id)
+    } finally {
+      this.verifying.delete(id)
+    }
+    if (ok) {
+      promptAction.showToast({ message: this.t(`${h.name} 连接正常`, `${h.name} is alive`) })
+      return
+    }
+    const reason: string = this.t('手动探活失败', 'manual probe failed')
+    if (this.markLost(id, reason)) {
+      this.lostToast(id, reason)
+    }
+  }
+
+  startHeartbeat(): void {
+    if (this.hbTimer >= 0) {
+      return
+    }
+    this.hbTimer = setInterval(() => {
+      this.heartbeat()
+    }, 20000)
+  }
+
+  stopHeartbeat(): void {
+    if (this.hbTimer >= 0) {
+      clearInterval(this.hbTimer)
+      this.hbTimer = -1
+    }
+  }
+
+  async heartbeat(): Promise<void> {
+    const list: HostItem[] = this.hosts.filter((h: HostItem) => h.state === 'connected')
+    for (let i = 0; i < list.length; i++) {
+      const id: number = list[i].id
+      if (!this.isConnected(id) || this.verifying.has(id)) {
+        continue
+      }
+      this.verifying.add(id)
+      let ok: boolean = false
+      try {
+        ok = await this.pingHost(id)
+      } finally {
+        this.verifying.delete(id)
+      }
+      if (!ok && this.isConnected(id)) {
+        const reason: string = this.t('心跳超时', 'heartbeat timeout')
+        if (this.markLost(id, reason)) {
+          this.lostToast(id, reason)
+        }
+      }
+    }
+  }
+
+  pingHost(id: number): Promise<boolean> {
+    return new Promise<boolean>((resolve: (v: boolean) => void) => {
+      let done: boolean = false
+      const timer: number = setTimeout(() => {
+        if (done) {
+          return
+        }
+        done = true
+        resolve(false)
+      }, 4000)
+      SshService.get().exec(id, 'echo ok').then((out: string) => {
+        if (done) {
+          return
+        }
+        done = true
+        clearTimeout(timer)
+        resolve(out.indexOf('ok') >= 0)
+      }).catch(() => {
+        if (done) {
+          return
+        }
+        done = true
+        clearTimeout(timer)
+        resolve(false)
+      })
+    })
+  }
+
+  async reconcileProbe(): Promise<void> {
+    const list: HostItem[] = this.hosts.filter((h: HostItem) => h.state === 'connected')
     const dead: number[] = []
-    for (let i = 0; i < this.hosts.length; i++) {
-      const h: HostItem = this.hosts[i]
-      if (h.state === 'connected' && SshService.get().sessionOf(h.id) < 0) {
+    for (let i = 0; i < list.length; i++) {
+      const h: HostItem = list[i]
+      if (SshService.get().sessionOf(h.id) < 0) {
+        dead.push(h.id)
+        AppLog.w('ssh', `probe host=${h.id} session gone`)
+        continue
+      }
+      const ok: boolean = await this.pingHost(h.id)
+      AppLog.i('ssh', `probe host=${h.id} ${ok ? 'alive' : 'dead'}`)
+      if (!ok) {
         dead.push(h.id)
       }
     }
     for (let i = 0; i < dead.length; i++) {
-      this.setState(dead[i], 'idle')
+      this.markLost(dead[i], this.t('探活失败', 'probe failed'))
+    }
+    if (dead.length > 0) {
+      promptAction.showToast({
+        message: this.t(`有 ${dead.length} 台主机的连接已失效`, `${dead.length} host connection(s) lost`),
+        duration: 4000
+      })
     }
   }
 
@@ -257,6 +431,10 @@ struct MobileIndex {
         if (fails >= 3) {
           this.statFail.delete(id)
           this.statSkip.set(id, Date.now() + 60000)
+          const reason: string = this.t('状态采集失败', 'stats failed')
+          if (this.markLost(id, reason)) {
+            this.lostToast(id, reason)
+          }
         } else {
           this.statFail.set(id, fails)
         }
@@ -275,6 +453,10 @@ struct MobileIndex {
   }
 
   applyStats(id: number, raw: string): void {
+    const target: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === id)
+    if (target === undefined || target.state !== 'connected') {
+      return
+    }
     const seg: string[] = raw.split('###')
     if (seg.length < 3) {
       return
@@ -352,23 +534,27 @@ struct MobileIndex {
 
   connectBlock(h: HostItem): string {
     if (h.host.length === 0) {
-      return L.t('请先在主机设置里填写地址', 'Set the host address first')
+      return this.t('请先在主机设置里填写地址', 'Set the host address first')
     }
     if (h.auth === '密钥' || h.auth.startsWith('私钥')) {
       if (h.keyPath.length === 0) {
-        return L.t('请先在主机设置里选择私钥', 'Pick a private key in host settings first')
+        return this.t('请先在主机设置里选择私钥', 'Pick a private key in host settings first')
       }
       return ''
     }
     if (h.password.length === 0) {
-      return L.t('请先在主机设置里填写密码', 'Set the password in host settings first')
+      return this.t('请先在主机设置里填写密码', 'Set the password in host settings first')
     }
     return ''
   }
 
   connectToggle(id: number): void {
     const h: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === id)
-    if (h === undefined || h.state === 'connecting') {
+    if (h === undefined) {
+      return
+    }
+    if (h.state === 'connecting') {
+      this.cancelConnect(h)
       return
     }
     if (h.state === 'connected') {
@@ -377,7 +563,7 @@ struct MobileIndex {
       if (this.activeId === id && this.view === 1) {
         this.view = 0
       }
-      promptAction.showToast({ message: L.t(`已断开 ${h.name}`, `Disconnected ${h.name}`) })
+      promptAction.showToast({ message: this.t(`已断开 ${h.name}`, `Disconnected ${h.name}`) })
       return
     }
     const block: string = this.connectBlock(h)
@@ -388,12 +574,30 @@ struct MobileIndex {
     this.startConnect(h, -1)
   }
 
+  cancelConnect(h: HostItem): void {
+    this.connSeq.set(h.id, (this.connSeq.get(h.id) ?? 0) + 1)
+    this.retry.delete(h.id)
+    this.setState(h.id, 'idle')
+    SshService.get().disconnect(h.id)
+    AppLog.i('ui', `cancel connect ${h.name}`)
+    promptAction.showToast({ message: this.t(`已取消连接 ${h.name}`, `Cancelled ${h.name}`) })
+  }
+
   startConnect(h: HostItem, tab: number): void {
     this.setState(h.id, 'connecting')
+    const seq: number = (this.connSeq.get(h.id) ?? 0) + 1
+    this.connSeq.set(h.id, seq)
+    AppLog.i('ui', `connect ${h.name} ${h.user}@${h.host}:${h.port}`)
     const hadKey: boolean = h.hostKey.length > 0
-    promptAction.showToast({ message: L.t(`正在连接 ${h.user}@${h.host} …`, `Connecting ${h.user}@${h.host} …`) })
+    promptAction.showToast({ message: this.t(`正在连接 ${h.user}@${h.host} …`, `Connecting ${h.user}@${h.host} …`) })
     SshService.get().connect(h).then((fp: string) => {
+      if (this.connSeq.get(h.id) !== seq) {
+        AppLog.w('ui', `stale connect callback ${h.name}`)
+        SshService.get().disconnect(h.id)
+        return
+      }
       this.setState(h.id, 'connected')
+      AppLog.i('ui', `connected ${h.name} fp=${fp}`)
       this.retry.delete(h.id)
       if (fp.length > 0 && !hadKey) {
         this.persistHosts()
@@ -404,10 +608,14 @@ struct MobileIndex {
       if (tab >= 0) {
         this.enterSession(h.id, tab)
       } else {
-        promptAction.showToast({ message: L.t(`已连接 ${h.name}`, `Connected ${h.name}`) })
+        promptAction.showToast({ message: this.t(`已连接 ${h.name}`, `Connected ${h.name}`) })
       }
     }).catch((e: Error) => {
+      if (this.connSeq.get(h.id) !== seq) {
+        return
+      }
       this.setState(h.id, 'idle')
+      AppLog.e('ui', `connect failed ${h.name}: ${e.message}`)
       promptAction.showToast({ message: this.errText(e.message), duration: 4000 })
     })
   }
@@ -419,7 +627,7 @@ struct MobileIndex {
       }
       this.markTunnelsOff(h.id, failed)
       promptAction.showToast({
-        message: L.t(`${failed.length} 条转发未能自动恢复`, `${failed.length} forward(s) could not be restored`),
+        message: this.t(`${failed.length} 条转发未能自动恢复`, `${failed.length} forward(s) could not be restored`),
         duration: 4000
       })
     })
@@ -446,7 +654,7 @@ struct MobileIndex {
     const n: number = this.retry.get(id) ?? 0
     if (n >= 3) {
       this.retry.delete(id)
-      promptAction.showToast({ message: L.t('自动重连已停止', 'Auto reconnect stopped') })
+      promptAction.showToast({ message: this.t('自动重连已停止', 'Auto reconnect stopped') })
       return
     }
     this.retry.set(id, n + 1)
@@ -459,32 +667,32 @@ struct MobileIndex {
       if (this.connectBlock(h).length > 0) {
         return
       }
-      promptAction.showToast({ message: L.t(`正在重连 ${h.name}（${n + 1}/3）`, `Reconnecting ${h.name} (${n + 1}/3)`) })
+      promptAction.showToast({ message: this.t(`正在重连 ${h.name}（${n + 1}/3）`, `Reconnecting ${h.name} (${n + 1}/3)`) })
       this.startConnect(h, -1)
     }, delay)
   }
 
   errText(raw: string): string {
     if (raw.indexOf('MISSING_KEY') >= 0) {
-      return L.t('请先在主机设置里选择私钥', 'Pick a private key in host settings first')
+      return this.t('请先在主机设置里选择私钥', 'Pick a private key in host settings first')
     }
     if (raw.indexOf('KEY_UNREADABLE') >= 0) {
-      return L.t('私钥文件不可读，请重新选择', 'Private key is unreadable, pick it again')
+      return this.t('私钥文件不可读，请重新选择', 'Private key is unreadable, pick it again')
     }
     if (raw.indexOf('HOSTKEY_ERR:') >= 0) {
       const fp: string = raw.substring(raw.indexOf('HOSTKEY_ERR:') + 12)
-      return L.t(`主机密钥已变更（${fp}），可能被中间人劫持`, `Host key changed (${fp}), possible man-in-the-middle`)
+      return this.t(`主机密钥已变更（${fp}），可能被中间人劫持`, `Host key changed (${fp}), possible man-in-the-middle`)
     }
     if (raw.indexOf('CONNECT_ERR') >= 0) {
-      return L.t('无法连接到服务器，请检查地址与端口', 'Cannot reach the server, check address and port')
+      return this.t('无法连接到服务器，请检查地址与端口', 'Cannot reach the server, check address and port')
     }
     if (raw.indexOf('Auth') >= 0 || raw.indexOf('auth') >= 0 || raw.indexOf('认证') >= 0) {
-      return L.t('认证失败，请检查用户名与密码', 'Authentication failed, check username and password')
+      return this.t('认证失败，请检查用户名与密码', 'Authentication failed, check username and password')
     }
     if (raw.indexOf('timeout') >= 0 || raw.indexOf('超时') >= 0) {
-      return L.t('连接超时', 'Connection timed out')
+      return this.t('连接超时', 'Connection timed out')
     }
-    return L.t(`连接失败：${raw}`, `Failed: ${raw}`)
+    return this.t(`连接失败：${raw}`, `Failed: ${raw}`)
   }
 
   openSession(id: number, tab: number): void {
@@ -497,7 +705,7 @@ struct MobileIndex {
       return
     }
     if (h.state === 'connecting') {
-      promptAction.showToast({ message: L.t('正在连接，请稍候', 'Connecting, please wait') })
+      promptAction.showToast({ message: this.t('正在连接，请稍候', 'Connecting, please wait') })
       return
     }
     const block: string = this.connectBlock(h)
@@ -526,15 +734,20 @@ struct MobileIndex {
       return
     }
     this.hideKeyboard()
+    AppLog.i('ui', `disconnect active ${h.name}`)
     this.setState(h.id, 'idle')
     SshService.get().disconnect(h.id)
     this.view = 0
-    promptAction.showToast({ message: L.t(`已断开 ${h.name}`, `Disconnected ${h.name}`) })
+    promptAction.showToast({ message: this.t(`已断开 ${h.name}`, `Disconnected ${h.name}`) })
   }
 
   toggleActive(): void {
     const h: HostItem | undefined = this.curHost()
-    if (h === undefined || h.state === 'connecting') {
+    if (h === undefined) {
+      return
+    }
+    if (h.state === 'connecting') {
+      this.cancelConnect(h)
       return
     }
     if (h.state === 'connected') {
@@ -558,12 +771,12 @@ struct MobileIndex {
 
   segLabel(i: number): string {
     if (i === 0) {
-      return L.t('终端', 'Terminal')
+      return this.t('终端', 'Terminal')
     }
     if (i === 1) {
-      return L.t('隧道', 'Tunnels')
+      return this.t('隧道', 'Tunnels')
     }
-    return L.t('文件', 'Files')
+    return this.t('文件', 'Files')
   }
 
   segIcon(i: number): string {
@@ -578,12 +791,12 @@ struct MobileIndex {
 
   activeStateText(): string {
     if (this.connected()) {
-      return L.t('已连接', 'Connected')
+      return this.t('已连接', 'Connected')
     }
     if (this.connecting()) {
-      return L.t('连接中', 'Connecting')
+      return this.t('连接中', 'Connecting')
     }
-    return L.t('已断开', 'Disconnected')
+    return this.t('已断开', 'Disconnected')
   }
 
   @Builder SegButton(i: number) {
@@ -641,7 +854,7 @@ struct MobileIndex {
 
       Row() {
         Ic({ name: 'power', icSize: 13, color: this.connected() ? $r('app.color.csx_danger') : $r('app.color.csx_accent'), sw: 2 })
-        Text(this.connected() ? L.t('断开', 'Disconnect') : (this.connecting() ? L.t('连接中', 'Connecting') : L.t('重连', 'Reconnect')))
+        Text(this.connected() ? this.t('断开', 'Disconnect') : (this.connecting() ? this.t('取消', 'Cancel') : this.t('重连', 'Reconnect')))
           .fontSize(MT.fsCaption)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.connected() ? $r('app.color.csx_danger') : $r('app.color.csx_accent'))
@@ -651,7 +864,6 @@ struct MobileIndex {
       .padding({ left: 13, right: 13 })
       .borderRadius(999)
       .backgroundColor(this.connected() ? '#1AF87171' : '#1A3DDC97')
-      .opacity(this.connecting() ? 0.5 : 1)
       .onClick(() => {
         this.toggleActive()
       })
@@ -758,13 +970,16 @@ struct MobileIndex {
         },
         onNewHost: () => {
           const nid: number = this.hosts.reduce((m: number, x: HostItem) => (x.id > m ? x.id : m), 0) + 1
-          this.hosts = this.hosts.concat([emptyHost(nid, L.t('新主机', 'New Host'))])
+          this.hosts = this.hosts.concat([emptyHost(nid, this.t('新主机', 'New Host'))])
           this.persistHosts()
           this.editId = nid
           this.view = 2
         },
         onChanged: () => {
           this.persistHosts()
+        },
+        onProbe: (id: number) => {
+          this.probeHostNow(id)
         }
       })
         .visibility(this.view === 0 ? Visibility.Visible : Visibility.None)
@@ -819,7 +1034,7 @@ struct MobileIndex {
       }
       .width('100%')
       .height('100%')
-      .visibility(this.view === 1 ? Visibility.Visible : Visibility.None)
+      .visibility(this.view === 1 && !this.showBrowser ? Visibility.Visible : Visibility.None)
 
       this.HostSettingsView()
 

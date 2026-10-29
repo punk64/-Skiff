@@ -128,6 +128,7 @@ private:
     std::unique_ptr<ThreadPool> threadPool;
     std::atomic<bool> stopThread {false};
     std::atomic<bool> statusChange {false};
+    std::atomic<long long> lastRxMs {0};
     std::recursive_mutex libssh2Mutex;
     
     // --- 新增：日志缓冲成员 ---
@@ -276,6 +277,8 @@ public:
     bool stopPortForwarding(int port, bool isRemote = false);
     bool isPortForwardingActive(int port, bool isRemote = false);
     std::vector<std::tuple<int, std::string, int, bool, bool>> listActivePortForwardings();
+    int getForwardFailures();
+    int getForwardAccepts();
     
     // 设置日志
     bool setLogging(int fd, int logType, int existOperation, bool includeHeader = false, bool omitKnownPassword = false, bool omitSessionData = false) override;

@@ -309,3 +309,10 @@ export function isPortForwardingActive(sessionId: number, port: number, isRemote
  * @returns 返回一个 Promise，解析为一个包含 PortForwardingInfo 对象的数组，描述了所有活动的规则。
  */
 export function listActivePortForwardings(sessionId: number): Promise<PortForwardingInfo[]>;
+
+/**
+ * 读取本地转发的累计计数，用于区分「端口在监听」与「通道真正打通」。
+ * @param sessionId 会话 ID。
+ * @returns 形如 "accepts,failures" 的字符串。
+ */
+export function getForwardStats(sessionId: number): string;

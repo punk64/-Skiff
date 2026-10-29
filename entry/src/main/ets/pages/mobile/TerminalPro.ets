@@ -2,7 +2,6 @@ import { webview } from '@kit.ArkWeb'
 import { promptAction } from '@kit.ArkUI'
 import { MT } from '../../common/MobileTheme'
 import { SshService, SshDataHandler } from '../../common/SshService'
-import { L } from '../../common/I18n'
 
 const TB_BG: string = '#08090C'
 const TB_SURF: string = '#14171D'
@@ -128,6 +127,11 @@ export struct TerminalPro {
   private portReady: boolean = false
   private pendingText: string = ''
   private flushTimer: number = -1
+  @StorageLink('csx_lang') csxLang: string = 'zh'
+
+  t(zh: string, en: string): string {
+    return this.csxLang === 'en' ? en : zh
+  }
 
   aboutToAppear(): void {
     const fn: SshDataHandler = (hid: number, data: string, closed: boolean) => {
@@ -138,7 +142,7 @@ export struct TerminalPro {
         if (!this.closed) {
           this.closed = true
           this.flushText()
-          this.write(`\r\n\x1b[31m${L.t('连接已断开', 'Connection closed')}\x1b[0m\r\n`)
+          this.write(`\r\n\x1b[31m${this.t('连接已断开', 'Connection closed')}\x1b[0m\r\n`)
         }
         return
       }
@@ -298,7 +302,7 @@ export struct TerminalPro {
   zoom(delta: number): void {
     const next: number = this.fontSize + delta
     if (next < 10 || next > 22) {
-      promptAction.showToast({ message: L.t('字号范围 10~22', 'Font size range is 10~22') })
+      promptAction.showToast({ message: this.t('字号范围 10~22', 'Font size range is 10~22') })
       return
     }
     this.fontSize = next
@@ -350,7 +354,7 @@ export struct TerminalPro {
             .fontColor(TB_TEXT)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(this.closed ? L.t('已断开', 'Disconnected') : (this.ready ? `${this.hostAddr} · ${this.fontSize}px` : L.t('连接中…', 'Connecting…')))
+          Text(this.closed ? this.t('已断开', 'Disconnected') : (this.ready ? `${this.hostAddr} · ${this.fontSize}px` : this.t('连接中…', 'Connecting…')))
             .fontSize(MT.fsMicro)
             .fontColor(this.closed ? TB_DANGER : TB_TEXT3)
             .margin({ top: 2 })
@@ -389,7 +393,7 @@ export struct TerminalPro {
         })
 
       if (!this.compact) {
-        Text(L.t('关闭', 'Close'))
+        Text(this.t('关闭', 'Close'))
           .fontSize(MT.fsCaption)
           .fontColor(TB_ACCENT)
           .textAlign(TextAlign.Center)
@@ -511,7 +515,7 @@ export struct TerminalPro {
   @Builder KbPanel() {
     Column() {
       Row() {
-        Text(L.t('键盘 78 键', 'Keyboard 78'))
+        Text(this.t('屏幕键盘', 'Keyboard'))
           .fontSize(MT.fsMicro)
           .fontColor(TB_TEXT3)
           .layoutWeight(1)

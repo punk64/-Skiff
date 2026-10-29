@@ -42,7 +42,14 @@ export default class shellWindowAbility extends UIAbility {
     })
     AppStorage.setOrCreate('TerminalType',true)
     if (want.parameters!=undefined) {
-      windowInfo=JSON.parse(want.parameters["info"] as string)
+      const rawInfo: string = want.parameters["info"] as string
+      if (rawInfo !== undefined && rawInfo.length > 0) {
+        try {
+          windowInfo = JSON.parse(rawInfo)
+        } catch (e) {
+          console.error('want info 解析失败', e)
+        }
+      }
       console.log('want 接受到的数据是'+JSON.stringify(windowInfo))
       console.log('want 接受到的数据类型是'+typeof windowInfo)
       this.sessionid=want.parameters["sessionId"] as number
@@ -158,7 +165,14 @@ export default class shellWindowAbility extends UIAbility {
     hilog.info(0x0000, 'testTag', '%{public}s', 'Ability newWant');
     if(localWindowStage){
       if (want.parameters!=undefined) {
-        windowInfo=JSON.parse(want.parameters["info"] as string)
+        const rawInfo: string = want.parameters["info"] as string
+        if (rawInfo !== undefined && rawInfo.length > 0) {
+          try {
+            windowInfo = JSON.parse(rawInfo)
+          } catch (e) {
+            console.error('want info 解析失败', e)
+          }
+        }
         console.log('want 接受到的数据是'+JSON.stringify(windowInfo))
         console.log('want 接受到的数据类型是'+typeof windowInfo)
         localWindowStage.getMainWindow()

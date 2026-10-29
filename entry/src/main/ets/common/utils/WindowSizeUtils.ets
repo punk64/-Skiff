@@ -5,16 +5,24 @@ import { WindowSizeType } from '../types/dataType';
 import { bundleManager } from '@kit.AbilityKit';
 
 class WindowSizeUtils {
-  KVManager: KvManager = new KvManager({
-    context: getContext(this),
-    bundleName: getContext(this).resourceManager.getStringSync($r('app.string.App_bundleName').id), //您自己的App对应的包名
-  })
+  private kv: KvManager | null = null
   private allDataKvStore: distributedKVStore.SingleKVStore | undefined = undefined
+
+  private kvOf(): KvManager {
+    if (this.kv === null) {
+      const ctx = getContext(this)
+      this.kv = new KvManager({
+        context: ctx,
+        bundleName: ctx.resourceManager.getStringSync($r('app.string.App_bundleName').id), //您自己的App对应的包名
+      })
+    }
+    return this.kv
+  }
 
   async isForbidResizingCompletely(windowStage: window.WindowStage) {
 
     if (!this.allDataKvStore) {
-      this.allDataKvStore = await this.KVManager.getStore('allData')
+      this.allDataKvStore = await this.kvOf().getStore('allData')
     }
     try {
       switch ((JSON.parse(await this.allDataKvStore.get('WindowSize') as string) as WindowSizeType).windowResizedId) {

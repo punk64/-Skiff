@@ -6,12 +6,14 @@ import {
   uploadFile, downloadFile, cancelTransfer, setLogging, LoggingConfig,
   getHostKeyFingerprint,
   execCommand,
+  getForwardStats,
   SftpFileInfo, UploadProgressItem, DownloadProgressItem
 } from 'libentry.so'
 import { fileIo as fs } from '@kit.CoreFileKit'
 import { common } from '@kit.AbilityKit'
 import { util } from '@kit.ArkTS'
 import { HostItem, TunnelItem, SftpEntry } from './Models'
+import { AppLog } from './AppLog'
 
 export interface UploadFileItem {
   fd: number
@@ -63,6 +65,8 @@ function joinPath(dir: string, name: string): string {
 }
 
 export type SshDataHandler = (hostId: number, data: string, closed: boolean) => void
+
+export type SessionLostHandler = (hostId: number, reason: string) => void
 
 interface CfgSession {
   connectionType: string
@@ -177,11 +181,13 @@ export class SshService {
   private byHost: Map<number, number> = new Map<number, number>()
   private bySess: Map<number, number> = new Map<number, number>()
   private dataHandlers: SshDataHandler[] = []
+  private lostHandlers: SessionLostHandler[] = []
   private chain: Promise<void> = Promise.resolve()
   private bound: boolean = false
   private started: Map<number, TunnelItem[]> = new Map<number, TunnelItem[]>()
   private sftpSids: Set<number> = new Set<number>()
   private logFds: Map<number, number> = new Map<number, number>()
+  private rxLogged: Set<number> = new Set<number>()
 
   static get(): SshService {
     let s: SshService | null = SshService.inst
@@ -202,6 +208,12 @@ export class SshService {
       if (hid === undefined) {
         return
       }
+      if (closed) {
+        AppLog.w('term', `rx closed sid=${sid} host=${hid}`)
+      } else if (!this.rxLogged.has(sid)) {
+        this.rxLogged.add(sid)
+        AppLog.i('term', `rx first sid=${sid} host=${hid} len=${data.length}`)
+      }
       this.dataHandlers.forEach((fn: SshDataHandler) => {
         fn(hid, data, closed)
       })
@@ -220,6 +232,27 @@ export class SshService {
     }
   }
 
+  onSessionLost(fn: SessionLostHandler): void {
+    this.lostHandlers.push(fn)
+  }
+
+  offSessionLost(fn: SessionLostHandler): void {
+    const i: number = this.lostHandlers.indexOf(fn)
+    if (i >= 0) {
+      this.lostHandlers.splice(i, 1)
+    }
+  }
+
+  private reportLost(hostId: number, reason: string): void {
+    const hs: SessionLostHandler[] = this.lostHandlers.slice()
+    for (let i = 0; i < hs.length; i++) {
+      try {
+        hs[i](hostId, reason)
+      } catch (e) {
+      }
+    }
+  }
+
   sessionOf(hostId: number): number {
     const sid: number | undefined = this.byHost.get(hostId)
     return sid === undefined ? -1 : sid
@@ -228,6 +261,7 @@ export class SshService {
   exec(hostId: number, command: string): Promise<string> {
     const sid: number = this.sessionOf(hostId)
     if (sid < 0) {
+      this.reportLost(hostId, 'no session')
       return Promise.reject(new Error('NOT_CONNECTED'))
     }
     return execCommand(sid, command)
@@ -235,6 +269,18 @@ export class SshService {
 
   isAlive(hostId: number): boolean {
     return this.sessionOf(hostId) >= 0
+  }
+
+  forwardStats(hostId: number): string {
+    const sid: number = this.sessionOf(hostId)
+    if (sid < 0) {
+      return '0,0'
+    }
+    try {
+      return getForwardStats(sid)
+    } catch (e) {
+      return '0,0'
+    }
   }
 
   aliveCount(): number {
@@ -245,6 +291,7 @@ export class SshService {
     this.bind()
     const job: () => Promise<string> = async (): Promise<string> => {
       const old: number = this.sessionOf(h.id)
+      AppLog.i('ssh', `connect host=${h.host}:${h.port} user=${h.user} auth=${h.auth} prev=${old}`)
       if (old >= 0) {
         this.byHost.delete(h.id)
         this.bySess.delete(old)
@@ -270,6 +317,7 @@ export class SshService {
         const sid: number = await openProtocol(buildConfig(h, keyFd))
         this.byHost.set(h.id, sid)
         this.bySess.set(sid, h.id)
+        AppLog.i('ssh', `connected host=${h.id} sid=${sid}`)
         let fp: string = ''
         try {
           const raw: string = getHostKeyFingerprint(sid)
@@ -286,6 +334,7 @@ export class SshService {
         return fp
       } catch (e) {
         const msg: string = e instanceof Error ? e.message : String(e)
+        AppLog.e('ssh', `connect failed host=${h.id}: ${msg}`)
         throw new Error(msg)
       } finally {
         if (keyFd >= 0) {
@@ -304,6 +353,7 @@ export class SshService {
   disconnect(hostId: number): Promise<void> {
     const sid: number = this.sessionOf(hostId)
     this.started.delete(hostId)
+    AppLog.i('ssh', `disconnect host=${hostId} sid=${sid}`)
     if (sid < 0) {
       return Promise.resolve()
     }
@@ -342,9 +392,15 @@ export class SshService {
   send(hostId: number, cmd: string): void {
     const sid: number = this.sessionOf(hostId)
     if (sid < 0) {
+      AppLog.w('term', `send dropped: no session host=${hostId} len=${cmd.length}`)
+      this.reportLost(hostId, 'no session')
       return
     }
-    sendTerminalCommand(sid, cmd).catch((): void => {})
+    AppLog.i('term', `send host=${hostId} sid=${sid} len=${cmd.length}`)
+    sendTerminalCommand(sid, cmd).catch((e: Error) => {
+      AppLog.e('term', `send failed host=${hostId}: ${e.message}`)
+      this.reportLost(hostId, 'send failed')
+    })
   }
 
   resize(hostId: number, cols: number, rows: number): void {
@@ -688,8 +744,10 @@ export class SshService {
       }
     }
     if (!ok) {
+      AppLog.e('fwd', `start ${t.type}${t.port} -> ${t.dest} failed: listen rejected`)
       throw new Error('FORWARD_FAILED')
     }
+    AppLog.i('fwd', `start ${t.type}${t.port} -> ${t.dest} ok`)
     const key: string = t.type + ':' + t.port
     const list: TunnelItem[] = this.started.get(hostId) ?? []
     let exists: boolean = false
@@ -711,6 +769,7 @@ export class SshService {
     const key: string = t.type + ':' + t.port
     const list: TunnelItem[] = this.started.get(hostId) ?? []
     this.started.set(hostId, list.filter((x: TunnelItem) => x.type + ':' + x.port !== key))
+    AppLog.i('fwd', `stop ${t.type}${t.port}`)
     await stopPortForwarding(sid, Number(t.port), t.type === 'R')
   }
 
@@ -724,6 +783,8 @@ export class SshService {
       try {
         await this.startForward(hostId, t)
       } catch (e) {
+        const msg: string = e instanceof Error ? e.message : String(e)
+        AppLog.e('fwd', `restore ${t.type}${t.port} failed: ${msg}`)
         failed.push(t.id)
       }
     }

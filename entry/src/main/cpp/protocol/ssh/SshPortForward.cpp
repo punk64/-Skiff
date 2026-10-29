@@ -1,5 +1,10 @@
 #include "SshPortForward.h"
 #include "SshSession.h"
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x3200
+#define LOG_TAG "SKIFF_FWD"
 #include <fcntl.h>
 #include <iostream>
 #include <vector>
@@ -935,6 +940,7 @@ void SshPortForward::handleLocalForwardConnection(int clientSocket, std::shared_
     }
 
     if (!channel || rc != 0 || data->shouldStop.load()) {
+        m_forwardFailures.fetch_add(1);
         OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: Failed to establish SSH channel to %{public}s:%{public}d (rc=%{public}d, stopped=%{public}d).", clientSocket, data->targetHost.c_str(), data->targetPort, rc, data->shouldStop.load());
         close(clientSocket);
         if (channel) {
@@ -946,6 +952,7 @@ void SshPortForward::handleLocalForwardConnection(int clientSocket, std::shared_
         return;
     }
 
+    m_forwardAccepts.fetch_add(1);
     OH_LOG_INFO(LOG_APP, "Local Forward: SSH channel established for socket %{public}d. Starting data loop.", clientSocket);
 
     forwardDataLoop(clientSocket, channel, data);
@@ -1291,7 +1298,7 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
 
     OH_LOG_INFO(LOG_APP, "Forward Loop: Starting between socket %{public}d and SSH channel %{public}p (PF session).", socket_fd, channel);
 
-    while (!socket_closed && !channel_closed && !data->shouldStop.load()) {
+    while (!socket_closed && !channel_closed && !data->shouldStop.load() && m_pfConnected.load()) {
         FD_ZERO(&read_fds);
         FD_ZERO(&write_fds);
 
@@ -1321,7 +1328,7 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
 
         if (rc == 0) {
             std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
-            if (!channel_eof_received && channel && libssh2_channel_eof(channel)) {
+            if (!channel_eof_received && channel && m_pfSession && libssh2_channel_eof(channel)) {
                  OH_LOG_INFO(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Channel EOF detected via libssh2_channel_eof flag check.", socket_fd, channel);
                  channel_eof_received = true;
                  if (!socket_closed) {
@@ -1346,7 +1353,7 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                      int write_errno = 0;
                      {
                         std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
-                         if (!channel) { channel_closed = true; break; }
+                         if (!channel || !m_pfSession) { channel_closed = true; break; }
                          channel_written = libssh2_channel_write(channel, ptr, remaining);
                          if (channel_written < 0) {
                              if(m_pfSession && m_pfSock) {
@@ -1388,14 +1395,19 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                  socket_eof_received = true;
                  if (!channel_closed && !socket_eof_received) {
                     std::unique_lock<std::recursive_mutex> lock(m_pfMutex);
-                    if (channel && !libssh2_channel_eof(channel)) {
+                    if (channel && m_pfSession && !libssh2_channel_eof(channel)) {
                         OH_LOG_INFO(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Sending EOF to channel due to socket EOF.", socket_fd, channel);
                         int eof_rc = 0;
                         int eof_attempts = 0;
                         while ((eof_rc = libssh2_channel_send_eof(channel)) == LIBSSH2_ERROR_EAGAIN && eof_attempts < 5) {
                              if (data->shouldStop.load()) break;
                              lock.unlock();
-                             waitSocket(m_pfSession.get(), *m_pfSock.get());
+                             LIBSSH2_SESSION* wsSession = m_pfSession.get();
+                             libssh2_socket_t wsFd = LIBSSH2_INVALID_SOCKET;
+                             if (m_pfSock) {
+                                 wsFd = *m_pfSock.get();
+                             }
+                             waitSocket(wsSession, wsFd);
                              lock.lock();
                              eof_attempts++;
                              if (!m_pfSock || !channel) break;
@@ -1419,10 +1431,7 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
             }
         }
 
-        bool can_read_channel = false;
-        if (!channel_eof_received && FD_ISSET(ssh_socket, &read_fds)) {
-             can_read_channel = true;
-        }
+        bool can_read_channel = !channel_eof_received;
         if (!channel_eof_received) {
             std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
             if (channel && libssh2_channel_eof(channel)) {
@@ -1436,12 +1445,14 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
             }
         }
 
-        if (can_read_channel && !channel_closed && !data->shouldStop.load()) {
+        int drainRounds = 0;
+        while (can_read_channel && !channel_closed && !channel_eof_received && !data->shouldStop.load() && drainRounds < 32) {
+             drainRounds++;
              nread = 0;
              int read_errno = 0;
              {
                 std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
-                if (!channel_closed && channel) {
+                if (!channel_closed && channel && m_pfSession) {
                     nread = libssh2_channel_read(channel, buffer, sizeof(buffer));
                     if (nread < 0) {
                          read_errno = libssh2_session_last_error(m_pfSession.get(), NULL, NULL, 0);
@@ -1488,11 +1499,15 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                          }
                     }
                  }
-                 if (socket_closed || data->shouldStop.load()) continue;
+                 if (socket_closed || data->shouldStop.load()) {
+                     break;
+                 }
                  if (remaining > 0) {
                      OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Failed to write all %zu bytes to socket after %d attempts. Closing socket.", socket_fd, channel, nread, max_write_attempts);
                      socket_closed = true;
+                     break;
                  }
+                 continue;
              } else if (nread == 0 && read_errno == 0) {
                   OH_LOG_INFO(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Channel EOF confirmed by read 0. Setting channel_eof_received.", socket_fd, channel);
                   channel_eof_received = true;
@@ -1500,11 +1515,13 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                       OH_LOG_INFO(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Shutting down socket write direction due to channel EOF.", socket_fd, channel);
                       shutdown(socket_fd, SHUT_WR);
                   }
+                  break;
              } else {
                   if (read_errno != LIBSSH2_ERROR_EAGAIN) {
                      OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_read error %{public}d. Closing channel.", socket_fd, channel, read_errno);
                      channel_closed = true;
                   }
+                  break;
              }
          }
 
@@ -1846,6 +1863,9 @@ bool SshPortForward::stopPortForwarding(int port, bool isRemote) {
 }
 
 bool SshPortForward::isPortForwardingActive(int port, bool isRemote) {
+    if (!m_pfConnected.load()) {
+        return false;
+    }
     std::lock_guard<std::mutex> lock(m_forwardingMutex);
     for (const auto& data : m_forwardingPorts) {
         if (data->localPort == port && data->isRemote == isRemote) {

@@ -2,7 +2,8 @@ import { promptAction } from '@kit.ArkUI'
 import { MT } from '../../common/MobileTheme'
 import { Ic } from '../../common/Icons'
 import { HostItem, TunnelItem } from '../../common/Models'
-import { L } from '../../common/I18n'
+import { SshService } from '../../common/SshService'
+import { L, Bi } from '../../common/I18n'
 
 @Component
 export struct HostsPage {
@@ -13,7 +14,17 @@ export struct HostsPage {
   onAppSettings: () => void = () => {}
   onNewHost: () => void = () => {}
   onChanged: () => void = () => {}
+  onProbe: (id: number) => void = () => {}
   @State keyword: string = ''
+  @StorageLink('csx_lang') csxLang: string = 'zh'
+
+  t(zh: string, en: string): string {
+    return this.csxLang === 'en' ? en : zh
+  }
+
+  pick(v: Bi): string {
+    return this.csxLang === 'en' ? v.en : v.zh
+  }
 
   filtered(): HostItem[] {
     const k: string = this.keyword.trim().toLowerCase()
@@ -37,20 +48,21 @@ export struct HostsPage {
 
   removeHost(h: HostItem): void {
     const opts: promptAction.ShowDialogOptions = {
-      title: L.t('删除主机', 'Delete host'),
-      message: L.t(`确定删除「${h.name}」？该操作无法撤销。`, `Delete "${h.name}"? This cannot be undone.`),
+      title: this.t('删除主机', 'Delete host'),
+      message: this.t(`确定删除「${h.name}」？该操作无法撤销。`, `Delete "${h.name}"? This cannot be undone.`),
       buttons: [
-        { text: L.t('取消', 'Cancel'), color: $r('app.color.csx_text2') },
-        { text: L.t('删除', 'Delete'), color: $r('app.color.csx_danger') }
+        { text: this.t('取消', 'Cancel'), color: $r('app.color.csx_text2') },
+        { text: this.t('删除', 'Delete'), color: $r('app.color.csx_danger') }
       ]
     }
     promptAction.showDialog(opts).then((res: promptAction.ShowDialogSuccessResponse) => {
       if (res.index !== 1) {
         return
       }
+      SshService.get().disconnect(h.id)
       this.hosts = this.hosts.filter((x: HostItem) => x.id !== h.id)
       this.onChanged()
-      promptAction.showToast({ message: L.t(`已删除 ${h.name}`, `Deleted ${h.name}`) })
+      promptAction.showToast({ message: this.t(`已删除 ${h.name}`, `Deleted ${h.name}`) })
     })
   }
 
@@ -88,11 +100,11 @@ export struct HostsPage {
   @Builder Header() {
     Row() {
       Column() {
-        Text(L.t('主机', 'Hosts'))
+        Text(this.t('主机', 'Hosts'))
           .fontSize(MT.fsDisplay)
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.csx_text'))
-        Text(L.t(`${this.hosts.length} 台主机 · ${this.connectedCount()} 台已连接`, `${this.hosts.length} hosts · ${this.connectedCount()} connected`))
+        Text(this.t(`${this.hosts.length} 台主机 · ${this.connectedCount()} 台已连接`, `${this.hosts.length} hosts · ${this.connectedCount()} connected`))
           .fontSize(MT.fsSmall)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 5 })
@@ -131,7 +143,7 @@ export struct HostsPage {
 
   @Builder SearchBar() {
     Row() {
-      TextInput({ placeholder: L.t('搜索主机名或地址', 'Search host or address'), text: this.keyword })
+      TextInput({ placeholder: this.t('搜索主机名或地址', 'Search host or address'), text: this.keyword })
         .placeholderColor($r('app.color.csx_text3'))
         .fontColor($r('app.color.csx_text'))
         .fontSize(MT.fsBody)
@@ -180,10 +192,10 @@ export struct HostsPage {
     .alignItems(VerticalAlign.Center)
   }
 
-  @Builder QuickBtn(h: HostItem, tab: number, icon: string, label: string) {
+  @Builder QuickBtn(h: HostItem, tab: number, icon: string, label: Bi) {
     Column() {
       Ic({ name: icon, icSize: 18, color: this.isOn(h) ? $r('app.color.csx_accent') : $r('app.color.csx_text3') })
-      Text(label)
+      Text(this.pick(label))
         .fontSize(MT.fsMicro)
         .fontColor(this.isOn(h) ? $r('app.color.csx_text2') : $r('app.color.csx_text3'))
         .margin({ top: 4 })
@@ -199,9 +211,9 @@ export struct HostsPage {
     })
   }
 
-  @Builder StatCell(h: HostItem, label: string, value: string, pct: number) {
+  @Builder StatCell(h: HostItem, label: Bi, value: string, pct: number) {
     Column() {
-      Text(label)
+      Text(this.pick(label))
         .fontSize(MT.fsMicro)
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.csx_text3'))
@@ -259,7 +271,7 @@ export struct HostsPage {
             .margin({ right: 8 })
         }
 
-        Text(this.isBusy(h) ? L.t('连接中', 'Connecting') : (this.isOn(h) ? L.t('断开连接', 'Disconnect') : L.t('连接', 'Connect')))
+        Text(this.isBusy(h) ? this.t('连接中', 'Connecting') : (this.isOn(h) ? this.t('断开连接', 'Disconnect') : this.t('连接', 'Connect')))
           .fontSize(MT.fsCaption)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.isOn(h) ? $r('app.color.csx_danger') : $r('app.color.csx_accent_fg'))
@@ -274,7 +286,7 @@ export struct HostsPage {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      Text(h.host.length === 0 ? L.t('未设置地址', 'No address set') : `${h.user}@${h.host}:${h.port}`)
+      Text(h.host.length === 0 ? this.t('未设置地址', 'No address set') : `${h.user}@${h.host}:${h.port}`)
         .fontSize(MT.fsCaption)
         .fontColor($r('app.color.csx_text2'))
         .margin({ top: 6 })
@@ -283,17 +295,17 @@ export struct HostsPage {
         .width('100%')
 
       Row() {
-        this.QuickBtn(h, 0, 'terminal', L.t('终端', 'Terminal'))
-        this.QuickBtn(h, 1, 'tunnel', L.t('隧道', 'Tunnels'))
-        this.QuickBtn(h, 2, 'folder', L.t('文件', 'Files'))
+        this.QuickBtn(h, 0, 'terminal', L.b('终端', 'Terminal'))
+        this.QuickBtn(h, 1, 'tunnel', L.b('隧道', 'Tunnels'))
+        this.QuickBtn(h, 2, 'folder', L.b('文件', 'Files'))
       }
       .width('100%')
       .margin({ top: 12 })
 
       Row() {
-        this.StatCell(h, 'CPU', h.stats.cpu > 0 ? `${h.stats.cpu}%` : '--', h.stats.cpu)
-        this.StatCell(h, 'RAM', h.stats.ram > 0 ? `${h.stats.ram}%` : '--', h.stats.ram)
-        this.StatCell(h, L.t('带宽', 'Bandwidth'), h.stats.net.length > 0 ? h.stats.net : '--', h.stats.netp)
+        this.StatCell(h, L.s('CPU'), h.stats.cpu > 0 ? `${h.stats.cpu}%` : '--', h.stats.cpu)
+        this.StatCell(h, L.s('RAM'), h.stats.ram > 0 ? `${h.stats.ram}%` : '--', h.stats.ram)
+        this.StatCell(h, L.b('带宽', 'Bandwidth'), h.stats.net.length > 0 ? h.stats.net : '--', h.stats.netp)
       }
       .width('100%')
       .margin({ top: 12 })
@@ -305,15 +317,18 @@ export struct HostsPage {
     .borderRadius(18)
     .backgroundColor($r('app.color.csx_surface'))
     .border({ width: 1, color: this.isOn(h) ? $r('app.color.csx_accent_soft') : MT.transparent })
+    .gesture(LongPressGesture({ duration: 500 }).onAction(() => {
+      this.onProbe(h.id)
+    }))
   }
 
-  @Builder TipRow(text: string) {
+  @Builder TipRow(text: Bi) {
     Row() {
       Text('·')
         .fontSize(MT.fsBody)
         .fontColor($r('app.color.csx_accent'))
         .margin({ right: 8 })
-      Text(text)
+      Text(this.pick(text))
         .fontSize(MT.fsSmall)
         .fontColor($r('app.color.csx_text2'))
         .layoutWeight(1)
@@ -329,17 +344,17 @@ export struct HostsPage {
         Text('⇅')
           .fontSize(38)
           .fontColor($r('app.color.csx_text3'))
-        Text(L.t('还没有主机', 'No hosts yet'))
+        Text(this.t('还没有主机', 'No hosts yet'))
           .fontSize(MT.fsTitle)
           .fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.csx_text'))
           .margin({ top: 14 })
-        Text(L.t('添加一台服务器，随时用手机连上去干活', 'Add a server and connect from your phone anytime'))
+        Text(this.t('添加一台服务器，随时用手机连上去干活', 'Add a server and connect from your phone anytime'))
           .fontSize(MT.fsSmall)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 8 })
           .textAlign(TextAlign.Center)
-        Button(L.t('新建主机', 'Add host'))
+        Button(this.t('新建主机', 'Add host'))
           .fontSize(MT.fsBody)
           .fontColor($r('app.color.csx_accent_fg'))
           .width('100%')
@@ -351,9 +366,9 @@ export struct HostsPage {
             this.onNewHost()
           })
         Column() {
-          this.TipRow(L.t('密码或密钥登录，支持 TOFU 指纹校验', 'Password or key login with TOFU host key check'))
-          this.TipRow(L.t('终端、SFTP 文件管理、端口转发', 'Terminal, SFTP files and port forwarding'))
-          this.TipRow(L.t('主机 CPU／内存／带宽实时监控', 'Live CPU, memory and bandwidth'))
+          this.TipRow(L.b('密码或密钥登录，支持 TOFU 指纹校验', 'Password or key login with TOFU host key check'))
+          this.TipRow(L.b('终端、SFTP 文件管理、端口转发', 'Terminal, SFTP files and port forwarding'))
+          this.TipRow(L.b('主机 CPU／内存／带宽实时监控', 'Live CPU, memory and bandwidth'))
         }
         .width('100%')
         .margin({ top: 28 })
@@ -366,10 +381,10 @@ export struct HostsPage {
       .padding({ top: 44, left: MT.pagePadding, right: MT.pagePadding })
     } else {
       Column() {
-        Text(L.t('没有匹配的主机', 'No matching hosts'))
+        Text(this.t('没有匹配的主机', 'No matching hosts'))
           .fontSize(MT.fsBody)
           .fontColor($r('app.color.csx_text2'))
-        Text(L.t('换个关键词试试', 'Try another keyword'))
+        Text(this.t('换个关键词试试', 'Try another keyword'))
           .fontSize(MT.fsSmall)
           .fontColor($r('app.color.csx_text3'))
           .margin({ top: 8 })
