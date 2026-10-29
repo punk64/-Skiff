@@ -102,12 +102,14 @@ export struct HostsPage {
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .edgeEffect(EdgeEffect.Spring)
-        .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 12, bottom: 30 })
+        .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 12, bottom: 12 })
         .alignListItem(ListItemAlign.Start)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
       }
     }
     .width('100%')
     .height('100%')
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
   @Builder Header() {

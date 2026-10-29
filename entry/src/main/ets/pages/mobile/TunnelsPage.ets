@@ -26,6 +26,8 @@ export struct TunnelsPage {
   @State fPort: string = '8888'
   @State fDest: string = '127.0.0.1:8888'
   @State stateVer: number = 0
+  @State probing: boolean = false
+  @State busyKeys: string[] = []
   @StorageLink('csx_lang') csxLang: string = 'zh'
   private runStates: Map<string, RunState> = new Map<string, RunState>()
   private patrolling: boolean = false
@@ -125,6 +127,9 @@ export struct TunnelsPage {
   }
 
   runText(t: TunnelItem): string {
+    if (this.busyKeys.indexOf(this.probeKey(t)) >= 0) {
+      return this.t('检测中', 'Probing')
+    }
     const st: string = this.runOf(t).st
     if (st === 'up') {
       return this.t('可达', 'Up')
@@ -284,21 +289,41 @@ export struct TunnelsPage {
     this.setRun(key, st, 0, 0)
   }
 
-  probeOne(t: TunnelItem): void {
+  async probeOne(t: TunnelItem): Promise<void> {
     const h: HostItem | undefined = this.curHost()
     if (h === undefined) {
       return
     }
-    this.patrolOne(h.id, t.id, SshService.get().sessionOf(h.id), true)
+    const key: string = this.probeKey(t)
+    if (this.busyKeys.indexOf(key) >= 0) {
+      return
+    }
+    this.busyKeys = this.busyKeys.concat([key])
+    try {
+      await Promise.all([
+        this.patrolOne(h.id, t.id, SshService.get().sessionOf(h.id), true),
+        this.sleep(1200)
+      ])
+    } finally {
+      this.busyKeys = this.busyKeys.filter((k: string) => k !== key)
+    }
   }
 
-  probeAll(): void {
+  async probeAll(): Promise<void> {
     const h: HostItem | undefined = this.curHost()
     if (!h || !h.online) {
       promptAction.showToast({ message: this.t('请先连接主机', 'Connect a host first') })
       return
     }
-    this.patrol(true)
+    if (this.probing) {
+      return
+    }
+    this.probing = true
+    try {
+      await Promise.all([this.patrol(true), this.sleep(1200)])
+    } finally {
+      this.probing = false
+    }
   }
 
   startPatrol(): void {
@@ -651,13 +676,23 @@ export struct TunnelsPage {
                   .fontSize(MT.fsCaption)
                   .fontColor($r('app.color.csx_text3'))
                   .layoutWeight(1)
-                Text(this.t('重新探测', 'Re-probe'))
-                  .fontSize(MT.fsCaption)
-                  .fontColor($r('app.color.csx_accent'))
-                  .padding({ left: 8, right: 2, top: 4, bottom: 4 })
-                  .onClick(() => {
-                    this.probeAll()
-                  })
+                Row() {
+                  if (this.probing) {
+                    LoadingProgress()
+                      .width(13)
+                      .height(13)
+                      .color($r('app.color.csx_accent'))
+                      .margin({ right: 5 })
+                  }
+                  Text(this.probing ? this.t('检测中', 'Probing') : this.t('重新探测', 'Re-probe'))
+                    .fontSize(MT.fsCaption)
+                    .fontColor($r('app.color.csx_accent'))
+                }
+                .padding({ left: 8, right: 2, top: 4, bottom: 4 })
+                .alignItems(VerticalAlign.Center)
+                .onClick(() => {
+                  this.probeAll()
+                })
               }
               .width('100%')
               .margin({ left: 4, right: 4, bottom: 8 })

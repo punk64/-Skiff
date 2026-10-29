@@ -48,8 +48,9 @@ HELP_TEXT = """\
 ============================================================
 用法：python release.py [参数]
 
-  --version x.y.z   指定本次出包版本（默认读 AppScope/app.json5）
-  --no-bump         出包成功后不推进 app.json5 的版本号
+  --version x.y.z   精确指定本次出包版本（不再自动 +1 patch；versionCode 仍 +1）
+  --no-bump         出包后不推进版本号（versionName 与 versionCode 都不动）
+  --overwrite       产物同名时允许覆盖（默认拒绝，避免旧包与 sha256 被悄悄替换）
   --debug           出 debug 包（默认 release）
   --abi arm64|x64|both
                     构建架构（默认 arm64，即真机 arm64-v8a；
@@ -69,7 +70,9 @@ HELP_TEXT = """\
   products.signingConfig，产物不含任何证书；侧载须自行重签
   （DevEco 自动签名 / 小白调试助手等）。
 ★ 版本真源：AppScope/app.json5 的 versionName / versionCode。
-  推进规则：versionName 末位 +1，versionCode 严格 +1（保证可覆盖安装）。
+  推进规则：不传 --version 时 versionName 末位 +1、versionCode 严格 +1；
+  传 --version 时 versionName 以该值为准、不再 +1 patch，versionCode 仍严格 +1
+  （保证可覆盖安装）。
   推进在**构建之前**完成，产物名直接用推进后的版本号，只构建一次；
   构建失败会自动回滚 app.json5 到原版本。
 ★ C 盘红线：HVIGOR_USER_HOME 必须指向非 C 盘，否则脚本直接拒绝构建。
@@ -446,6 +449,7 @@ def _main() -> int:
     ap.add_argument('-h', '--help', action='store_true')
     ap.add_argument('--version')
     ap.add_argument('--no-bump', action='store_true')
+    ap.add_argument('--overwrite', action='store_true')
     ap.add_argument('--release', action='store_true',
                     help='等同默认（保留兼容）')
     ap.add_argument('--debug', action='store_true', help='出 debug 包')
@@ -476,12 +480,19 @@ def _main() -> int:
         return die('--version 必须形如 x.y.z，实得 %r' % base_core)
     if args.no_bump:
         core, code = base_core, cur_code
+    elif args.version:
+        core, code = base_core, cur_code + 1
     else:
         core, code = bump_patch(base_core), cur_code + 1
     bumped = (core, code) != (cur_core, cur_code)
     mode = 'debug' if args.debug else 'release'
     out_dir = Path(args.out).resolve()
     target = out_dir / ('Skiff-%s-%s-%s-unsigned.hap' % (core, abi_tag, mode))
+    clash = target.exists()
+    if clash and not args.overwrite and not args.dry_run:
+        return die('产物已存在：%s\n'
+                   '  同名覆盖会顶掉旧包与它的 .sha256，已中止。'
+                   '确认要覆盖请加 --overwrite' % target.name)
 
     log('版本         : %s (versionCode %d)%s'
         % (core, code, '  ← 本次推进' if bumped else ''))
@@ -491,7 +502,8 @@ def _main() -> int:
     log('架构         : %s' % abi_tag)
     log('签名         : 不保留（构建时恒摘除 products.signingConfig）')
     log('当前配置     : abiFilters=%s' % ('/'.join(read_abi_filters()) or '未读到'))
-    log('产物         : %s' % target)
+    log('产物         : %s%s'
+        % (target, '  （已存在，将覆盖）' if clash and args.overwrite else ''))
     log('版本真源     : %s' % APP_JSON5)
 
     if args.dry_run:

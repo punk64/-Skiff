@@ -6,7 +6,7 @@ function readVersion(): string {
       bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_DEFAULT)
     return `${info.versionName} (${info.versionCode})`
   } catch (e) {
-    return '0.2.1 (1000018)'
+    return '0.3.1 (1000022)'
   }
 }
 

@@ -956,6 +956,7 @@ struct MobileIndex {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.csx_bg'))
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
   @Builder Body() {
@@ -990,6 +991,7 @@ struct MobileIndex {
         }
       })
         .visibility(this.view === 0 ? Visibility.Visible : Visibility.None)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
 
       Column() {
         this.SessionBar()
@@ -1053,5 +1055,6 @@ struct MobileIndex {
     }
     .width('100%')
     .height('100%')
+    .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 }

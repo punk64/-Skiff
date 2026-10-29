@@ -1,6 +1,6 @@
 # 轻舟 Skiff - 鸿蒙手机端 SSH 工具
 
-[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.1-blue.svg)](CHANGELOG.md)
 [![HarmonyOS Compatibility](https://img.shields.io/badge/HarmonyOS-6.1%20(API%2024)-blue?logo=OpenHarmony)](https://www.openharmony.cn/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
