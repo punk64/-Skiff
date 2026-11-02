@@ -18,6 +18,7 @@ import { decryptProxyPassword, ensureProxyHuskKey } from '../common/utils/ProxyC
 import { ProxyType } from '../common/types/dataType';
 import { loadUiPrefsSync, UiPrefs } from '../common/Store';
 import { AppLog } from '../common/AppLog';
+import { fileIo as fs } from '@kit.CoreFileKit';
 
 let LanguageMode:string
 export default class EntryAbility extends UIAbility {
@@ -49,6 +50,7 @@ export default class EntryAbility extends UIAbility {
    async  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void>{
      AppLog.init(this.context)
      AppLog.i('ability', 'onCreate')
+     this.wipeWebDataDir()
      preferencesUtil.init(this.context)
      try {
        this.applySavedLanguage(loadUiPrefsSync(this.context).lang)
@@ -124,6 +126,43 @@ export default class EntryAbility extends UIAbility {
       AppStorage.setOrCreate('clipboardPermissionGranted', false);
     }
     this.installErrorGuard()
+  }
+
+  private wipeWebDataDir(): void {
+    const root: string = this.context.cacheDir + '/web'
+    try {
+      if (!fs.accessSync(root)) {
+        return
+      }
+      this.removeTree(root)
+      AppLog.i('ability', 'web data dir wiped')
+    } catch (e) {
+      AppLog.w('ability', 'wipe web data dir failed')
+    }
+  }
+
+  private removeTree(dir: string): void {
+    let names: string[] = []
+    try {
+      names = fs.listFileSync(dir)
+    } catch (e) {
+      names = []
+    }
+    for (let i = 0; i < names.length; i++) {
+      const p: string = dir + '/' + names[i]
+      try {
+        if (fs.statSync(p).isDirectory()) {
+          this.removeTree(p)
+        } else {
+          fs.unlinkSync(p)
+        }
+      } catch (e) {
+      }
+    }
+    try {
+      fs.rmdirSync(dir)
+    } catch (e) {
+    }
   }
 
   private installErrorGuard(): void {

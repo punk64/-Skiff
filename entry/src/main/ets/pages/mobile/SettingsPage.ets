@@ -13,6 +13,8 @@ import { Arrow } from '../../common/Arrow'
 import { L, Bi } from '../../common/I18n'
 import { APP_VERSION } from '../../common/AppInfo'
 
+const PROJECT_URL: string = 'https://github.com/punk64/-Skiff'
+
 export interface KnownHostItem {
   id: number
   host: string
@@ -628,6 +630,14 @@ export struct SettingsPage {
           .borderRadius(MT.radiusCard)
           .clip(true)
 
+          this.GroupTitle(L.b('关于', 'About'))
+          Column() {
+            this.ProjRow()
+          }
+          .backgroundColor($r('app.color.csx_surface'))
+          .borderRadius(MT.radiusCard)
+          .clip(true)
+
           Text(this.t(`轻舟 Skiff · 鸿蒙原生 SSH 客户端\n版本 ${APP_VERSION} · 内核 libssh2 1.11.1`,
             `Skiff · Native SSH client for HarmonyOS\nVersion ${APP_VERSION} · libssh2 1.11.1`))
             .fontSize(MT.fsCaption)
@@ -836,6 +846,58 @@ export struct SettingsPage {
       if (key !== 'none') {
         this.goSub(key)
       }
+    })
+  }
+
+  openUrl(url: string): void {
+    try {
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext
+      ctx.startAbility({
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: url
+      }).catch(() => {
+        promptAction.showToast({ message: this.t('无法打开浏览器', 'Cannot open browser') })
+      })
+    } catch (e) {
+      promptAction.showToast({ message: this.t('无法打开浏览器', 'Cannot open browser') })
+    }
+  }
+
+  @Builder ProjRow() {
+    Row() {
+      Column() {
+        Text(this.t('项目地址', 'Project page'))
+          .fontSize(MT.fsBody)
+          .fontColor($r('app.color.csx_text'))
+        Text(this.t('源码、更新记录与问题反馈，点击用系统浏览器打开',
+          'Source, changelog and issues; opens in the system browser'))
+          .fontSize(MT.fsCaption)
+          .fontColor($r('app.color.csx_text3'))
+          .margin({ top: 3 })
+          .maxLines(2)
+        Text(PROJECT_URL)
+          .fontSize(MT.fsSmall)
+          .fontColor($r('app.color.csx_accent'))
+          .margin({ top: 4 })
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+
+      Stack() {
+        Arrow({ dir: 'right', color: $r('app.color.csx_text3'), len: 15 })
+      }
+      .width(20)
+      .height(20)
+      .margin({ left: 4 })
+    }
+    .width('100%')
+    .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+    .alignItems(VerticalAlign.Center)
+    .onClick(() => {
+      this.openUrl(PROJECT_URL)
     })
   }
 

@@ -28,11 +28,45 @@ export struct BrowserPage {
   aboutToAppear(): void {
     this.input = this.url
     this.loading = this.url.length > 0
+    this.wipeWebData()
     AppLog.i('browser', 'open ' + this.url)
   }
 
   aboutToDisappear(): void {
     this.clearDiag()
+    this.wipeWebData()
+    this.wipeOrigins()
+  }
+
+  wipeWebData(): void {
+    try {
+      webview.WebCookieManager.clearAllCookiesSync()
+    } catch (e) {
+      AppLog.w('browser', 'clear cookies failed')
+    }
+    try {
+      webview.WebviewController.removeAllCache(true)
+    } catch (e) {
+      AppLog.w('browser', 'clear cache failed')
+    }
+  }
+
+  wipeOrigins(): void {
+    try {
+      webview.WebStorage.getOrigins().then((list: Array<webview.WebStorageOrigin>) => {
+        for (let i = 0; i < list.length; i++) {
+          try {
+            webview.WebStorage.deleteOrigin(list[i].origin)
+          } catch (e) {
+          }
+        }
+        AppLog.i('browser', 'storage wiped, origins=' + list.length.toString())
+      }).catch(() => {
+        AppLog.w('browser', 'read origins failed')
+      })
+    } catch (e) {
+      AppLog.w('browser', 'wipe origins failed')
+    }
   }
 
   clearDiag(): void {
@@ -189,6 +223,10 @@ export struct BrowserPage {
             .horizontalScrollBarAccess(false)
             .onControllerAttached(() => {
               AppLog.i('browser', 'controller attached, src=' + this.url)
+              try {
+                this.controller.removeCache(true)
+              } catch (e) {
+              }
               this.applyUa()
             })
             .onPageBegin(() => {
