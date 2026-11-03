@@ -25,6 +25,9 @@ export interface HostItem {
   keyPath: string
   hostKey: string
   hostKeyType: string
+  registeredAt: string
+  expireAt: string
+  autoConnect: boolean
   latency: string
   online: boolean
   state: string
@@ -37,6 +40,7 @@ export function cloneHost(h: HostItem, tunnels: TunnelItem[]): HostItem {
     id: h.id, name: h.name, user: h.user, host: h.host, port: h.port,
     auth: h.auth, password: h.password, keyFd: h.keyFd, keyPath: h.keyPath,
     hostKey: h.hostKey, hostKeyType: h.hostKeyType,
+    registeredAt: h.registeredAt, expireAt: h.expireAt, autoConnect: h.autoConnect,
     latency: h.latency, online: h.online, state: h.state,
     stats: h.stats, tunnels: tunnels
   }
@@ -47,6 +51,7 @@ export function emptyHost(id: number, name: string): HostItem {
     id: id, name: name, user: 'root', host: '', port: 22,
     auth: '密码', password: '', keyFd: -1, keyPath: '',
     hostKey: '', hostKeyType: '',
+    registeredAt: '', expireAt: '', autoConnect: false,
     latency: '', online: false, state: 'idle',
     stats: { cpu: 0, ram: 0, net: '', netp: 0 }, tunnels: []
   }

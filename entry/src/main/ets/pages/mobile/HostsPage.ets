@@ -5,6 +5,7 @@ import { MT } from '../../common/MobileTheme'
 import { Ic } from '../../common/Icons'
 import { HostItem, TunnelItem } from '../../common/Models'
 import { SshService } from '../../common/SshService'
+import { daysLeft } from '../../common/DateTime'
 import { L, Bi } from '../../common/I18n'
 
 function dropHostKeys(hostId: number): void {
@@ -28,7 +29,22 @@ export struct HostsPage {
   onChanged: () => void = () => {}
   onProbe: (id: number) => void = () => {}
   @State keyword: string = ''
+  @State dayTick: number = 0
   @StorageLink('csx_lang') csxLang: string = 'zh'
+  private tickTimer: number = -1
+
+  aboutToAppear(): void {
+    this.tickTimer = setInterval(() => {
+      this.dayTick = this.dayTick + 1
+    }, 60000)
+  }
+
+  aboutToDisappear(): void {
+    if (this.tickTimer >= 0) {
+      clearInterval(this.tickTimer)
+      this.tickTimer = -1
+    }
+  }
 
   t(zh: string, en: string): string {
     return this.csxLang === 'en' ? en : zh
@@ -96,7 +112,7 @@ export struct HostsPage {
               this.HostCard(h)
             }
             .swipeAction({ end: this.SwipeActions(h) })
-          }, (h: HostItem) => `${h.id}-${h.state}-${h.name}-${h.host}-${h.port}-${h.stats.cpu}-${h.stats.ram}-${h.stats.net}`)
+          }, (h: HostItem) => `${h.id}-${h.state}-${h.name}-${h.host}-${h.port}-${h.stats.cpu}-${h.stats.ram}-${h.stats.net}-${h.registeredAt}-${h.expireAt}-${this.dayTick}`)
         }
         .width('100%')
         .layoutWeight(1)
@@ -208,17 +224,18 @@ export struct HostsPage {
   }
 
   @Builder QuickBtn(h: HostItem, tab: number, icon: string, label: Bi) {
-    Column() {
-      Ic({ name: icon, icSize: 18, color: this.isOn(h) ? $r('app.color.csx_accent') : $r('app.color.csx_text3') })
+    Row() {
+      Ic({ name: icon, icSize: 13, color: this.isOn(h) ? $r('app.color.csx_accent') : $r('app.color.csx_text3') })
       Text(this.pick(label))
         .fontSize(MT.fsMicro)
         .fontColor(this.isOn(h) ? $r('app.color.csx_text2') : $r('app.color.csx_text3'))
-        .margin({ top: 4 })
+        .margin({ left: 5 })
+        .maxLines(1)
     }
     .justifyContent(FlexAlign.Center)
     .layoutWeight(1)
-    .height(56)
-    .borderRadius(13)
+    .height(32)
+    .borderRadius(10)
     .backgroundColor($r('app.color.csx_surface2'))
     .opacity(this.isOn(h) ? 1 : 0.38)
     .onClick(() => {
@@ -228,36 +245,105 @@ export struct HostsPage {
 
   @Builder StatCell(h: HostItem, label: Bi, value: string, pct: number) {
     Column() {
-      Text(this.pick(label))
-        .fontSize(MT.fsMicro)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.csx_text3'))
-      Text(value)
-        .fontSize(MT.fsCaption)
-        .fontWeight(FontWeight.Medium)
-        .fontColor(this.isOn(h) ? $r('app.color.csx_text') : $r('app.color.csx_text3'))
-        .fontFamily('monospace')
-        .animation({ duration: 300, curve: Curve.EaseOut })
-        .margin({ top: 2 })
+      Row() {
+        Text(this.pick(label))
+          .fontSize(MT.fsMicro)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.csx_text3'))
+        Text(value)
+          .fontSize(MT.fsCaption)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.isOn(h) ? $r('app.color.csx_text') : $r('app.color.csx_text3'))
+          .fontFamily('monospace')
+          .animation({ duration: 300, curve: Curve.EaseOut })
+          .margin({ left: 5 })
+          .maxLines(1)
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Bottom)
       Stack({ alignContent: Alignment.Start }) {
         Column()
           .width('100%')
-          .height(3)
+          .height(2)
           .borderRadius(2)
           .backgroundColor($r('app.color.csx_surface2'))
         Column()
           .width(`${pct}%`)
-          .height(3)
+          .height(2)
           .borderRadius(2)
           .backgroundColor(this.isOn(h) ? $r('app.color.csx_accent') : $r('app.color.csx_text3'))
           .opacity(this.isOn(h) ? 1 : 0.3)
           .animation({ duration: 350, curve: Curve.EaseOut })
       }
       .width('100%')
-      .margin({ top: 5 })
+      .margin({ top: 4 })
     }
     .alignItems(HorizontalAlign.Start)
     .layoutWeight(1)
+  }
+
+  dayText(h: HostItem): string {
+    const d: number = daysLeft(h.expireAt)
+    if (d <= 0) {
+      return this.t(`已过期 ${-d} 天`, `Expired ${-d}d`)
+    }
+    return this.t(`剩余 ${d} 天`, `${d}d left`)
+  }
+
+  dayColor(h: HostItem): ResourceColor {
+    const d: number = daysLeft(h.expireAt)
+    if (d <= 0) {
+      return $r('app.color.csx_danger')
+    }
+    if (d <= 7) {
+      return $r('app.color.csx_warn')
+    }
+    return $r('app.color.csx_accent')
+  }
+
+  dayBg(h: HostItem): ResourceColor {
+    const d: number = daysLeft(h.expireAt)
+    if (d <= 0) {
+      return '#1ADC2626'
+    }
+    if (d <= 7) {
+      return '#1AB45309'
+    }
+    return $r('app.color.csx_accent_soft')
+  }
+
+  @Builder DayBadge(h: HostItem) {
+    Text(this.dayText(h))
+      .fontSize(MT.fsMicro)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.dayColor(h))
+      .height(20)
+      .padding({ left: 8, right: 8 })
+      .borderRadius(999)
+      .backgroundColor(this.dayBg(h))
+      .margin({ left: 8 })
+  }
+
+  @Builder TimeRow(h: HostItem) {
+    Row() {
+      Text(this.t('注册', 'Reg') + ' ' + h.registeredAt)
+        .fontSize(MT.fsMicro)
+        .fontColor($r('app.color.csx_text3'))
+        .fontFamily('monospace')
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      Text(this.t('到期', 'Exp') + ' ' + h.expireAt)
+        .fontSize(MT.fsMicro)
+        .fontColor($r('app.color.csx_text3'))
+        .fontFamily('monospace')
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+        .margin({ left: 10 })
+    }
+    .width('100%')
+    .margin({ top: 6 })
   }
 
   @Builder HostCard(h: HostItem) {
@@ -301,13 +387,24 @@ export struct HostsPage {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
-      Text(h.host.length === 0 ? this.t('未设置地址', 'No address set') : `${h.user}@${h.host}:${h.port}`)
-        .fontSize(MT.fsCaption)
-        .fontColor($r('app.color.csx_text2'))
-        .margin({ top: 6 })
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
+      Row() {
+        Text(h.host.length === 0 ? this.t('未设置地址', 'No address set') : `${h.user}@${h.host}:${h.port}`)
+          .fontSize(MT.fsCaption)
+          .fontColor($r('app.color.csx_text2'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .layoutWeight(1)
+        if (h.expireAt.length > 0) {
+          this.DayBadge(h)
+        }
+      }
+      .width('100%')
+      .margin({ top: 6 })
+      .alignItems(VerticalAlign.Center)
+
+      if (h.registeredAt.length > 0 || h.expireAt.length > 0) {
+        this.TimeRow(h)
+      }
 
       Row() {
         this.QuickBtn(h, 0, 'terminal', L.b('终端', 'Terminal'))
@@ -315,7 +412,7 @@ export struct HostsPage {
         this.QuickBtn(h, 2, 'folder', L.b('文件', 'Files'))
       }
       .width('100%')
-      .margin({ top: 12 })
+      .margin({ top: 10 })
 
       Row() {
         this.StatCell(h, L.s('CPU'), h.stats.cpu > 0 ? `${h.stats.cpu}%` : '--', h.stats.cpu)
@@ -323,7 +420,7 @@ export struct HostsPage {
         this.StatCell(h, L.b('带宽', 'Bandwidth'), h.stats.net.length > 0 ? h.stats.net : '--', h.stats.netp)
       }
       .width('100%')
-      .margin({ top: 12 })
+      .margin({ top: 10 })
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%')

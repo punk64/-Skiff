@@ -150,9 +150,28 @@ struct MobileIndex {
   loadStoredHosts(): void {
     loadHosts(this.ctx()).then((list: HostItem[]) => {
       this.hosts = list
+      this.autoConnectHosts()
     }).catch(() => {
       this.hosts = []
     })
+  }
+
+  autoConnectHosts(): void {
+    const list: HostItem[] = this.hosts.filter((h: HostItem) => h.autoConnect)
+    for (let i = 0; i < list.length; i++) {
+      const h: HostItem = list[i]
+      if (this.connectBlock(h).length > 0) {
+        continue
+      }
+      setTimeout(() => {
+        const cur: HostItem | undefined = this.hosts.find((x: HostItem) => x.id === h.id)
+        if (cur === undefined || cur.state !== 'idle') {
+          return
+        }
+        AppLog.i('ui', `auto connect ${cur.name}`)
+        this.startConnect(cur, -1)
+      }, 400 * i)
+    }
   }
 
   persistHosts(): void {

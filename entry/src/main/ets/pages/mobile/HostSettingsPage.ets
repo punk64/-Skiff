@@ -6,6 +6,7 @@ import { Ic } from '../../common/Icons'
 import { HostItem, cloneHost } from '../../common/Models'
 import { SshService } from '../../common/SshService'
 import { ManagedKey, listKeys } from '../../common/KeyStore'
+import { normTs, pad2, tsMillis } from '../../common/DateTime'
 import { L, Bi } from '../../common/I18n'
 
 interface FieldSpec {
@@ -32,6 +33,9 @@ export struct HostSettingsPage {
   @State fKeyPath: string = ''
   @State fHostKey: string = ''
   @State fHostKeyType: string = ''
+  @State fReg: string = ''
+  @State fExp: string = ''
+  @State fAuto: boolean = false
   @State storeOpen: boolean = false
   @State storeKeys: ManagedKey[] = []
   @StorageLink('csx_lang') csxLang: string = 'zh'
@@ -61,6 +65,9 @@ export struct HostSettingsPage {
     this.fKeyPath = h.keyPath
     this.fHostKey = h.hostKey
     this.fHostKeyType = h.hostKeyType
+    this.fReg = h.registeredAt
+    this.fExp = h.expireAt
+    this.fAuto = h.autoConnect
   }
 
   keyName(): string {
@@ -129,6 +136,14 @@ export struct HostSettingsPage {
       promptAction.showToast({ message: this.t('名称、地址、用户名不能为空', 'Name, address and user cannot be empty') })
       return
     }
+    if (this.fReg.trim().length > 0 && normTs(this.fReg).length === 0) {
+      promptAction.showToast({ message: this.t('注册时间格式应为 YYYY-MM-DD HH:mm:ss', 'Registered time must be YYYY-MM-DD HH:mm:ss') })
+      return
+    }
+    if (this.fExp.trim().length > 0 && normTs(this.fExp).length === 0) {
+      promptAction.showToast({ message: this.t('到期时间格式应为 YYYY-MM-DD HH:mm:ss', 'Expiry time must be YYYY-MM-DD HH:mm:ss') })
+      return
+    }
     if (this.fAuth === '密钥' && this.fKeyPath.length === 0) {
       promptAction.showToast({ message: this.t('请先选择私钥文件', 'Pick a private key file first') })
       return
@@ -163,6 +178,9 @@ export struct HostSettingsPage {
       nh.keyPath = this.fKeyPath
       nh.hostKey = this.fHostKey
       nh.hostKeyType = this.fHostKeyType
+      nh.registeredAt = normTs(this.fReg)
+      nh.expireAt = normTs(this.fExp)
+      nh.autoConnect = this.fAuto
       this.hosts = this.hosts.concat([nh])
       promptAction.showToast({ message: this.t('主机已添加', 'Host added') })
       this.onSaved()
@@ -184,6 +202,9 @@ export struct HostSettingsPage {
       nh.keyPath = this.fKeyPath
       nh.hostKey = moved ? '' : this.fHostKey
       nh.hostKeyType = moved ? '' : this.fHostKeyType
+      nh.registeredAt = normTs(this.fReg)
+      nh.expireAt = normTs(this.fExp)
+      nh.autoConnect = this.fAuto
       return nh
     })
     promptAction.showToast({
@@ -194,6 +215,25 @@ export struct HostSettingsPage {
     })
     this.onSaved()
     this.onBack()
+  }
+
+  pickDateTime(cur: string, apply: (v: string) => void): void {
+    const ms: number = tsMillis(cur)
+    const base: Date = ms < 0 ? new Date() : new Date(ms)
+    DatePickerDialog.show({
+      start: new Date(2000, 0, 1),
+      end: new Date(2100, 11, 31),
+      selected: base,
+      onDateAccept: (d: Date) => {
+        TimePickerDialog.show({
+          selected: base,
+          useMilitaryTime: true,
+          onAccept: (v: TimePickerResult) => {
+            apply(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(v.hour)}:${pad2(v.minute)}:00`)
+          }
+        })
+      }
+    })
   }
 
   @Builder FieldRow($$: FieldSpec) {
@@ -226,6 +266,64 @@ export struct HostSettingsPage {
     }
     .width('100%')
     .height(52)
+    .padding({ left: 14, right: 14 })
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder TimeFieldRow(label: Bi, ph: string, v: string, key: string) {
+    Row() {
+      Column() {
+        Text(this.pick(label))
+          .fontSize(MT.fsBody)
+          .fontColor($r('app.color.csx_text'))
+        Text(this.t('点击选择或手动输入', 'Type or pick'))
+          .fontSize(MT.fsMicro)
+          .fontColor($r('app.color.csx_text3'))
+          .margin({ top: 3 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .constraintSize({ maxWidth: 96 })
+      Blank()
+      TextInput({ placeholder: ph, text: v })
+        .placeholderColor($r('app.color.csx_text3'))
+        .fontColor($r('app.color.csx_text'))
+        .fontSize(MT.fsCaption)
+        .fontFamily('monospace')
+        .textAlign(TextAlign.End)
+        .backgroundColor(MT.transparent)
+        .padding({ left: 0, right: 0 })
+        .width(148)
+        .height(40)
+        .onChange((s: string) => {
+          if (key === 'reg') {
+            this.fReg = s
+          } else {
+            this.fExp = s
+          }
+        })
+      Text(this.t('选择', 'Pick'))
+        .fontSize(MT.fsSmall)
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.csx_text'))
+        .height(28)
+        .padding({ left: 10, right: 10 })
+        .borderRadius(9)
+        .backgroundColor($r('app.color.csx_surface2'))
+        .margin({ left: 8 })
+        .onClick(() => {
+          if (key === 'reg') {
+            this.pickDateTime(this.fReg, (s: string) => {
+              this.fReg = s
+            })
+          } else {
+            this.pickDateTime(this.fExp, (s: string) => {
+              this.fExp = s
+            })
+          }
+        })
+    }
+    .width('100%')
+    .height(60)
     .padding({ left: 14, right: 14 })
     .alignItems(VerticalAlign.Center)
   }
@@ -468,6 +566,58 @@ export struct HostSettingsPage {
               this.Divider()
               this.PassRow()
             }
+          }
+          .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.csx_surface'))
+
+          Text(this.t('服务器信息', 'Server info'))
+            .fontSize(MT.fsCaption)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.csx_text3'))
+            .width('100%')
+            .margin({ top: 18, bottom: 8 })
+
+          Column() {
+            this.TimeFieldRow(L.b('注册时间', 'Registered'), '2026-11-03 09:30:00', this.fReg, 'reg')
+            this.Divider()
+            this.TimeFieldRow(L.b('到期时间', 'Expires'), '2027-11-03 09:30:00', this.fExp, 'exp')
+          }
+          .width('100%')
+          .borderRadius(16)
+          .backgroundColor($r('app.color.csx_surface'))
+
+          Text(this.t('连接行为', 'Connection'))
+            .fontSize(MT.fsCaption)
+            .fontWeight(FontWeight.Medium)
+            .fontColor($r('app.color.csx_text3'))
+            .width('100%')
+            .margin({ top: 18, bottom: 8 })
+
+          Column() {
+            Row() {
+              Column() {
+                Text(this.t('自动连接', 'Auto connect'))
+                  .fontSize(MT.fsBody)
+                  .fontColor($r('app.color.csx_text'))
+                Text(this.t('App 启动时自动连接该服务器', 'Connect automatically when the app starts'))
+                  .fontSize(MT.fsCaption)
+                  .fontColor($r('app.color.csx_text3'))
+                  .margin({ top: 4 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Toggle({ type: ToggleType.Switch, isOn: this.fAuto })
+                .selectedColor($r('app.color.csx_accent'))
+                .switchPointColor('#FFFFFF')
+                .onChange((v: boolean) => {
+                  this.fAuto = v
+                })
+            }
+            .width('100%')
+            .padding({ left: 14, right: 14, top: 13, bottom: 13 })
+            .alignItems(VerticalAlign.Center)
           }
           .width('100%')
           .borderRadius(16)

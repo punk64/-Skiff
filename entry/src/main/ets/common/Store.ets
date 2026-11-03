@@ -40,6 +40,9 @@ interface PersistHost {
   keyPath: string
   hostKey: string
   hostKeyType: string
+  registeredAt?: string
+  expireAt?: string
+  autoConnect?: boolean
   tunnels: PersistTunnel[]
 }
 
@@ -69,6 +72,9 @@ function toHost(s: PersistHost): HostItem {
     keyFd: -1, keyPath: s.keyPath === undefined ? '' : s.keyPath,
     hostKey: s.hostKey === undefined ? '' : s.hostKey,
     hostKeyType: s.hostKeyType === undefined ? '' : s.hostKeyType,
+    registeredAt: s.registeredAt === undefined ? '' : s.registeredAt,
+    expireAt: s.expireAt === undefined ? '' : s.expireAt,
+    autoConnect: s.autoConnect === undefined ? false : s.autoConnect,
     latency: '', online: false, state: 'idle',
     stats: { cpu: 0, ram: 0, net: '', netp: 0 },
     tunnels: Array.isArray(s.tunnels) ? s.tunnels.map((t: PersistTunnel) => toTunnel(t)) : []
@@ -80,6 +86,7 @@ function toPersist(h: HostItem): PersistHost {
     id: h.id, name: h.name, user: h.user, host: h.host, port: h.port,
     auth: h.auth, password: h.password, keyPath: h.keyPath,
     hostKey: h.hostKey, hostKeyType: h.hostKeyType,
+    registeredAt: h.registeredAt, expireAt: h.expireAt, autoConnect: h.autoConnect,
     tunnels: h.tunnels
   }
 }
