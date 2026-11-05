@@ -7,8 +7,6 @@
 
 namespace sk {
 
-Terminal g_term;
-
 namespace {
 
 std::string ToUtf8(const std::wstring& s) {
@@ -98,6 +96,23 @@ Line BlankLine(int cols) {
   return ln;
 }
 
+bool WideCp(unsigned cp) {
+  if (cp >= 0x1100u && cp <= 0x115Fu) return true;
+  if (cp >= 0x2E80u && cp <= 0x303Eu) return true;
+  if (cp >= 0x3041u && cp <= 0x33FFu) return true;
+  if (cp >= 0x3400u && cp <= 0x4DBFu) return true;
+  if (cp >= 0x4E00u && cp <= 0x9FFFu) return true;
+  if (cp >= 0xA000u && cp <= 0xA4CFu) return true;
+  if (cp >= 0xA960u && cp <= 0xA97Fu) return true;
+  if (cp >= 0xAC00u && cp <= 0xD7A3u) return true;
+  if (cp >= 0xF900u && cp <= 0xFAFFu) return true;
+  if (cp >= 0xFE10u && cp <= 0xFE19u) return true;
+  if (cp >= 0xFE30u && cp <= 0xFE6Fu) return true;
+  if (cp >= 0xFF00u && cp <= 0xFF60u) return true;
+  if (cp >= 0xFFE0u && cp <= 0xFFE6u) return true;
+  return false;
+}
+
 void FeedWelcome(Terminal& t) {
   std::wstring w;
   w += L"\x1b[90mLast login: Thu Nov  5 09:31:02 2026 from 192.0.2.1\x1b[0m\r\n";
@@ -121,7 +136,7 @@ void FeedWelcome(Terminal& t) {
   for (int i = 0; i < 60; ++i) w.push_back(static_cast<wchar_t>(0x2500));
   w += L"\x1b[0m\r\n";
   w += L"\r\n";
-  w += L"\x1b[36m提示：Ctrl+Shift+F 搜索 · Ctrl+Shift+K 清屏 · F11 全屏终端\x1b[0m\r\n";
+  w += L"\x1b[36m提示：Ctrl+K 搜索主机 · Ctrl+, 设置 · F11 全屏终端\x1b[0m\r\n";
   t.Feed(ToUtf8(w));
 }
 
@@ -186,9 +201,12 @@ void Terminal::NewLine() {
   dirty_ = true;
 }
 
-void Terminal::PutChar(wchar_t ch) {
+void Terminal::PutChar(wchar_t ch, wchar_t ch2) {
   if (cols_ < 1 || rows_ < 1) return;
-  if (cx_ >= cols_) {
+  if (ch == 0) ch = L' ';
+  int w = (ch2 != 0 || WideCp(static_cast<unsigned>(ch))) ? 2 : 1;
+  if (w > cols_) w = 1;
+  if (cx_ + w > cols_) {
     cx_ = 0;
     NewLine();
   }
@@ -199,11 +217,22 @@ void Terminal::PutChar(wchar_t ch) {
   Line& ln = screen_[static_cast<size_t>(cy_)];
   if (static_cast<int>(ln.cells.size()) < cols_) ln.cells.resize(static_cast<size_t>(cols_), Cell());
   Cell& cell = ln.cells[static_cast<size_t>(cx_)];
-  cell.ch = ch ? ch : L' ';
+  cell.ch = ch;
+  cell.ch2 = ch2;
   cell.fg = curFg_;
   cell.bg = curBg_;
   cell.bold = curBold_;
-  ++cx_;
+  cell.cont = false;
+  if (w == 2) {
+    Cell& tail = ln.cells[static_cast<size_t>(cx_ + 1)];
+    tail.ch = L' ';
+    tail.ch2 = 0;
+    tail.fg = curFg_;
+    tail.bg = curBg_;
+    tail.bold = curBold_;
+    tail.cont = true;
+  }
+  cx_ += w;
   if (cx_ >= cols_) {
     cx_ = 0;
     NewLine();
@@ -217,23 +246,35 @@ void Terminal::CarriageReturn() {
 }
 
 void Terminal::Backspace() {
-  if (cx_ > 0) {
-    --cx_;
-  } else if (cy_ > 0) {
-    --cy_;
-    cx_ = cols_ - 1;
-  } else {
-    return;
+  int line = cy_;
+  int col = cx_ - 1;
+  if (col < 0) {
+    if (line <= 0) return;
+    --line;
+    col = cols_ - 1;
   }
-  if (cy_ >= 0 && cy_ < static_cast<int>(screen_.size())) {
-    Line& ln = screen_[static_cast<size_t>(cy_)];
-    if (cx_ >= 0 && cx_ < static_cast<int>(ln.cells.size())) {
-      Cell& c = ln.cells[static_cast<size_t>(cx_)];
+  if (line >= 0 && line < static_cast<int>(screen_.size())) {
+    Line& ln = screen_[static_cast<size_t>(line)];
+    if (col >= 0 && col < static_cast<int>(ln.cells.size())) {
+      if (ln.cells[static_cast<size_t>(col)].cont && col > 0) --col;
+      Cell& c = ln.cells[static_cast<size_t>(col)];
       c.ch = L' ';
+      c.ch2 = 0;
       c.fg = curFg_;
       c.bg = curBg_;
+      c.cont = false;
+      if (col + 1 < static_cast<int>(ln.cells.size())) {
+        Cell& tail = ln.cells[static_cast<size_t>(col + 1)];
+        if (tail.cont) {
+          tail.ch = L' ';
+          tail.ch2 = 0;
+          tail.cont = false;
+        }
+      }
     }
   }
+  cy_ = line;
+  cx_ = col < 0 ? 0 : col;
   dirty_ = true;
 }
 
@@ -376,7 +417,7 @@ void Terminal::Feed(const std::string& utf8) {
     int units = 0;
     int used = DecodeUtf8(utf8, i, buf, &units);
     if (used <= 0) return;
-    for (int k = 0; k < units; ++k) PutChar(buf[k]);
+    PutChar(buf[0], units == 2 ? buf[1] : 0);
     i += static_cast<size_t>(used);
   }
 }
@@ -423,6 +464,16 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
   r.Fill(area.D2D(), p.termBg);
   r.PushClip(area.D2D());
 
+  if (area.W() > 0.0f && area.H() > 0.0f) {
+    int vc = static_cast<int>(area.W() / cw);
+    int vr = static_cast<int>(area.H() / lh);
+    if (vc >= 20 && vr >= 6) {
+      int dc = vc > cols_ ? vc - cols_ : cols_ - vc;
+      int dr = vr > rows_ ? vr - rows_ : rows_ - vr;
+      if (dc > 1 || dr > 1) Resize(vc, vr);
+    }
+  }
+
   int rowCount = static_cast<int>(screen_.size());
   if (rowCount > rows_) rowCount = rows_;
   for (int row = 0; row < rowCount; ++row) {
@@ -440,35 +491,66 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
         if (cur.fg != first.fg || cur.bg != first.bg || cur.bold != first.bold) break;
         ++c;
       }
-      std::wstring seg;
-      seg.reserve(static_cast<size_t>(c - start));
-      bool hasText = false;
-      for (int k = start; k < c; ++k) {
-        wchar_t wc = ln.cells[static_cast<size_t>(k)].ch;
-        if (wc == 0) wc = L' ';
-        if (wc != L' ') hasText = true;
-        seg.push_back(wc);
-      }
       float x0 = area.l + cw * static_cast<float>(start);
       float x1 = area.l + cw * static_cast<float>(c);
-      if (first.bg != 0) {
-        r.Fill(D2D1::RectF(x0, y, x1, y + lh), ColorOf(first.bg, false, p));
+      if (first.bg != 0) r.Fill(D2D1::RectF(x0, y, x1, y + lh), ColorOf(first.bg, false, p));
+      D2D1_COLOR_F fg = ColorOf(first.fg, first.bold, p);
+      std::wstring seg;
+      int segStart = -1;
+      int k = start;
+      while (k < c) {
+        const Cell& cell = ln.cells[static_cast<size_t>(k)];
+        if (cell.cont) {
+          ++k;
+          continue;
+        }
+        bool wide = (k + 1 < c) && ln.cells[static_cast<size_t>(k + 1)].cont;
+        if (wide) {
+          if (segStart >= 0 && !seg.empty()) {
+            float sx = area.l + cw * static_cast<float>(segStart);
+            float ex = area.l + cw * static_cast<float>(k);
+            r.Text(seg.c_str(), D2D1::RectF(sx, y, ex, y + lh), fg, FontId::Mono);
+            seg.clear();
+            segStart = -1;
+          }
+          std::wstring wseg;
+          wseg.push_back(cell.ch ? cell.ch : L' ');
+          if (cell.ch2) wseg.push_back(cell.ch2);
+          float sx = area.l + cw * static_cast<float>(k);
+          r.Text(wseg.c_str(), D2D1::RectF(sx, y, sx + cw * 3.0f, y + lh), fg, FontId::Mono);
+          k += 2;
+          continue;
+        }
+        if (segStart < 0) segStart = k;
+        seg.push_back(cell.ch ? cell.ch : L' ');
+        if (cell.ch2) seg.push_back(cell.ch2);
+        ++k;
       }
-      if (hasText && !seg.empty()) {
-        r.Text(seg.c_str(), D2D1::RectF(x0, y, area.r, y + lh),
-               ColorOf(first.fg, first.bold, p), FontId::Mono);
+      if (segStart >= 0 && !seg.empty()) {
+        float sx = area.l + cw * static_cast<float>(segStart);
+        float ex = area.l + cw * static_cast<float>(segStart + static_cast<int>(seg.size()));
+        if (ex > area.r) ex = area.r;
+        r.Text(seg.c_str(), D2D1::RectF(sx, y, ex, y + lh), fg, FontId::Mono);
       }
     }
   }
 
   if (cy_ >= 0 && cy_ < rows_ && cx_ >= 0 && cx_ <= cols_) {
+    int wide = 1;
+    if (cy_ < static_cast<int>(screen_.size())) {
+      const Line& ln = screen_[static_cast<size_t>(cy_)];
+      if (cx_ + 1 < static_cast<int>(ln.cells.size()) &&
+          ln.cells[static_cast<size_t>(cx_ + 1)].cont) {
+        wide = 2;
+      }
+    }
     float x = area.l + cw * static_cast<float>(cx_);
     float y = area.t + lh * static_cast<float>(cy_);
-    float cursorW = 7.0f * scale;
-    float cursorH = lh * 0.85f;
+    float cursorW = cw * static_cast<float>(wide);
+    float cursorH = lh * 0.86f;
     if (x + cursorW > area.r) x = area.r - cursorW;
     if (x < area.l) x = area.l;
-    r.Fill(D2D1::RectF(x, y, x + cursorW, y + cursorH), p.accent);
+    r.Fill(D2D1::RectF(x, y + lh * 0.07f, x + cursorW, y + lh * 0.07f + cursorH), p.accent);
   }
 
   r.PopClip();

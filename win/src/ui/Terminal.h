@@ -9,9 +9,11 @@ namespace sk {
 
 struct Cell {
   wchar_t ch = L' ';
+  wchar_t ch2 = 0;
   unsigned char fg = 7;
   unsigned char bg = 0;
   bool bold = false;
+  bool cont = false;
 };
 
 struct Line {
@@ -34,7 +36,7 @@ public:
 
 private:
   void NewLine();
-  void PutChar(wchar_t ch);
+  void PutChar(wchar_t ch, wchar_t ch2 = 0);
   void CarriageReturn();
   void Backspace();
   void ClearAll();

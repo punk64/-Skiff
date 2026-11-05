@@ -30,6 +30,7 @@ add_executable(Skiff WIN32
   src/ui/Chrome.cpp
   src/ui/Views.cpp
   src/ui/Terminal.cpp
+  src/ui/Sessions.cpp
   src/compat/Platform.cpp
   src/compat/Crypto.cpp
   src/core/SerialSessionWin.cpp
@@ -64,7 +65,7 @@ set_source_files_properties(${CORE_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/src/cor
 
 target_link_libraries(Skiff PRIVATE
   d2d1 dwrite user32 gdi32 ole32 shell32 shcore windowscodecs
-  ws2_32 bcrypt crypt32
+  ws2_32 bcrypt crypt32 advapi32 comdlg32
   "${LIBSSH2_DIR}/lib/libssh2.lib"
 )
 

@@ -73,6 +73,12 @@ bool CreateTarget(ID2D1Factory* factory, HWND hwnd, UINT w, UINT h, ID2D1HwndRen
   return SUCCEEDED(factory->CreateHwndRenderTarget(props, hprops, out));
 }
 
+void ApplyQuality(ID2D1HwndRenderTarget* rt) {
+  if (!rt) return;
+  rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+  rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+}
+
 void ClientSize(HWND hwnd, UINT* w, UINT* h) {
   RECT rc{};
   if (hwnd) GetClientRect(hwnd, &rc);
@@ -120,6 +126,7 @@ bool Render::Init(HWND hwnd) {
     }
   }
   rt_->SetDpi(96.0f, 96.0f);
+  ApplyQuality(rt_);
   if (!brush_) {
     if (FAILED(rt_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &brush_))) {
       SK_LOGE("create brush failed");
@@ -183,6 +190,7 @@ void Render::End() {
   ClientSize(hwnd_, &w, &h);
   if (!CreateTarget(factory_, hwnd_, w, h, &rt_)) return;
   rt_->SetDpi(96.0f, 96.0f);
+  ApplyQuality(rt_);
   rt_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &brush_);
 }
 
@@ -194,6 +202,7 @@ void Render::Resize(UINT pxW, UINT pxH, float dpi) {
   if (!rt_) {
     if (factory_ && hwnd_ && CreateTarget(factory_, hwnd_, pxW, pxH, &rt_)) {
       rt_->SetDpi(96.0f, 96.0f);
+      ApplyQuality(rt_);
       if (!brush_) {
         rt_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &brush_);
       }
@@ -201,6 +210,7 @@ void Render::Resize(UINT pxW, UINT pxH, float dpi) {
   } else {
     rt_->Resize(D2D1::SizeU(pxW, pxH));
     rt_->SetDpi(96.0f, 96.0f);
+    ApplyQuality(rt_);
   }
   BuildFonts(dwrite_, fonts_, dpi_);
 }

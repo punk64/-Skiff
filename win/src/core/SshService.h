@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace sk {
 
@@ -11,8 +12,18 @@ struct SshParams {
     std::string password;
     bool useKey = false;
     std::string keyPath;
+    std::string keyPass;
     std::string expectedHostKey;
     int keepAlive = 60;
+};
+
+struct RemoteEntry {
+    std::string name;
+    std::string fullPath;
+    bool dir = false;
+    unsigned long long size = 0;
+    unsigned int mode = 0;
+    unsigned long long mtime = 0;
 };
 
 enum class SshState {
@@ -24,24 +35,41 @@ enum class SshState {
 
 class SshService {
 public:
-    using NotifyFn = void (*)(void* ctx);
+    using NotifyFn = void (*)(void* ctx, int id);
 
     static SshService& Instance();
 
-    bool Connect(const SshParams& p);
-    void Disconnect();
-    bool Send(const std::string& bytes);
-    bool ResizePty(int cols, int rows);
+    bool Connect(int id, const SshParams& p);
+    void Disconnect(int id);
+    void DisconnectAll();
+    bool Send(int id, const std::string& bytes);
+    bool ResizePty(int id, int cols, int rows);
 
-    SshState State() const;
-    bool IsConnected() const;
-    std::string LastError() const;
-    std::string HostKey() const;
-    std::string ActiveHost() const;
+    SshState State(int id) const;
+    bool IsConnected(int id) const;
+    std::string LastError(int id) const;
+    std::string HostKey(int id) const;
+    std::string ActiveHost(int id) const;
 
     void SetNotify(NotifyFn fn, void* ctx);
-    std::string PumpOutput();
-    bool HasPending() const;
+    std::string PumpOutput(int id);
+    bool HasPending(int id) const;
+
+    bool Exec(int id, const std::string& command, std::string& out);
+
+    bool SftpList(int id, const std::string& path, std::vector<RemoteEntry>& out);
+    bool SftpUpload(int id, const std::wstring& localPath, const std::string& remotePath,
+                    std::string& err);
+    bool SftpDownload(int id, const std::string& remotePath, const std::wstring& localPath,
+                      std::string& err);
+    bool SftpDelete(int id, const std::string& path, bool dir);
+    bool SftpMkdir(int id, const std::string& path);
+    bool SftpRename(int id, const std::string& from, const std::string& to);
+
+    bool ForwardStartLocal(int id, int localPort, const std::string& targetHost, int targetPort);
+    bool ForwardStopLocal(int id, int localPort);
+    bool ForwardActive(int id, int localPort);
+    int ForwardAccepts(int id);
 
 private:
     SshService();

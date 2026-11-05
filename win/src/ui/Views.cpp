@@ -1,11 +1,13 @@
 #include "ui/Chrome.h"
 #include "ui/Render.h"
 #include "ui/Terminal.h"
+#include "ui/Sessions.h"
 #include "app/App.h"
 #include "app/Layout.h"
 #include "app/Theme.h"
 
 #include <string>
+#include <vector>
 
 namespace sk {
 namespace {
@@ -201,16 +203,9 @@ void NavIcon(Render& r, const AppState& st, int i, const Rect& rc, D2D1_COLOR_F 
   }
 }
 
-struct FileRow {
-  const wchar_t* name;
-  const wchar_t* size;
-  const wchar_t* time;
-  bool dir;
-};
-
 void FilePanel(Render& r, const AppState& st, const Palette& p, const Rect& panel,
                const wchar_t* title, const wchar_t* path, bool remote,
-               const FileRow* rows, int n, int highlight) {
+               const std::vector<SftpEntry>& rows, int highlight) {
   Rect head{ panel.l, panel.t, panel.r, panel.t + st.S(32.0f) };
   r.Fill(head.D2D(), p.surface);
   r.Fill(D2D1::RectF(head.l, head.b - st.S(1.0f), head.r, head.b), p.line);
@@ -230,6 +225,7 @@ void FilePanel(Render& r, const AppState& st, const Palette& p, const Rect& pane
   r.TextVertCenter(path, D2D1::RectF(pathLeft, head.t, head.r - st.S(12.0f), head.b),
                    p.text3, FontId::MonoSm);
 
+  int n = (int)rows.size();
   for (int i = 0; i < n; ++i) {
     Rect row{ panel.l, head.b + st.S(36.0f) * (float)i, panel.r,
               head.b + st.S(36.0f) * (float)(i + 1) };
@@ -257,13 +253,13 @@ void FilePanel(Render& r, const AppState& st, const Palette& p, const Rect& pane
     float nameRight = sizeLeft - st.S(8.0f);
     if (nameRight > nameLeft) {
       r.PushClip(D2D1::RectF(nameLeft, row.t, nameRight, row.b));
-      r.TextVertCenter(rows[i].name, D2D1::RectF(nameLeft, row.t, nameRight, row.b),
+      r.TextVertCenter(rows[i].name.c_str(), D2D1::RectF(nameLeft, row.t, nameRight, row.b),
                        rows[i].dir ? p.text : p.text2, FontId::Body);
       r.PopClip();
     }
-    r.TextVertCenter(rows[i].size, D2D1::RectF(sizeLeft, row.t, sizeRight, row.b),
+    r.TextVertCenter(rows[i].size.c_str(), D2D1::RectF(sizeLeft, row.t, sizeRight, row.b),
                      p.text3, FontId::MonoSm, Align::Right);
-    r.TextVertCenter(rows[i].time, D2D1::RectF(timeLeft, row.t, timeRight, row.b),
+    r.TextVertCenter(rows[i].time.c_str(), D2D1::RectF(timeLeft, row.t, timeRight, row.b),
                      p.text3, FontId::MonoSm, Align::Right);
   }
 }
@@ -301,6 +297,142 @@ void Segment(Render& r, const AppState& st, const Palette& p, const Rect& rc,
   }
 }
 
+struct SetRowDef {
+  const wchar_t* label;
+  const wchar_t* desc;
+  int kind;
+};
+
+const SetRowDef kSetRows[6][4] = {
+  { { L"界面语言", L"重启后生效", SetSeg },
+    { L"断线自动重连", L"连接意外中断后自动恢复会话", SetSwitch },
+    { L"启动时自动连接", L"打开程序时连接上次使用的主机", SetSwitch },
+    { L"启动时恢复上次界面", L"回到退出前所在的页面", SetSwitch } },
+  { { L"主题", L"跟随系统外观或手动指定", SetSeg },
+    { L"强调色", L"用于按钮、状态与高亮的强调色", SetSwatch },
+    { L"界面缩放", L"按比例放大全部界面元素", SetDrop } },
+  { { L"等宽字体", L"终端网格使用的字体", SetDrop },
+    { L"终端字号", L"终端字符网格的字号", SetDrop },
+    { L"光标样式", L"终端输入光标外观", SetSeg } },
+  { { L"主机指纹校验", L"首次连接时校验服务器指纹", SetSwitch },
+    { L"保活间隔", L"空闲时发送保活包的间隔", SetDrop },
+    { L"连接超时", L"建立连接的最长等待时间", SetDrop } },
+  { { L"日志级别", L"记录到日志文件的详细程度", SetDrop },
+    { L"保留天数", L"超过期限的日志自动清理", SetDrop },
+    { L"日志目录", L"程序同目录 logs 文件夹", SetPlain } },
+  { { L"版本", L"轻舟 Skiff Windows 便携版", SetPlain },
+    { L"内核", L"SSH 协议实现与加密后端", SetPlain },
+    { L"许可", L"仅供个人使用", SetPlain } }
+};
+
+const int kSetRowN[6] = { 4, 3, 3, 3, 3, 3 };
+
+const wchar_t** SetOptions(int nav, int row, int* n) {
+  static const wchar_t* kTheme[3] = { L"跟随系统", L"深色", L"浅色" };
+  static const wchar_t* kLang[2] = { L"简体中文", L"English" };
+  static const wchar_t* kScale[4] = { L"90%", L"100%", L"110%", L"125%" };
+  static const wchar_t* kFont[3] = { L"Cascadia Mono", L"Consolas", L"JetBrains Mono" };
+  static const wchar_t* kSize[4] = { L"12 px", L"13 px", L"14 px", L"16 px" };
+  static const wchar_t* kCursor[3] = { L"竖线", L"方块", L"下划线" };
+  static const wchar_t* kKa[4] = { L"30 秒", L"60 秒", L"120 秒", L"关闭" };
+  static const wchar_t* kTo[3] = { L"5 秒", L"10 秒", L"20 秒" };
+  static const wchar_t* kLog[3] = { L"关闭", L"基本", L"详细" };
+  static const wchar_t* kKeep[3] = { L"7 天", L"30 天", L"90 天" };
+  *n = 0;
+  if (nav == 0 && row == 0) { *n = 2; return kLang; }
+  if (nav == 1 && row == 0) { *n = 3; return kTheme; }
+  if (nav == 1 && row == 2) { *n = 4; return kScale; }
+  if (nav == 2 && row == 0) { *n = 3; return kFont; }
+  if (nav == 2 && row == 1) { *n = 4; return kSize; }
+  if (nav == 2 && row == 2) { *n = 3; return kCursor; }
+  if (nav == 3 && row == 1) { *n = 4; return kKa; }
+  if (nav == 3 && row == 2) { *n = 3; return kTo; }
+  if (nav == 4 && row == 0) { *n = 3; return kLog; }
+  if (nav == 4 && row == 1) { *n = 3; return kKeep; }
+  return nullptr;
+}
+
+const wchar_t* SetPlainText(int nav, int row) {
+  if (nav == 4 && row == 2) return L"logs\\";
+  if (nav == 5 && row == 0) return L"v0.3.4 · 1000025";
+  if (nav == 5 && row == 1) return L"libssh2 1.11.1 · WinCNG";
+  if (nav == 5 && row == 2) return L"个人使用";
+  return L"";
+}
+
+}
+
+Rect SetRowRect(const AppState& st, const Rect& c, int index) {
+  float navW = st.S(170.0f);
+  float bx = c.l + navW + st.S(28.0f);
+  float bRight = c.r - st.S(28.0f);
+  float cardW = st.S(660.0f);
+  if (cardW > bRight - bx) cardW = bRight - bx;
+  float top = c.t + st.S(24.0f) + st.S(74.0f);
+  return Rect{ bx, top + st.S(58.0f) * (float)index, bx + cardW,
+               top + st.S(58.0f) * (float)(index + 1) };
+}
+
+int SetRowCount(int nav) {
+  if (nav < 0 || nav > 5) return 0;
+  return kSetRowN[nav];
+}
+
+int SetKindOf(int nav, int row) {
+  if (nav < 0 || nav > 5 || row < 0 || row >= SetRowCount(nav)) return -1;
+  return kSetRows[nav][row].kind;
+}
+
+int SetOptionCount(int nav, int row) {
+  int n = 0;
+  SetOptions(nav, row, &n);
+  return n;
+}
+
+int* SetIntSlot(AppState& st, int nav, int row) {
+  if (nav == 0 && row == 0) return &st.langMode;
+  if (nav == 1 && row == 0) return &st.themeMode;
+  if (nav == 1 && row == 1) return &st.accentIdx;
+  if (nav == 1 && row == 2) return &st.uiScaleIdx;
+  if (nav == 2 && row == 0) return &st.termFontIdx;
+  if (nav == 2 && row == 1) return &st.termSizeIdx;
+  if (nav == 2 && row == 2) return &st.cursorIdx;
+  if (nav == 3 && row == 1) return &st.keepAliveIdx;
+  if (nav == 3 && row == 2) return &st.timeoutIdx;
+  if (nav == 4 && row == 0) return &st.logLevelIdx;
+  if (nav == 4 && row == 1) return &st.logKeepIdx;
+  return nullptr;
+}
+
+bool* SetBoolSlot(AppState& st, int nav, int row) {
+  if (nav == 0 && row == 1) return &st.autoReconnect;
+  if (nav == 0 && row == 2) return &st.autoConnectAll;
+  if (nav == 0 && row == 3) return &st.restoreLast;
+  if (nav == 3 && row == 0) return &st.fpCheck;
+  return nullptr;
+}
+
+int SetIntValue(const AppState& st, int nav, int row) {
+  if (nav == 0 && row == 0) return st.langMode;
+  if (nav == 1 && row == 0) return st.themeMode;
+  if (nav == 1 && row == 1) return st.accentIdx;
+  if (nav == 1 && row == 2) return st.uiScaleIdx;
+  if (nav == 2 && row == 0) return st.termFontIdx;
+  if (nav == 2 && row == 1) return st.termSizeIdx;
+  if (nav == 2 && row == 2) return st.cursorIdx;
+  if (nav == 3 && row == 1) return st.keepAliveIdx;
+  if (nav == 3 && row == 2) return st.timeoutIdx;
+  if (nav == 4 && row == 0) return st.logLevelIdx;
+  if (nav == 4 && row == 1) return st.logKeepIdx;
+  return 0;
+}
+
+bool SetBoolValue(const AppState& st, int nav, int row) {
+  if (nav == 0 && row == 1) return st.autoReconnect;
+  if (nav == 0 && row == 2) return st.autoConnectAll;
+  if (nav == 0 && row == 3) return st.restoreLast;
+  if (nav == 3 && row == 0) return st.fpCheck;
+  return false;
 }
 
 void DrawDash(Render& r, const AppState& st, const Rect& rc) {
@@ -312,10 +444,26 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
   float right = rc.r - st.S(28.0f);
   float top = rc.t + st.S(26.0f);
 
+  int liveN = 0;
+  int soonN = 0;
+  int tunOn = 0;
+  int tunAll = 0;
+  for (size_t i = 0; i < st.hosts.size(); ++i) {
+    const Host& h = st.hosts[i];
+    if (h.state == HostState::Live) ++liveN;
+    int d = DaysLeftOf(h.expireAt);
+    if (d >= 0 && d <= 7) ++soonN;
+    for (size_t k = 0; k < h.tunnels.size(); ++k) {
+      ++tunAll;
+      if (h.tunnels[k].on && h.tunnels[k].state == TunState::Up) ++tunOn;
+    }
+  }
+
   r.TextVertCenter(L"下午好，欢迎回来", D2D1::RectF(left, top, right, top + st.S(30.0f)),
                    p.text, FontId::Display);
-  r.TextVertCenter(L"5 台主机 · 2 个会话在线 · 3 条转发运行中",
-                   D2D1::RectF(left, top + st.S(32.0f), right, top + st.S(52.0f)),
+  std::wstring sub = Num((int)st.hosts.size()) + L" 台主机 · " + Num(liveN) +
+                     L" 个会话在线 · " + Num(tunOn) + L" 条转发运行中";
+  r.TextVertCenter(sub.c_str(), D2D1::RectF(left, top + st.S(32.0f), right, top + st.S(52.0f)),
                    p.text3, FontId::Caption);
 
   Rect nb{ right - st.S(112.0f), rc.t + st.S(34.0f), right, rc.t + st.S(68.0f) };
@@ -325,20 +473,27 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
   float statTop = rc.t + st.S(100.0f);
   float statH = st.S(76.0f);
   float statW = (right - left - gap * 3.0f) / 4.0f;
-  const wchar_t* labels[4] = { L"在线会话", L"转发通道", L"今日传输", L"卡片到期" };
-  const wchar_t* values[4] = { L"2", L"3/4", L"1.8 GB", L"2" };
-  const wchar_t* subs[4] = { L"全部健康", L"1 条待重连", L"SFTP · 24 次", L"最近 2 天内" };
+  const wchar_t* labels[4] = { L"在线会话", L"转发通道", L"离线主机", L"卡片到期" };
+  std::wstring values[4];
+  values[0] = Num(liveN);
+  values[1] = Num(tunOn) + L"/" + Num(tunAll);
+  values[2] = Num((int)st.hosts.size() - liveN);
+  values[3] = Num(soonN);
+  const wchar_t* subs[4] = { liveN > 0 ? L"全部健康" : L"暂无在线",
+                             tunAll > 0 && tunOn < tunAll ? L"部分待连通" : L"全部连通",
+                             liveN == (int)st.hosts.size() ? L"全部在线" : L"待连接",
+                             soonN > 0 ? L"7 天内到期" : L"暂无临期" };
 
   for (int i = 0; i < 4; ++i) {
     float l = left + (statW + gap) * (float)i;
     Rect card{ l, statTop, l + statW, statTop + statH };
     CardFill(r, st, card, p);
-    r.Circle(card.r - st.S(24.0f), card.t + st.S(26.0f), st.S(21.0f), p.accentSoft);
+    r.Circle(card.r - st.S(18.0f), card.t + st.S(18.0f), st.S(13.0f), Alpha(p.accent, 0.09f));
     r.TextVertCenter(labels[i],
                      D2D1::RectF(card.l + st.S(14.0f), card.t + st.S(9.0f),
                                  card.r - st.S(14.0f), card.t + st.S(23.0f)),
                      p.text3, FontId::Micro);
-    r.TextVertCenter(values[i],
+    r.TextVertCenter(values[i].c_str(),
                      D2D1::RectF(card.l + st.S(14.0f), card.t + st.S(23.0f),
                                  card.r - st.S(14.0f), card.t + st.S(50.0f)),
                      p.text, FontId::Display);
@@ -353,12 +508,12 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
                    p.text3, FontId::Micro);
 
   float avail = right - left;
-  float minW = st.S(250.0f);
+  float minW = st.S(300.0f);
   int cols = (int)((avail + gap) / (minW + gap));
   if (cols < 1) cols = 1;
   if (cols > 4) cols = 4;
   float cardW = (avail - gap * (float)(cols - 1)) / (float)cols;
-  float cardH = st.S(96.0f);
+  float cardH = st.S(168.0f);
   float hostTop = rc.t + st.S(220.0f);
 
   for (int i = 0; i < (int)st.hosts.size(); ++i) {
@@ -370,7 +525,7 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
     if (card.t >= rc.b) break;
     CardFill(r, st, card, p);
 
-    const Host& h = st.hosts[i];
+    const Host& h = st.hosts[(size_t)i];
     float dotR = st.S(4.0f);
     float dotX = card.l + st.S(16.0f);
     float dotY = card.t + st.S(24.0f);
@@ -380,7 +535,10 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
     if (h.state != HostState::Off) r.Circle(dotX, dotY, dotR + st.S(3.0f), Alpha(dc, 0.14f));
     r.Circle(dotX, dotY, dotR, dc);
 
-    float chipRight = card.r - st.S(14.0f);
+    Rect editRc = DashEditRectOf(st, rc, i);
+    IconPencil(r, st, editRc.Inset(st.S(3.0f)), p.text3);
+
+    float chipRight = editRc.l - st.S(6.0f);
     float nameRight = chipRight;
     if (h.state != HostState::Off) {
       const wchar_t* ct = h.state == HostState::Live ? L"已连接" : L"连接中";
@@ -402,21 +560,42 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
       r.PopClip();
     }
 
+    std::wstring addr = h.Addr();
     r.PushClip(D2D1::RectF(card.l + st.S(14.0f), card.t + st.S(36.0f),
                            card.r - st.S(12.0f), card.t + st.S(56.0f)));
-    r.TextVertCenter(h.addr.c_str(),
+    r.TextVertCenter(addr.c_str(),
                      D2D1::RectF(card.l + st.S(16.0f), card.t + st.S(38.0f),
                                  card.r - st.S(14.0f), card.t + st.S(56.0f)),
                      p.text3, FontId::MonoSm);
     r.PopClip();
 
-    float tagY = card.t + st.S(66.0f);
+    float tagY = card.t + st.S(62.0f);
     float tagH = st.S(20.0f);
     float tagX = card.l + st.S(14.0f);
-    float tagLimit = card.r - st.S(74.0f);
+    float metaRight = card.r - st.S(14.0f);
+    std::wstring extra;
+    D2D1_COLOR_F extraColor = p.text3;
+    if (h.latency >= 0) {
+      extra = Num(h.latency) + L" ms";
+      extraColor = p.accent;
+    } else if (h.HasExpire()) {
+      int dl = h.DaysLeft();
+      extra = dl < 0 ? std::wstring(L"已过期 ") + Num(-dl) + L" 天"
+                     : std::wstring(L"剩 ") + Num(dl) + L" 天";
+      if (dl < 0) extraColor = p.danger;
+      else if (dl <= 7) extraColor = p.warn;
+    }
+    float tagLimit = metaRight;
+    if (!extra.empty()) {
+      float ew = r.Measure(extra.c_str(), FontId::Micro);
+      r.TextVertCenter(extra.c_str(), D2D1::RectF(metaRight - ew - st.S(90.0f), tagY, metaRight,
+                                                  tagY + tagH),
+                       extraColor, FontId::Micro, Align::Right);
+      tagLimit = metaRight - st.S(96.0f);
+    }
     std::wstring tags[2];
     int tagN = 0;
-    tags[tagN++] = h.auth;
+    tags[tagN++] = h.IsKeyAuth() ? std::wstring(L"密钥") : std::wstring(L"密码");
     if (h.autoConnect) tags[tagN++] = L"自动连接";
     for (int k = 0; k < tagN; ++k) {
       float tw = r.Measure(tags[k].c_str(), FontId::Micro) + st.S(16.0f);
@@ -426,22 +605,45 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
       tagX += tw + st.S(6.0f);
     }
 
-    float metaRight = card.r - st.S(14.0f);
-    if (h.latency >= 0) {
-      std::wstring lat = Num(h.latency) + L" ms";
-      r.TextVertCenter(lat.c_str(),
-                       D2D1::RectF(card.r - st.S(92.0f), tagY, metaRight, tagY + tagH),
-                       p.accent, FontId::MonoSm, Align::Right);
-    } else if (h.daysLeft >= 0) {
-      std::wstring days = L"剩 " + Num(h.daysLeft) + L" 天";
-      r.TextVertCenter(days.c_str(),
-                       D2D1::RectF(card.r - st.S(102.0f), tagY, metaRight, tagY + tagH),
-                       p.warn, FontId::Micro, Align::Right);
+    bool live = h.state == HostState::Live;
+    const wchar_t* statNames[3] = { L"CPU", L"内存", L"带宽" };
+    int statVals[3] = { live ? h.cpu : 0, live ? h.ram : 0, live ? h.netp : 0 };
+    std::wstring statText[3];
+    statText[0] = live ? Num(h.cpu) + L"%" : std::wstring(L"—");
+    statText[1] = live ? Num(h.ram) + L"%" : std::wstring(L"—");
+    statText[2] = live && !h.net.empty() ? h.net : std::wstring(L"—");
+    for (int k = 0; k < 3; ++k) {
+      Rect sr = DashStatRectOf(st, rc, i, k);
+      r.TextVertCenter(statNames[k],
+                       D2D1::RectF(sr.l, sr.t, sr.l + st.S(28.0f), sr.t + st.S(14.0f)), p.text3,
+                       FontId::Micro);
+      r.TextVertCenter(statText[k].c_str(),
+                       D2D1::RectF(sr.l + st.S(28.0f), sr.t, sr.r, sr.t + st.S(14.0f)),
+                       live ? p.text2 : p.text3, FontId::Micro, Align::Right);
+      Rect track{ sr.l, sr.t + st.S(18.0f), sr.r, sr.t + st.S(22.0f) };
+      r.FillRound(track.D2D(), st.S(2.0f), p.surface2);
+      int pct = statVals[k];
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+      if (pct > 0) {
+        float fw = track.W() * (float)pct / 100.0f;
+        D2D1_COLOR_F fc = pct >= 85 ? p.danger : (pct >= 60 ? p.warn : p.accent);
+        r.FillRound(D2D1::RectF(track.l, track.t, track.l + fw, track.b), st.S(2.0f), fc);
+      }
+    }
+
+    Rect tg = DashToggleRectOf(st, rc, i);
+    if (live) {
+      BtnOutline(r, st, tg, p, L"断开", p.danger);
+    } else if (h.state == HostState::Busy) {
+      BtnOutline(r, st, tg, p, L"连接中", p.warn);
     } else {
-      std::wstring days = L"已过期 " + Num(-h.daysLeft) + L" 天";
-      r.TextVertCenter(days.c_str(),
-                       D2D1::RectF(card.r - st.S(112.0f), tagY, metaRight, tagY + tagH),
-                       p.danger, FontId::Micro, Align::Right);
+      BtnSolid(r, st, tg, p, L"连接");
+    }
+    const wchar_t* quickNames[3] = { L"终端", L"隧道", L"文件" };
+    for (int k = 0; k < 3; ++k) {
+      Rect q = DashQuickRectOf(st, rc, i, k);
+      BtnOutline(r, st, q, p, quickNames[k], p.text2);
     }
   }
 
@@ -455,22 +657,17 @@ void DrawTermView(Render& r, const AppState& st, const Rect& rc) {
   r.Circle(rc.r - st.S(40.0f), rc.t - st.S(30.0f), st.S(340.0f), Alpha(p.accentSoft, 0.55f));
   r.Circle(rc.r - st.S(90.0f), rc.t + st.S(10.0f), st.S(190.0f), Alpha(p.accentSoft, 0.38f));
 
-  float promptH = st.S(38.0f);
-  Rect term{ rc.l, rc.t, rc.r, rc.b - promptH };
-  g_term.Draw(r, term, st.termFontSize, p);
-
-  Rect bar{ rc.l, term.b, rc.r, rc.b };
-  r.Fill(D2D1::RectF(bar.l, bar.t, bar.r, bar.t + st.S(1.0f)), p.line);
-
-  const wchar_t* prefix = L"demo@prod:~$ ";
-  float px = bar.l + st.S(18.0f);
-  r.TextVertCenter(prefix, D2D1::RectF(px, bar.t, bar.r - st.S(18.0f), bar.b),
-                   p.accent, FontId::Mono);
-  float pw = r.Measure(prefix, FontId::Mono);
-  float ch = r.LineH(FontId::Mono) * 0.82f;
-  float cx = px + pw + st.S(2.0f);
-  Rect cursor{ cx, MidY(bar) - ch * kH, cx + st.S(7.0f), MidY(bar) + ch * kH };
-  r.Fill(cursor.D2D(), p.accent);
+  float padX = st.S(L::TermPadX);
+  float padY = st.S(L::TermPadY);
+  Rect term{ rc.l + padX, rc.t + padY, rc.r - padX, rc.b - padY };
+  Terminal* t = SessionHub::Instance().Find(st.CurrentSessionId());
+  if (t != nullptr && term.W() > st.S(200.0f) && term.H() > st.S(120.0f)) {
+    t->Draw(r, term, st.termFontSize, p);
+  } else {
+    Rect mid{ rc.l, rc.t + rc.H() * 0.42f, rc.r, rc.t + rc.H() * 0.46f };
+    r.TextVertCenter(L"未连接 · 从左侧主机列表打开一个会话",
+                     mid.D2D(), p.termDim, FontId::Body, Align::Center);
+  }
   r.PopClip();
 }
 
@@ -497,7 +694,11 @@ void DrawSftp(Render& r, const AppState& st, const Rect& rc) {
   float bx = link.r + st.S(10.0f);
   float bxLimit = b0.l - st.S(10.0f);
   r.PushClip(D2D1::RectF(bx, tb.t, bxLimit, tb.b));
-  const wchar_t* crumb1 = L"跳板机";
+  int hid = st.CurrentHostId() >= 0 ? st.CurrentHostId() : st.ActiveHostIndex();
+  std::wstring crumbHost = (hid >= 0 && hid < (int)st.hosts.size())
+                               ? st.hosts[(size_t)hid].name
+                               : std::wstring(L"本地");
+  const wchar_t* crumb1 = crumbHost.c_str();
   float w1 = r.Measure(crumb1, FontId::Small);
   r.TextVertCenter(crumb1, D2D1::RectF(bx, tb.t, bx + w1, tb.b), p.text3, FontId::Small);
   bx += w1 + st.S(6.0f);
@@ -505,41 +706,24 @@ void DrawSftp(Render& r, const AppState& st, const Rect& rc) {
   float w2 = r.Measure(crumb2, FontId::Small);
   r.TextVertCenter(crumb2, D2D1::RectF(bx, tb.t, bx + w2, tb.b), p.text3, FontId::Small);
   bx += w2 + st.S(6.0f);
-  const wchar_t* crumb3 = L"/srv/app";
-  float w3 = r.Measure(crumb3, FontId::MonoSm);
-  r.TextVertCenter(crumb3, D2D1::RectF(bx, tb.t, bx + w3, tb.b), p.text, FontId::MonoSm);
+  float w3 = r.Measure(st.sftpPath.c_str(), FontId::MonoSm);
+  r.TextVertCenter(st.sftpPath.c_str(), D2D1::RectF(bx, tb.t, bx + w3, tb.b), p.text,
+                   FontId::MonoSm);
   bx += w3 + st.S(8.0f);
-  r.TextVertCenter(L"· SFTP 已就绪", D2D1::RectF(bx, tb.t, bxLimit, tb.b), p.text3,
+  std::wstring sstatus = std::wstring(L"· ") + st.sftpStatus;
+  r.TextVertCenter(sstatus.c_str(), D2D1::RectF(bx, tb.t, bxLimit, tb.b), p.text3,
                    FontId::Caption);
   r.PopClip();
 
   Rect bar{ rc.l, rc.b - st.S(48.0f), rc.r, rc.b };
-  float mid = rc.l + rc.W() * kH;
-  Rect split{ mid - st.S(2.0f), tb.b, mid + st.S(2.0f), bar.t };
+  Rect lp = SftpPanelRect(st, rc, 0);
+  Rect rp = SftpPanelRect(st, rc, 1);
+  Rect split{ lp.r, tb.b, rp.l, bar.t };
   r.Fill(split.D2D(), p.line);
-  Rect lp{ rc.l, tb.b, mid - st.S(2.0f), bar.t };
-  Rect rp{ mid + st.S(2.0f), tb.b, rc.r, bar.t };
 
-  static const FileRow localRows[6] = {
-    { L"..", L"", L"", true },
-    { L"src", L"—", L"11-04 16:20", true },
-    { L"config", L"—", L"11-03 09:12", true },
-    { L"app-release.tar.gz", L"18.4 MB", L"11-05 09:02", false },
-    { L"deploy.sh", L"2.1 KB", L"11-05 08:44", false },
-    { L"CHANGELOG.md", L"8.6 KB", L"11-02 14:08", false }
-  };
-  static const FileRow remoteRows[7] = {
-    { L"..", L"", L"", true },
-    { L"html", L"—", L"11-01 10:33", true },
-    { L"logs", L"—", L"11-05 09:30", true },
-    { L"backup", L"—", L"10-28 03:00", true },
-    { L"index.html", L"12.3 KB", L"11-04 18:02", false },
-    { L"nginx.conf", L"3.8 KB", L"10-30 11:47", false },
-    { L"VERSION", L"16 B", L"11-05 08:12", false }
-  };
-
-  FilePanel(r, st, p, lp, L"本地", L"D:\\work\\deploy", false, localRows, 6, -1);
-  FilePanel(r, st, p, rp, L"远程", L"/srv/app", true, remoteRows, 7, 6);
+  FilePanel(r, st, p, lp, L"本地", st.sftpLocalPath.empty() ? L"—" : st.sftpLocalPath.c_str(),
+            false, st.sftpLocal, st.sftpSelLocal);
+  FilePanel(r, st, p, rp, L"远程", st.sftpPath.c_str(), true, st.sftpRemote, st.sftpSelRemote);
 
   r.Fill(bar.D2D(), p.surface);
   r.Fill(D2D1::RectF(bar.l, bar.t, bar.r, bar.t + st.S(1.0f)), p.line);
@@ -548,32 +732,36 @@ void DrawSftp(Render& r, const AppState& st, const Rect& rc) {
   Rect up{ bar.l + st.S(18.0f), by - st.S(6.0f), bar.l + st.S(30.0f), by + st.S(6.0f) };
   IconUp(r, st, up, p.accent);
 
-  const wchar_t* xfer = L"3 项传输中 · 2.4 MB/s";
+  std::wstring xfer = st.sftpStatus;
+  if (xfer.empty()) {
+    xfer = st.sftpQueue.empty() ? std::wstring(L"就绪")
+                                : Num((int)st.sftpQueue.size()) + L" 项待传输";
+  }
   float tx = up.r + st.S(9.0f);
-  r.TextVertCenter(xfer, D2D1::RectF(tx, bar.t, tx + st.S(210.0f), bar.b), p.text2,
+  r.PushClip(D2D1::RectF(tx, bar.t, bar.r - st.S(160.0f), bar.b));
+  r.TextVertCenter(xfer.c_str(), D2D1::RectF(tx, bar.t, bar.r - st.S(160.0f), bar.b), p.text2,
                    FontId::Caption);
-  tx += r.Measure(xfer, FontId::Caption) + st.S(18.0f);
+  r.PopClip();
 
   Rect q{ bar.r - st.S(14.0f) - st.S(58.0f), by - st.S(14.0f), bar.r - st.S(14.0f), by + st.S(14.0f) };
   BtnOutline(r, st, q, p, L"队列", p.text2);
 
-  float pctRight = q.l - st.S(12.0f);
-  float pctLeft = pctRight - st.S(30.0f);
-  r.TextVertCenter(L"62%", D2D1::RectF(pctLeft, bar.t, pctRight, bar.b), p.text3,
-                   FontId::MonoSm, Align::Right);
-
-  float trackRight = pctLeft - st.S(10.0f);
-  float trackLeft = tx;
-  float trackW = trackRight - trackLeft;
-  if (trackW > st.S(40.0f)) {
-    float th = st.S(5.0f);
-    Rect track{ trackLeft, by - th * kH, trackRight, by + th * kH };
-    r.FillRound(track.D2D(), th * kH, p.surface2);
-    float fw = trackW * 0.62f;
-    r.FillRound(D2D1::RectF(track.l, track.t, track.l + fw, track.b), th * kH,
-                Mix(p.accent, p.info, 0.55f));
-    r.FillRound(D2D1::RectF(track.l, track.t, track.l + fw * 0.52f, track.b), th * kH,
-                p.accent);
+  for (int k = 0; k < 2; ++k) {
+    Rect ab = FtpActionRectOf(st, rc, k);
+    r.StrokeRound(ab.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+    float acx = ab.l + ab.W() * kH;
+    float amy = MidY(ab);
+    float ah = st.S(4.5f);
+    float aw = st.S(3.2f);
+    if (k == 1) {
+      r.Line(acx, amy + ah, acx, amy - ah, p.text2, st.S(1.4f));
+      r.Line(acx - aw, amy - ah * 0.15f, acx, amy - ah, p.text2, st.S(1.4f));
+      r.Line(acx + aw, amy - ah * 0.15f, acx, amy - ah, p.text2, st.S(1.4f));
+    } else {
+      r.Line(acx, amy - ah, acx, amy + ah, p.text2, st.S(1.4f));
+      r.Line(acx - aw, amy + ah * 0.15f, acx, amy + ah, p.text2, st.S(1.4f));
+      r.Line(acx + aw, amy + ah * 0.15f, acx, amy + ah, p.text2, st.S(1.4f));
+    }
   }
 
   r.PopClip();
@@ -591,15 +779,22 @@ void DrawTun(Render& r, const AppState& st, const Rect& rc) {
   Rect nb{ right - st.S(98.0f), top, right, top + st.S(32.0f) };
   BtnSolid(r, st, nb, p, L"＋ 新建转发");
 
+  int hi = st.CurrentHostId() >= 0 ? st.CurrentHostId() : st.ActiveHostIndex();
+  const Host* host = (hi >= 0 && hi < (int)st.hosts.size()) ? &st.hosts[(size_t)hi] : nullptr;
+
   r.PushClip(D2D1::RectF(left, rc.t + st.S(14.0f), nb.l - st.S(12.0f), rc.t + st.S(70.0f)));
   r.TextVertCenter(L"端口转发", D2D1::RectF(left, rc.t + st.S(16.0f), nb.l, rc.t + st.S(46.0f)),
                    p.text, FontId::Display);
-  r.TextVertCenter(L"10 秒巡检 · 不健康自动重启 · 退避 10/20/40/60s",
-                   D2D1::RectF(left, rc.t + st.S(44.0f), nb.l, rc.t + st.S(62.0f)),
+  std::wstring sub = host == nullptr
+                         ? std::wstring(L"未选择主机 · 先建立会话")
+                         : host->name + L" · 10 秒巡检 · 不健康自动重启 · 退避 10/20/40/60s";
+  r.TextVertCenter(sub.c_str(), D2D1::RectF(left, rc.t + st.S(44.0f), nb.l, rc.t + st.S(62.0f)),
                    p.text3, FontId::Caption);
   r.PopClip();
 
-  Rect table{ left, rc.t + st.S(88.0f), right, rc.t + st.S(88.0f) + st.S(36.0f) + st.S(52.0f) * 5.0f };
+  int tunN = host == nullptr ? 0 : static_cast<int>(host->tunnels.size());
+  Rect table{ left, rc.t + st.S(88.0f), right,
+              rc.t + st.S(88.0f) + st.S(36.0f) + st.S(52.0f) * static_cast<float>(tunN) };
   CardFill(r, st, table, p);
 
   Rect head{ table.l, table.t, table.r, table.t + st.S(36.0f) };
@@ -622,7 +817,7 @@ void DrawTun(Render& r, const AppState& st, const Rect& rc) {
   xs[0] = table.l + st.S(14.0f);
   for (int i = 0; i < 7; ++i) xs[i + 1] = xs[i] + cw[i];
 
-  const wchar_t* headers[7] = { L"运行状态", L"类型", L"本地监听", L"目标地址",
+  const wchar_t* headers[7] = { L"运行状态", L"类型", L"端口", L"目标地址",
                                 L"所属主机", L"启用", L"操作" };
   for (int i = 0; i < 7; ++i) {
     r.PushClip(D2D1::RectF(xs[i], head.t, xs[i + 1], head.b));
@@ -631,62 +826,59 @@ void DrawTun(Render& r, const AppState& st, const Rect& rc) {
     r.PopClip();
   }
 
-  const wchar_t* status[5] = { L"通道正常", L"通道正常", L"通道未通", L"重连 20s", L"已停止" };
-  const int states[5] = { 0, 0, 1, 2, 3 };
-  const wchar_t* types[5] = { L"L", L"L", L"L", L"R", L"L" };
-  const wchar_t* listens[5] = { L"127.0.0.1:8080", L"127.0.0.1:5432", L"127.0.0.1:9200",
-                                L"0.0.0.0:2222", L"127.0.0.1:6379" };
-  const wchar_t* targets[5] = { L"192.0.2.10:80", L"192.0.2.24:5432", L"192.0.2.31:9200",
-                                L"192.0.2.48:22", L"192.0.2.10:6379" };
-  const wchar_t* owners[5] = { L"生产机", L"测试环境", L"构建节点", L"归档服务器", L"生产机" };
-  const bool enabled[5] = { true, true, true, true, false };
-
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < tunN; ++i) {
+    const Tunnel& tn = host->tunnels[(size_t)i];
     Rect row{ xs[0], head.b + st.S(52.0f) * (float)i, xs[7], head.b + st.S(52.0f) * (float)(i + 1) };
     r.Fill(D2D1::RectF(xs[0], row.t, xs[7], row.t + st.S(1.0f)), p.line);
     float cy = MidY(row);
 
     D2D1_COLOR_F sc = p.text3;
-    if (states[i] == 0) sc = p.accent;
-    if (states[i] == 1) sc = p.blue;
-    if (states[i] == 2) sc = p.warn;
+    if (tn.state == TunState::Up) sc = p.accent;
+    if (tn.state == TunState::Listen) sc = p.blue;
+    if (tn.state == TunState::Retry) sc = p.warn;
+    std::wstring stText;
+    if (tn.state == TunState::Up) stText = L"通道正常";
+    else if (tn.state == TunState::Listen) stText = L"通道未通";
+    else if (tn.state == TunState::Retry) stText = std::wstring(L"重连 ") + Num(tn.retryIn) + L"s";
+    else stText = L"已停止";
+
     float dotR = st.S(3.5f);
     float dx = xs[0] + dotR;
-    if (states[i] == 0) r.Circle(dx, cy, dotR + st.S(3.0f), Alpha(sc, 0.16f));
+    if (tn.state == TunState::Up) r.Circle(dx, cy, dotR + st.S(3.0f), Alpha(sc, 0.16f));
     r.Circle(dx, cy, dotR, sc);
     float stx = dx + dotR + st.S(8.0f);
     r.PushClip(D2D1::RectF(stx, row.t, xs[1], row.b));
-    r.TextVertCenter(status[i], D2D1::RectF(stx, row.t, xs[1], row.b), sc, FontId::Caption);
+    r.TextVertCenter(stText.c_str(), D2D1::RectF(stx, row.t, xs[1], row.b), sc, FontId::Caption);
     r.PopClip();
 
-    bool remote = types[i][0] == L'R';
+    bool remote = tn.IsRemote();
     Rect chip{ xs[1], cy - st.S(9.0f), xs[1] + st.S(22.0f), cy + st.S(9.0f) };
-    ChipText(r, st, chip, types[i], remote ? p.violet : p.text2,
+    ChipText(r, st, chip, tn.type.c_str(), remote ? p.violet : p.text2,
              remote ? Alpha(p.violet, 0.13f) : p.surface2);
 
     r.PushClip(D2D1::RectF(xs[2], row.t, xs[3], row.b));
-    r.TextVertCenter(listens[i], D2D1::RectF(xs[2], row.t, xs[3], row.b), p.text2,
+    r.TextVertCenter(tn.port.c_str(), D2D1::RectF(xs[2], row.t, xs[3], row.b), p.text2,
                      FontId::MonoSm);
     r.PopClip();
 
     r.PushClip(D2D1::RectF(xs[3], row.t, xs[4], row.b));
-    r.TextVertCenter(targets[i], D2D1::RectF(xs[3], row.t, xs[4], row.b), p.text2,
+    r.TextVertCenter(tn.dest.c_str(), D2D1::RectF(xs[3], row.t, xs[4], row.b), p.text2,
                      FontId::MonoSm);
     r.PopClip();
 
     r.PushClip(D2D1::RectF(xs[4], row.t, xs[5], row.b));
-    r.TextVertCenter(owners[i], D2D1::RectF(xs[4], row.t, xs[5], row.b), p.text2,
+    r.TextVertCenter(host->name.c_str(), D2D1::RectF(xs[4], row.t, xs[5], row.b), p.text2,
                      FontId::Small);
     r.PopClip();
 
     float swRight = xs[6] - st.S(10.0f);
     Rect sw{ swRight - st.S(34.0f), cy - st.S(10.0f), swRight, cy + st.S(10.0f) };
-    SwitchPill(r, st, sw, enabled[i], p);
+    SwitchPill(r, st, sw, tn.on, p);
 
-    float ob = st.S(24.0f);
-    float step = ob + st.S(2.0f);
     for (int k = 0; k < 3; ++k) {
-      Rect cell{ xs[6] + step * (float)k, cy - ob * kH, xs[6] + step * (float)k + ob, cy + ob * kH };
+      Rect cell = TunOpRectOf(st, rc, i, k);
+      if (cell.r > row.r) cell.r = row.r;
+      if (cell.l > cell.r) continue;
       Rect ic = cell.Inset(st.S(5.0f));
       if (k == 0) {
         IconRefresh(r, st, ic, p.text3);
@@ -696,6 +888,13 @@ void DrawTun(Render& r, const AppState& st, const Rect& rc) {
         IconTrash(r, st, ic, p.text3);
       }
     }
+  }
+
+  if (tunN == 0) {
+    r.TextVertCenter(host == nullptr ? L"未选择主机，先从左侧打开一个会话"
+                                     : L"该主机暂无转发规则，点右上角新建",
+                     D2D1::RectF(table.l, table.t + st.S(36.0f), table.r, table.t + st.S(96.0f)),
+                     p.text3, FontId::Body, Align::Center);
   }
 
   r.PopClip();
@@ -711,14 +910,15 @@ void DrawSet(Render& r, const AppState& st, const Rect& rc) {
   r.Fill(nav.D2D(), p.surface);
   r.Fill(D2D1::RectF(nav.r - st.S(1.0f), nav.t, nav.r, nav.b), p.line);
 
-  const wchar_t* navNames[6] = { L"常规", L"外观", L"终端", L"连接", L"日志", L"关于" };
+  static const wchar_t* navNames[6] = { L"常规", L"外观", L"终端", L"连接", L"日志", L"关于" };
+  int navIdx = st.setNav < 0 ? 0 : (st.setNav > 5 ? 5 : st.setNav);
   for (int i = 0; i < 6; ++i) {
-    Rect item{ rc.l + st.S(8.0f), rc.t + st.S(14.0f) + st.S(36.0f) * (float)i,
-               rc.l + navW - st.S(8.0f), rc.t + st.S(14.0f) + st.S(36.0f) * (float)i + st.S(34.0f) };
-    bool on = i == 0;
+    Rect item = SetNavRect(st, rc, i);
+    bool on = i == navIdx;
     if (on) r.FillRound(item.D2D(), st.S(8.0f), p.accentSoft);
     D2D1_COLOR_F fg = on ? p.accent : p.text2;
-    Rect ic{ item.l + st.S(12.0f), MidY(item) - st.S(6.5f), item.l + st.S(25.0f), MidY(item) + st.S(6.5f) };
+    Rect ic{ item.l + st.S(12.0f), MidY(item) - st.S(6.5f), item.l + st.S(25.0f),
+             MidY(item) + st.S(6.5f) };
     NavIcon(r, st, i, ic, fg);
     r.TextVertCenter(navNames[i], D2D1::RectF(ic.r + st.S(10.0f), item.t, item.r - st.S(8.0f), item.b),
                      fg, FontId::Body);
@@ -728,83 +928,84 @@ void DrawSet(Render& r, const AppState& st, const Rect& rc) {
   float bRight = rc.r - st.S(28.0f);
   float by = rc.t + st.S(24.0f);
 
-  r.TextVertCenter(L"设置", D2D1::RectF(bx, by, bRight, by + st.S(30.0f)), p.text, FontId::Display);
+  r.TextVertCenter(navNames[navIdx], D2D1::RectF(bx, by, bRight, by + st.S(30.0f)), p.text,
+                   FontId::Display);
   r.TextVertCenter(L"所有配置保存在程序同目录，绿色版不写入注册表",
                    D2D1::RectF(bx, by + st.S(32.0f), bRight, by + st.S(52.0f)), p.text3,
                    FontId::Caption);
 
-  float cardW = st.S(660.0f);
-  if (cardW > bRight - bx) cardW = bRight - bx;
-  Rect card{ bx, by + st.S(74.0f), bx + cardW, by + st.S(74.0f) + st.S(58.0f) * 7.0f };
-  CardFill(r, st, card, p);
+  int rowN = SetRowCount(navIdx);
+  if (rowN > 0) {
+    Rect first = SetRowRect(st, rc, 0);
+    Rect card{ first.l, first.t, first.r, first.t + st.S(58.0f) * (float)rowN };
+    CardFill(r, st, card, p);
+  }
 
-  const wchar_t* rowLabel[7] = { L"主题", L"界面语言", L"强调色", L"终端字体",
-                                 L"断线自动重连", L"启动自动连接", L"主机指纹校验" };
-  const wchar_t* rowDesc[7] = { L"跟随系统外观或手动指定", L"重启后生效",
-                                L"用于按钮、状态与高亮的强调色", L"终端网格使用等宽字体",
-                                L"连接意外中断后自动恢复会话", L"打开程序时连接上次使用的主机",
-                                L"首次连接时校验服务器指纹" };
+  static const unsigned kSwatches[5] = { 0x3DDC97, 0x60A5FA, 0xA78BFA, 0xFBBF24, 0xF87171 };
 
-  const wchar_t* themeItems[3] = { L"跟随系统", L"深色", L"浅色" };
-  const wchar_t* langItems[2] = { L"简体中文", L"English" };
-
-  float ctrlRight = card.r - st.S(18.0f);
-  float ctrlLeft[7];
-  ctrlLeft[0] = ctrlRight - SegWidth(r, st, themeItems, 3);
-  ctrlLeft[1] = ctrlRight - SegWidth(r, st, langItems, 2);
-  ctrlLeft[2] = ctrlRight - (st.S(17.0f) * 5.0f + st.S(8.0f) * 4.0f);
-  ctrlLeft[3] = ctrlRight - st.S(170.0f);
-  for (int i = 4; i < 7; ++i) ctrlLeft[i] = ctrlRight - st.S(34.0f);
-
-  unsigned swatches[5] = { 0x3DDC97, 0x60A5FA, 0xA78BFA, 0xFBBF24, 0xF87171 };
-
-  for (int i = 0; i < 7; ++i) {
-    Rect row{ card.l, card.t + st.S(58.0f) * (float)i, card.r,
-              card.t + st.S(58.0f) * (float)(i + 1) };
+  for (int i = 0; i < rowN; ++i) {
+    Rect row = SetRowRect(st, rc, i);
     if (i > 0) {
       r.Fill(D2D1::RectF(row.l + st.S(18.0f), row.t, row.r - st.S(18.0f), row.t + st.S(1.0f)),
              p.line);
     }
     float cy = MidY(row);
-    float labelLeft = card.l + st.S(18.0f);
-    float labelRight = ctrlLeft[i] - st.S(14.0f);
-    if (labelRight > labelLeft + st.S(40.0f)) {
+    int kind = SetKindOf(navIdx, i);
+    int optN = 0;
+    const wchar_t** opts = SetOptions(navIdx, i, &optN);
+    int val = SetIntValue(st, navIdx, i);
+    bool flag = SetBoolValue(st, navIdx, i);
+
+    float ctrlW = st.S(34.0f);
+    if (kind == SetDrop) ctrlW = st.S(170.0f);
+    else if (kind == SetSeg) ctrlW = SegWidth(r, st, opts, optN);
+    else if (kind == SetSwatch) ctrlW = st.S(17.0f) * 5.0f + st.S(8.0f) * 4.0f;
+    else if (kind == SetPlain) ctrlW = st.S(190.0f);
+    float ctrlRight = row.r - st.S(18.0f);
+    float ctrlLeft = ctrlRight - ctrlW;
+
+    float labelLeft = row.l + st.S(18.0f);
+    float labelRight = ctrlLeft - st.S(16.0f);
+    if (labelRight > labelLeft + st.S(60.0f)) {
       r.PushClip(D2D1::RectF(labelLeft, row.t, labelRight, row.b));
-      r.TextVertCenter(rowLabel[i], D2D1::RectF(labelLeft, cy - st.S(18.0f), labelRight, cy),
-                       p.text, FontId::Body);
-      r.TextVertCenter(rowDesc[i], D2D1::RectF(labelLeft, cy, labelRight, cy + st.S(18.0f)),
-                       p.text3, FontId::Micro);
+      r.TextVertCenter(kSetRows[navIdx][i].label,
+                       D2D1::RectF(labelLeft, cy - st.S(18.0f), labelRight, cy), p.text,
+                       FontId::Body);
+      r.TextVertCenter(kSetRows[navIdx][i].desc,
+                       D2D1::RectF(labelLeft, cy, labelRight, cy + st.S(18.0f)), p.text3,
+                       FontId::Micro);
       r.PopClip();
     }
 
-    if (i == 0) {
-      Rect seg{ ctrlLeft[0], cy - st.S(13.0f), ctrlRight, cy + st.S(13.0f) };
-      Segment(r, st, p, seg, themeItems, 3, 0);
-    } else if (i == 1) {
-      Rect seg{ ctrlLeft[1], cy - st.S(13.0f), ctrlRight, cy + st.S(13.0f) };
-      Segment(r, st, p, seg, langItems, 2, 0);
-    } else if (i == 2) {
+    if (kind == SetSeg && opts && optN > 0) {
+      Rect seg{ ctrlLeft, cy - st.S(13.0f), ctrlRight, cy + st.S(13.0f) };
+      Segment(r, st, p, seg, opts, optN, val);
+    } else if (kind == SetSwatch) {
       for (int k = 0; k < 5; ++k) {
-        float l = ctrlLeft[2] + (st.S(17.0f) + st.S(8.0f)) * (float)k;
+        float l = ctrlLeft + (st.S(17.0f) + st.S(8.0f)) * (float)k;
         Rect swRc{ l, cy - st.S(8.5f), l + st.S(17.0f), cy + st.S(8.5f) };
-        r.FillRound(swRc.D2D(), st.S(5.0f), Rgb(swatches[k]));
-        if (k == 0) {
+        r.FillRound(swRc.D2D(), st.S(5.0f), Rgb(kSwatches[k]));
+        if (k == val % 5) {
           r.StrokeRound(swRc.Inset(st.S(1.0f)).D2D(), st.S(4.0f), p.text, st.S(2.0f));
         }
       }
-    } else if (i == 3) {
-      Rect dd{ ctrlLeft[3], cy - st.S(15.0f), ctrlRight, cy + st.S(15.0f) };
+    } else if (kind == SetDrop && opts && optN > 0) {
+      int idx = val < 0 ? 0 : (val >= optN ? optN - 1 : val);
+      Rect dd{ ctrlLeft, cy - st.S(15.0f), ctrlRight, cy + st.S(15.0f) };
       r.StrokeRound(dd.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-      r.TextVertCenter(L"Cascadia Mono",
-                       D2D1::RectF(dd.l + st.S(12.0f), dd.t, dd.r - st.S(28.0f), dd.b),
+      r.TextVertCenter(opts[idx], D2D1::RectF(dd.l + st.S(12.0f), dd.t, dd.r - st.S(26.0f), dd.b),
                        p.text2, FontId::Body);
       float ax = dd.r - st.S(20.0f);
       r.Line(ax, cy - st.S(2.0f), ax + st.S(5.0f), cy + st.S(3.0f), p.text3, st.S(1.2f));
       r.Line(ax + st.S(5.0f), cy + st.S(3.0f), ax + st.S(10.0f), cy - st.S(2.0f), p.text3,
              st.S(1.2f));
-    } else {
-      Rect tog{ ctrlLeft[i], cy - st.S(10.0f), ctrlRight, cy + st.S(10.0f) };
-      SwitchPill(r, st, tog, true, p);
+    } else if (kind == SetSwitch) {
+      Rect tog{ ctrlLeft, cy - st.S(10.0f), ctrlRight, cy + st.S(10.0f) };
+      SwitchPill(r, st, tog, flag, p);
+    } else if (kind == SetPlain) {
+      r.TextVertCenter(SetPlainText(navIdx, i),
+                       D2D1::RectF(ctrlLeft, row.t, ctrlRight, row.b), p.text3, FontId::MonoSm,
+                       Align::Right);
     }
   }
 

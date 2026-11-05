@@ -7,7 +7,6 @@
 namespace sk {
 
 class Terminal;
-extern Terminal g_term;
 
 struct Rect {
   float l = 0, t = 0, r = 0, b = 0;
@@ -22,14 +21,26 @@ enum HitId {
   HitNone = 0,
   HitTitleMin = 1, HitTitleMax, HitTitleClose,
   HitSearch = 10, HitNewHost, HitSettings, HitHelp,
-  HitTabBase = 100, HitTabAdd = 130,
+  HitTabBase = 100, HitTabAdd = 130, HitTabsRightBase = 132,
   HitHostBase = 200,
-  HitDashCardBase = 300, HitDashNewHost = 320,
-  HitFtpUp = 400, HitFtpDown, HitFtpRefresh, HitFtpQueue,
+  HitDashCardBase = 300, HitDashNewHost = 320, HitDashEditBase = 330,
+  HitFtpNew = 400, HitFtpRefresh, HitFtpUp, HitFtpDown, HitFtpQueue,
+  HitFtpRowBase = 420,
   HitTunNew = 500, HitTunSwitchBase = 520,
+  HitTunRefreshBase = 540, HitTunEditBase = 560, HitTunDelBase = 580,
   HitSetNavBase = 600,
-  HitStatusConn = 700
+  HitSetCtrlBase = 640,
+  HitStatusConn = 700,
+  HitModalBackdrop = 800, HitModalClose, HitModalOk, HitModalCancel,
+  HitTabCloseBase = 900, HitHostEditBase = 940,
+  HitFormFieldBase = 1000, HitFormSegBase = 1020, HitFormBrowseBase = 1100,
+  HitModalKeyStore = 1120, HitKeyRowBase = 1130,
+  HitSessSegBase = 1160,
+  HitDashToggleBase = 1170, HitDashQuickBase = 1190, HitDashStatBase = 1300,
+  HitTunRowBase = 1400
 };
+
+enum SetKindId { SetSeg = 0, SetSwatch = 1, SetDrop = 2, SetSwitch = 3, SetPlain = 4 };
 
 void DrawAll(Render& r, AppState& st, const Rect& client);
 void DrawDash(Render& r, const AppState& st, const Rect& rc);
@@ -38,7 +49,35 @@ void DrawSftp(Render& r, const AppState& st, const Rect& rc);
 void DrawTun(Render& r, const AppState& st, const Rect& rc);
 void DrawSet(Render& r, const AppState& st, const Rect& rc);
 int HitTest(const AppState& st, const Rect& client, float x, float y);
-void OnHit(AppState& st, int id);
+void OnHit(AppState& st, int id, HWND hwnd = nullptr);
+Rect SetNavRect(const AppState& st, const Rect& c, int index);
+Rect SetRowRect(const AppState& st, const Rect& c, int index);
+int SetRowCount(int nav);
+int SetKindOf(int nav, int row);
+int* SetIntSlot(AppState& st, int nav, int row);
+bool* SetBoolSlot(AppState& st, int nav, int row);
+int SetIntValue(const AppState& st, int nav, int row);
+bool SetBoolValue(const AppState& st, int nav, int row);
+int SetOptionCount(int nav, int row);
+int SidebarVisibleHosts(const AppState& st, int* out, int cap);
+int SidebarHostAt(const AppState& st, const Rect& sidebar, float x, float y);
 void LayoutMetrics(const AppState& st, const Rect& client, Rect& sidebar, Rect& tabs, Rect& content, Rect& status);
+Rect TunOpRectOf(const AppState& st, const Rect& c, int index, int slot);
+Rect SftpPanelRect(const AppState& st, const Rect& c, int side);
+Rect SftpRowRectOf(const AppState& st, const Rect& c, int side, int row);
+Rect FtpActionRectOf(const AppState& st, const Rect& c, int slot);
+Rect DashEditRectOf(const AppState& st, const Rect& c, int index);
+Rect DashToggleRectOf(const AppState& st, const Rect& c, int index);
+Rect DashQuickRectOf(const AppState& st, const Rect& c, int index, int slot);
+Rect DashStatRectOf(const AppState& st, const Rect& c, int index, int slot);
+Rect SessSegRectOf(const AppState& st, const Rect& c, int slot);
+int SessSegAt(const AppState& st, const Rect& c, float x, float y);
+Rect SessInnerRect(const AppState& st, const Rect& c);
+Rect TunRowRectOf(const AppState& st, const Rect& c, int index);
+int TunIndexOfId(const Host& h, int tunnelId);
+void DrawModal(Render& r, AppState& st, const Rect& client);
+bool ModalIsForm(const AppState& st);
+void ModalChar(AppState& st, wchar_t ch);
+void ModalKey(AppState& st, int vk);
 
 }
