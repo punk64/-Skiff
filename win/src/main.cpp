@@ -149,39 +149,43 @@ void StartConnect(int idx, int sid, const std::string& password, const std::wstr
   sk::SshService::Instance().Connect(sid, p);
 }
 
-void RequestConnect(int idx) {
+void RequestConnect(int idx, bool openTerm) {
   if (idx < 0 || idx >= (int)g_state.hosts.size()) return;
-  int sid = g_state.OpenHostSession(idx);
+  int sid = openTerm ? g_state.OpenHostSession(idx) : g_state.SessionForHost(idx);
   if (sid < 0) return;
-  sk::Terminal* term = TermOf(sid);
-  if (!term) return;
 
   sk::SshService& svc = sk::SshService::Instance();
   sk::SshState st = svc.State(sid);
   if (st == sk::SshState::Connected || st == sk::SshState::Connecting) return;
 
   sk::Host& h = g_state.hosts[(size_t)idx];
-  std::string user = W2U8(h.user);
   std::string host = W2U8(h.host);
-  int port = h.port;
-  if (host.empty()) {
-    term->Feed("\r\n\x1b[31m主机地址为空\x1b[0m\r\n");
-    return;
+  if (host.empty()) return;
+
+  sk::Terminal* term = TermOf(sid);
+  if (term != nullptr) {
+    g_pwd.erase(sid);
+    term->Feed("\r\n\x1b[90m连接 " + W2U8(h.user) + "@" + host + ":" + std::to_string(h.port) +
+               "…\x1b[0m\r\n");
   }
 
-  g_pwd.erase(sid);
-  term->Feed("\r\n\x1b[90m连接 " + user + "@" + host + ":" + std::to_string(port) + "…\x1b[0m\r\n");
-
-  std::wstring key = h.keyPath.empty() ? FindKeyFor(host) : h.keyPath;
-  if (!key.empty()) {
-    StartConnect(idx, sid, std::string(), key);
+  if (h.IsKeyAuth()) {
+    std::wstring key = h.keyPath.empty() ? FindKeyFor(host) : h.keyPath;
+    if (!key.empty()) {
+      StartConnect(idx, sid, std::string(), key);
+      return;
+    }
+  }
+  if (!h.password.empty()) {
+    StartConnect(idx, sid, W2U8(h.password), std::wstring());
     return;
   }
-  PwdState& ps = g_pwd[sid];
-  ps.active = true;
-  ps.buf.clear();
-  std::string prompt = user + "@" + host + "'s password: ";
-  term->Feed("\r\n" + prompt);
+  g_state.formHost = idx;
+  g_state.promptKind = 3;
+  g_state.promptValue.clear();
+  g_state.modal = sk::ModalKind::Prompt;
+  g_state.modalTitle = L"输入密码";
+  g_state.modalNote = h.name + L" · " + h.Addr();
 }
 
 void OnSshNotify(void* ctx, int id) {
@@ -872,10 +876,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       float y = (float)GET_Y_LPARAM(lParam);
       int id = sk::HitTest(g_state, g_client, x, y);
       sk::OnHit(g_state, id, hwnd);
+      if (g_state.pendingPasswordHost >= 0) {
+        int idx = g_state.pendingPasswordHost;
+        std::wstring pwd = g_state.pendingPassword;
+        g_state.pendingPasswordHost = -1;
+        g_state.pendingPassword.clear();
+        if (idx >= 0 && idx < (int)g_state.hosts.size() && !pwd.empty()) {
+          int sid = g_state.SessionForHost(idx);
+          if (sid >= 0) StartConnect(idx, sid, W2U8(pwd), std::wstring());
+        }
+      }
       if (g_state.pendingConnect >= 0) {
         int idx = g_state.pendingConnect;
+        bool asTerm = g_state.pendingConnectTerm;
         g_state.pendingConnect = -1;
-        if (g_state.modal == sk::ModalKind::None) RequestConnect(idx);
+        g_state.pendingConnectTerm = true;
+        if (g_state.modal == sk::ModalKind::None) RequestConnect(idx, asTerm);
       }
       if (g_state.modal == sk::ModalKind::None) SyncTheme();
       InvalidateRect(hwnd, nullptr, FALSE);
@@ -885,10 +901,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       float x = (float)GET_X_LPARAM(lParam);
       float y = (float)GET_Y_LPARAM(lParam);
       int hover = -1;
-      if (!g_state.fullscreen) {
-        sk::Rect sidebar, tabs, content, status;
-        sk::LayoutMetrics(g_state, g_client, sidebar, tabs, content, status);
-        hover = sk::SidebarHostAt(g_state, sidebar, x, y);
+      if (!g_state.fullscreen && g_state.view == sk::View::Dash) {
+        int id = sk::HitTest(g_state, g_client, x, y);
+        if (id >= sk::HitDashCardBase && id < sk::HitDashNewHost) {
+          hover = id - sk::HitDashCardBase;
+        }
       }
       if (hover != g_state.hoverHost) {
         g_state.hoverHost = hover;
@@ -930,7 +947,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                     nullptr);
       DestroyMenu(menu);
       if (cmd == 1) {
-        RequestConnect(hostIdx);
+        RequestConnect(hostIdx, false);
       } else if (cmd == 2) {
         g_state.OpenHostForm(hostIdx);
       } else if (cmd == 3) {

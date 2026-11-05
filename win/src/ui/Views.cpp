@@ -5,6 +5,7 @@
 #include "app/App.h"
 #include "app/Layout.h"
 #include "app/Theme.h"
+#include "app/Version.h"
 
 #include <string>
 #include <vector>
@@ -354,7 +355,7 @@ const wchar_t** SetOptions(int nav, int row, int* n) {
 
 const wchar_t* SetPlainText(int nav, int row) {
   if (nav == 4 && row == 2) return L"logs\\";
-  if (nav == 5 && row == 0) return L"v0.3.4 · 1000025";
+  if (nav == 5 && row == 0) return L"v" SKIFF_WIN_VERSION L" · win64";
   if (nav == 5 && row == 1) return L"libssh2 1.11.1 · WinCNG";
   if (nav == 5 && row == 2) return L"个人使用";
   return L"";
@@ -469,6 +470,21 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
   Rect nb{ right - st.S(112.0f), rc.t + st.S(34.0f), right, rc.t + st.S(68.0f) };
   BtnSolid(r, st, nb, p, L"＋ 新建主机");
 
+  Rect sq = DashSearchRect(st, rc);
+  r.FillRound(sq.D2D(), st.S(L::RCtrl), p.surface2);
+  if (st.searchFocus) r.StrokeRound(sq.D2D(), st.S(L::RCtrl), p.accent, st.S(1.2f));
+  float scy = sq.t + sq.H() * kH;
+  float icx = sq.l + st.S(15.0f);
+  r.Circle(icx, scy, st.S(4.0f), Alpha(p.text3, 0.55f));
+  r.Line(icx + st.S(3.0f), scy + st.S(3.0f), icx + st.S(7.0f), scy + st.S(7.0f), p.text3,
+         st.S(1.5f));
+  std::wstring shint = st.query.empty() ? std::wstring(L"搜索主机…") : st.query;
+  float hintLeft = icx + st.S(12.0f);
+  r.PushClip(D2D1::RectF(hintLeft, sq.t, sq.r - st.S(8.0f), sq.b));
+  r.TextVertCenter(shint.c_str(), D2D1::RectF(hintLeft, sq.t, sq.r - st.S(8.0f), sq.b),
+                   st.query.empty() ? p.text3 : p.text, FontId::Small);
+  r.PopClip();
+
   float gap = st.S(10.0f);
   float statTop = rc.t + st.S(100.0f);
   float statH = st.S(76.0f);
@@ -516,16 +532,19 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
   float cardH = st.S(168.0f);
   float hostTop = rc.t + st.S(220.0f);
 
-  for (int i = 0; i < (int)st.hosts.size(); ++i) {
-    int col = i % cols;
-    int row = i / cols;
+  int vis[64];
+  int visN = SidebarVisibleHosts(st, vis, 64);
+
+  for (int s = 0; s < visN; ++s) {
+    int col = s % cols;
+    int row = s / cols;
     float l = left + (cardW + gap) * (float)col;
     float t = hostTop + (cardH + gap) * (float)row;
     Rect card{ l, t, l + cardW, t + cardH };
     if (card.t >= rc.b) break;
     CardFill(r, st, card, p);
 
-    const Host& h = st.hosts[(size_t)i];
+    const Host& h = st.hosts[(size_t)vis[s]];
     float dotR = st.S(4.0f);
     float dotX = card.l + st.S(16.0f);
     float dotY = card.t + st.S(24.0f);
@@ -535,7 +554,7 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
     if (h.state != HostState::Off) r.Circle(dotX, dotY, dotR + st.S(3.0f), Alpha(dc, 0.14f));
     r.Circle(dotX, dotY, dotR, dc);
 
-    Rect editRc = DashEditRectOf(st, rc, i);
+    Rect editRc = DashEditRectOf(st, rc, s);
     IconPencil(r, st, editRc.Inset(st.S(3.0f)), p.text3);
 
     float chipRight = editRc.l - st.S(6.0f);
@@ -613,7 +632,7 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
     statText[1] = live ? Num(h.ram) + L"%" : std::wstring(L"—");
     statText[2] = live && !h.net.empty() ? h.net : std::wstring(L"—");
     for (int k = 0; k < 3; ++k) {
-      Rect sr = DashStatRectOf(st, rc, i, k);
+      Rect sr = DashStatRectOf(st, rc, s, k);
       r.TextVertCenter(statNames[k],
                        D2D1::RectF(sr.l, sr.t, sr.l + st.S(28.0f), sr.t + st.S(14.0f)), p.text3,
                        FontId::Micro);
@@ -632,7 +651,7 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
       }
     }
 
-    Rect tg = DashToggleRectOf(st, rc, i);
+    Rect tg = DashToggleRectOf(st, rc, s);
     if (live) {
       BtnOutline(r, st, tg, p, L"断开", p.danger);
     } else if (h.state == HostState::Busy) {
@@ -642,9 +661,16 @@ void DrawDash(Render& r, const AppState& st, const Rect& rc) {
     }
     const wchar_t* quickNames[3] = { L"终端", L"隧道", L"文件" };
     for (int k = 0; k < 3; ++k) {
-      Rect q = DashQuickRectOf(st, rc, i, k);
+      Rect q = DashQuickRectOf(st, rc, s, k);
       BtnOutline(r, st, q, p, quickNames[k], p.text2);
     }
+  }
+
+  if (visN == 0) {
+    const wchar_t* tip = st.hosts.empty() ? L"还没有主机，点右上角新建" : L"没有匹配的主机";
+    r.TextVertCenter(tip,
+                     D2D1::RectF(left, hostTop + st.S(28.0f), right, hostTop + st.S(68.0f)),
+                     p.text3, FontId::Body, Align::Center);
   }
 
   r.PopClip();

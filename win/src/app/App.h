@@ -13,10 +13,10 @@ enum class HostState { Off, Busy, Live };
 enum class TunState { Up = 0, Listen = 1, Retry = 2, Down = 3 };
 enum class ModalKind {
   None = 0, HostForm = 1, TunForm = 2, StatusPanel = 3, Queue = 4, Help = 5,
-  Confirm = 6, KeyStore = 7, Prompt = 8
+  Confirm = 6, KeyStore = 7, Prompt = 8, DatePicker = 9
 };
 
-enum class FieldKind { Text = 0, Seg = 1, Pass = 2, Info = 3, Group = 4, File = 5 };
+enum class FieldKind { Text = 0, Seg = 1, Pass = 2, Info = 3, Group = 4, File = 5, Date = 6 };
 
 struct FormField {
   std::wstring key;
@@ -27,6 +27,8 @@ struct FormField {
   std::vector<std::wstring> options;
   int opt = 0;
   bool fresh = false;
+  std::wstring depKey;
+  int depOpt = -1;
 };
 
 struct SftpEntry {
@@ -52,6 +54,7 @@ struct Tunnel {
 
 struct Host {
   int id = 0;
+  int sessionId = -1;
   std::wstring name;
   std::wstring user;
   std::wstring host;
@@ -159,7 +162,19 @@ struct AppState {
   int confirmTunnel = -1;
   std::wstring promptValue;
   int promptKind = 0;
+  int dateField = -1;
+  ModalKind dateReturn = ModalKind::HostForm;
+  int dpYear = 0;
+  int dpMonth = 1;
+  int dpDay = 1;
+  int dpHour = 0;
+  int dpMinute = 0;
+  int dpSecond = 0;
+  int dpDrop = 0;
   int pendingConnect = -1;
+  bool pendingConnectTerm = true;
+  int pendingPasswordHost = -1;
+  std::wstring pendingPassword;
   int pendingDisconnect = -1;
   int pendingSftp = 0;
   int nextSessionId = 1;
@@ -226,6 +241,7 @@ struct AppState {
     return nullptr;
   }
   int OpenHostSession(int hostId);
+  int SessionForHost(int hostId);
   int OpenHostView(int hostId, int subView);
   void OpenPage(View v);
   void ActivateTab(int index);
@@ -238,6 +254,9 @@ struct AppState {
   void OpenKeyStore();
   void RefreshKeyStore();
   void ResetFingerprint(int hostIndex);
+  void OpenDatePicker(int fieldIndex);
+  void CommitDatePicker();
+  void ClearDateField();
   bool CommitForm();
   void MarkDirty() { dirty = true; }
 };

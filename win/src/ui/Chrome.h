@@ -37,7 +37,10 @@ enum HitId {
   HitModalKeyStore = 1120, HitKeyRowBase = 1130,
   HitSessSegBase = 1160,
   HitDashToggleBase = 1170, HitDashQuickBase = 1190, HitDashStatBase = 1300,
-  HitTunRowBase = 1400
+  HitTunRowBase = 1400,
+  HitNavBase = 1500, HitDashSearch = 1510,
+  HitDpPrev = 1520, HitDpNext, HitDpToday, HitDpClear, HitDpHour, HitDpMinute, HitDpSecond,
+  HitDpDayBase = 1540, HitDpCellBase = 1600
 };
 
 enum SetKindId { SetSeg = 0, SetSwatch = 1, SetDrop = 2, SetSwitch = 3, SetPlain = 4 };
@@ -61,6 +64,7 @@ bool SetBoolValue(const AppState& st, int nav, int row);
 int SetOptionCount(int nav, int row);
 int SidebarVisibleHosts(const AppState& st, int* out, int cap);
 int SidebarHostAt(const AppState& st, const Rect& sidebar, float x, float y);
+Rect DashSearchRect(const AppState& st, const Rect& c);
 void LayoutMetrics(const AppState& st, const Rect& client, Rect& sidebar, Rect& tabs, Rect& content, Rect& status);
 Rect TunOpRectOf(const AppState& st, const Rect& c, int index, int slot);
 Rect SftpPanelRect(const AppState& st, const Rect& c, int side);

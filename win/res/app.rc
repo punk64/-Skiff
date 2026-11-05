@@ -1,10 +1,11 @@
 #include <windows.h>
+#include "../src/app/Version.h"
 
 1 ICON "skiff.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION SKIFF_WIN_FILEVER
+ PRODUCTVERSION SKIFF_WIN_FILEVER
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -17,11 +18,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Skiff"
             VALUE "FileDescription", "Skiff"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "FileVersion", SKIFF_WIN_VERSTR
             VALUE "InternalName", "Skiff"
             VALUE "OriginalFilename", "Skiff.exe"
             VALUE "ProductName", "Skiff"
-            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "ProductVersion", SKIFF_WIN_VERSTR
         END
     END
     BLOCK "VarFileInfo"

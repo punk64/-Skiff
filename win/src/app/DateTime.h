@@ -94,4 +94,24 @@ inline std::wstring TrimWs(const std::wstring& s) {
   return s.substr(a, b - a);
 }
 
+inline int DaysInMonth(int y, int m) {
+  static const int table[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+  if (m < 1 || m > 12) return 31;
+  if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) return 29;
+  return table[m - 1];
+}
+
+inline int FirstWeekdayOfMonth(int y, int m) {
+  int yy = y;
+  int mm = m;
+  if (mm < 3) {
+    mm += 12;
+    yy -= 1;
+  }
+  int k = yy % 100;
+  int j = yy / 100;
+  int h = (1 + 13 * (mm + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
+  return (h + 6) % 7;
+}
+
 }

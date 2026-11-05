@@ -8,6 +8,7 @@
 #include "core/SshService.h"
 #include "ui/Sessions.h"
 #include "app/Config.h"
+#include "app/Version.h"
 #include "compat/Log.h"
 
 namespace sk {
@@ -143,6 +144,11 @@ float SidebarFootTop(const AppState& st, const Rect& s) {
 Rect SidebarFootItemRect(const AppState& st, const Rect& s, int index) {
   float top = SidebarFootTop(st, s) + st.S(8) + st.S(36) * (float)index;
   return Rect{ s.l + st.S(8), top, s.r - st.S(8), top + st.S(34) };
+}
+
+Rect NavItemRect(const AppState& st, const Rect& s, int index) {
+  float top = s.t + st.S(64.0f) + st.S(46.0f) * (float)index;
+  return Rect{ s.l + st.S(10.0f), top, s.r - st.S(10.0f), top + st.S(42.0f) };
 }
 
 float TabWidthOf(const AppState& st, const Tab& tab) {
@@ -406,116 +412,51 @@ void DrawSidebar(Render& r, const AppState& st, const Rect& s, const Palette& p)
                    D2D1::RectF(tx, lg.t + lg.H() * 0.52f, textRight, lg.b), p.text3,
                    FontId::Micro);
 
-  Rect sq = SidebarSearchRect(st, s);
-  r.FillRound(sq.D2D(), st.S(L::RCtrl), p.surface2);
-  if (st.searchFocus) r.StrokeRound(sq.D2D(), st.S(L::RCtrl), p.accent, st.S(1.2f));
-  float iconSize = st.S(12);
-  Rect ic{ sq.l + st.S(10), MidY(sq) - iconSize * kHalf, sq.l + st.S(10) + iconSize,
-           MidY(sq) + iconSize * kHalf };
-  DrawSearchIcon(r, st, ic, p.text3);
-
-  const wchar_t* kbText = L"Ctrl K";
-  float kw = r.Measure(kbText, FontId::Micro) + st.S(8);
-  float kh = st.S(16);
-  Rect kb{ sq.r - st.S(10) - kw, MidY(sq) - kh * kHalf, sq.r - st.S(10), MidY(sq) + kh * kHalf };
-  r.StrokeRound(kb.D2D(), st.S(4), p.line, st.S(1));
-  r.TextVertCenter(kbText, kb.D2D(), p.text3, FontId::Micro, Align::Center);
-
-  bool hasQuery = !st.query.empty();
-  std::wstring hint = hasQuery ? st.query : std::wstring(L"搜索主机…");
-  float hintLeft = ic.r + st.S(8);
-  if (kb.l - st.S(6) > hintLeft) {
-    r.PushClip(D2D1::RectF(hintLeft, sq.t, kb.l - st.S(6), sq.b));
-    r.TextVertCenter(hint.c_str(), D2D1::RectF(hintLeft, sq.t, kb.l, sq.b),
-                     hasQuery ? p.text : p.text3, FontId::Small);
-    r.PopClip();
+  const wchar_t* navNames[5] = { L"主机", L"终端", L"文件", L"转发", L"设置" };
+  const wchar_t* navKeys[5] = { L"Ctrl 0", L"Ctrl 1", L"Ctrl 2", L"Ctrl 3", L"Ctrl ," };
+  View navViews[5] = { View::Dash, View::Term, View::Sftp, View::Tun, View::Set };
+  int navSel = 0;
+  for (int k = 0; k < 5; ++k) {
+    if (navViews[k] == st.view) navSel = k;
+  }
+  int liveN = 0;
+  for (size_t i = 0; i < st.hosts.size(); ++i) {
+    if (st.hosts[i].state == HostState::Live) ++liveN;
   }
 
-  int vis[64];
-  int visN = SidebarVisibleHosts(st, vis, 64);
-  Rect sec = SidebarSectionRect(st, s);
-  std::wstring secText = std::wstring(L"主机 · ") + Num(visN);
-  r.TextVertCenter(secText.c_str(), sec.D2D(), p.text3, FontId::Micro);
-
-  float foot = SidebarFootTop(st, s);
-  for (int k = 0; k < visN; ++k) {
-    Rect row = SidebarHostRect(st, s, k);
-    if (row.b > foot - st.S(4)) break;
-    int i = vis[k];
-    const Host& h = st.hosts[i];
-    if (i == st.activeHost) {
+  for (int k = 0; k < 5; ++k) {
+    Rect row = NavItemRect(st, s, k);
+    bool on = k == navSel;
+    if (on) {
       r.FillRound(row.D2D(), st.S(L::RCtrl), p.accentSoft);
-      Rect edge{ row.l, row.t + st.S(11), row.l + st.S(3), row.b - st.S(11) };
+      Rect edge{ row.l, row.t + st.S(10), row.l + st.S(3), row.b - st.S(10) };
       r.FillRound(edge.D2D(), st.S(1.5f), p.accent);
     }
-
-    float dot = st.S(L::HostDot);
-    float cyDot = MidY(row);
-    float cxDot = row.l + st.S(9) + dot * kHalf;
-    D2D1_COLOR_F dc = p.text3;
-    if (h.state == HostState::Live) dc = p.accent;
-    if (h.state == HostState::Busy) dc = p.blue;
-    if (h.state != HostState::Off) r.Circle(cxDot, cyDot, dot * kHalf + st.S(3), Alpha(dc, 0.13f));
-    r.Circle(cxDot, cyDot, dot * kHalf, dc);
-
-    std::wstring chip;
-    D2D1_COLOR_F chipFg = p.text3;
-    D2D1_COLOR_F chipBg = Alpha(p.text3, 0.12f);
-    bool hasChip = true;
-    int dl = h.DaysLeft();
-    if (h.state == HostState::Live) {
-      chip = L"在线";
-      chipFg = p.accent;
-      chipBg = p.accentSoft;
-    } else if (h.state == HostState::Busy) {
-      chip = L"连接中";
-      chipFg = p.warn;
-      chipBg = Alpha(p.warn, 0.12f);
-    } else if (dl == INT_MIN) {
-      hasChip = false;
-    } else if (dl < 0) {
-      chip = L"已过期";
-      chipFg = p.danger;
-      chipBg = Alpha(p.danger, 0.12f);
+    r.TextVertCenter(navNames[k],
+                     D2D1::RectF(row.l + st.S(16), row.t, row.r - st.S(64), row.b),
+                     on ? p.text : p.text2, FontId::Body);
+    if (k == 0 && !st.hosts.empty()) {
+      std::wstring cnt = Num(liveN) + L"/" + Num((int)st.hosts.size());
+      r.TextVertCenter(cnt.c_str(), D2D1::RectF(row.r - st.S(66), row.t, row.r - st.S(10), row.b),
+                       on ? p.accent : p.text3, FontId::Micro, Align::Right);
     } else {
-      chip = std::wstring(L"剩 ") + Num(dl) + L" 天";
-      chipFg = dl <= 7 ? p.warn : p.text3;
-      chipBg = dl <= 7 ? Alpha(p.warn, 0.12f) : Alpha(p.text3, 0.12f);
-    }
-
-    bool editHover = i == st.hoverHost;
-    Rect chipRc = (editHover || !hasChip) ? HostEditRect(st, s, k) : ChipRectOf(r, st, chip, row);
-    if (editHover) {
-      DrawChip(r, st, L"编辑", chipRc, p.accent, p.accentSoft);
-    } else if (hasChip) {
-      DrawChip(r, st, chip, chipRc, chipFg, chipBg);
-    }
-
-    float nx = cxDot + dot * kHalf + st.S(10);
-    float clipRight = chipRc.l - st.S(6);
-    if (clipRight > nx) {
-      r.PushClip(D2D1::RectF(nx, row.t, clipRight, row.b));
-      r.TextVertCenter(h.name.c_str(), D2D1::RectF(nx, row.t + st.S(10), clipRight, row.t + st.S(28)),
-                       p.text, FontId::Body);
-      std::wstring addr = h.Addr();
-      r.TextVertCenter(addr.c_str(), D2D1::RectF(nx, row.t + st.S(28), clipRight, row.b - st.S(9)),
-                       p.text3, FontId::MonoSm);
-      r.PopClip();
-    }
-  }
-
-  r.Fill(Rect{ s.l, foot, s.r, foot + st.S(1) }.D2D(), p.line);
-  for (int i = 0; i < 2; ++i) {
-    Rect item = SidebarFootItemRect(st, s, i);
-    const wchar_t* label = i == 0 ? L"设置" : L"快捷键";
-    r.TextVertCenter(label, D2D1::RectF(item.l + st.S(10), item.t, item.r - st.S(10), item.b),
-                     p.text2, FontId::Body);
-    if (i == 0) {
-      const wchar_t* hintText = L"Ctrl ,";
-      r.TextVertCenter(hintText, D2D1::RectF(item.l, item.t, item.r - st.S(10), item.b),
+      r.TextVertCenter(navKeys[k], D2D1::RectF(row.r - st.S(66), row.t, row.r - st.S(10), row.b),
                        p.text3, FontId::Micro, Align::Right);
     }
   }
+
+  float foot = SidebarFootTop(st, s);
+  r.Fill(Rect{ s.l, foot, s.r, foot + st.S(1) }.D2D(), p.line);
+  Rect vrow = SidebarFootItemRect(st, s, 0);
+  Rect hk = SidebarFootItemRect(st, s, 1);
+  std::wstring ver = std::wstring(L"轻舟 ") + SKIFF_WIN_VERSION + L" · Windows";
+  r.TextVertCenter(ver.c_str(),
+                   D2D1::RectF(vrow.l + st.S(10), vrow.t, vrow.r - st.S(10), vrow.b), p.text3,
+                   FontId::Micro);
+  r.TextVertCenter(L"快捷键", D2D1::RectF(hk.l + st.S(10), hk.t, hk.r - st.S(54), hk.b), p.text2,
+                   FontId::Body);
+  r.TextVertCenter(L"F1", D2D1::RectF(hk.r - st.S(54), hk.t, hk.r - st.S(10), hk.b), p.text3,
+                   FontId::Micro, Align::Right);
 }
 
 void DrawTabs(Render& r, const AppState& st, const Rect& tabs, const Palette& p) {
@@ -643,7 +584,7 @@ void DrawStatus(Render& r, const AppState& st, const Rect& status, const Palette
     }
   }
   std::wstring right[4];
-  right[0] = L"v1.0.0";
+  right[0] = std::wstring(L"v") + SKIFF_WIN_VERSION;
   right[1] = L"UTF-8";
   right[2] = dim;
   right[3] = sha;
@@ -706,6 +647,15 @@ bool IsFormModal(const AppState& st) {
   return st.modal == ModalKind::HostForm || st.modal == ModalKind::TunForm;
 }
 
+bool FieldVisible(const AppState& st, int index) {
+  if (index < 0 || index >= (int)st.form.size()) return false;
+  const FormField& f = st.form[(size_t)index];
+  if (f.depKey.empty() || f.depOpt < 0) return true;
+  const FormField* dep = FieldOf(st.form, f.depKey);
+  if (dep == nullptr) return true;
+  return dep->opt == f.depOpt;
+}
+
 int ModalRowCount(const AppState& st) {
   if (IsFormModal(st)) return (int)st.form.size();
   if (st.modal == ModalKind::StatusPanel) return 7;
@@ -731,11 +681,29 @@ float ModalBodyH(const AppState& st) {
   if (n <= 0) return 0.0f;
   if (!IsFormModal(st)) return ModalRowHAt(st, 0) * (float)n;
   float h = 0.0f;
-  for (int i = 0; i < n; ++i) h += ModalRowHAt(st, i);
+  for (int i = 0; i < n; ++i) {
+    if (!FieldVisible(st, i)) continue;
+    h += ModalRowHAt(st, i);
+  }
   return h;
 }
 
+Rect DpGridRect(const AppState& st, const Rect& panel) {
+  float top = panel.t + st.S(64.0f) + st.S(38.0f) + st.S(22.0f);
+  return Rect{ panel.l + st.S(22.0f), top, panel.r - st.S(22.0f), top + st.S(192.0f) };
+}
+
+Rect DpPanelRect(const AppState& st, const Rect& client) {
+  float w = st.S(360.0f);
+  float h = st.S(426.0f);
+  if (h > client.H() - st.S(32.0f)) h = client.H() - st.S(32.0f);
+  float cx = client.l + client.W() * kHalf;
+  float cy = client.t + client.H() * kHalf;
+  return Rect{ cx - w * kHalf, cy - h * kHalf, cx + w * kHalf, cy + h * kHalf };
+}
+
 Rect ModalPanel(const AppState& st, const Rect& client) {
+  if (st.modal == ModalKind::DatePicker) return DpPanelRect(st, client);
   float w = st.S(520.0f);
   if (w > client.W() - st.S(48.0f)) w = client.W() - st.S(48.0f);
   float maxBody = client.H() - st.S(48.0f) - st.S(64.0f) - st.S(66.0f);
@@ -749,8 +717,12 @@ Rect ModalPanel(const AppState& st, const Rect& client) {
 }
 
 Rect ModalFieldRect(const AppState& st, const Rect& panel, int i) {
+  if (IsFormModal(st) && !FieldVisible(st, i)) return Rect{};
   float top = panel.t + st.S(64.0f) - st.formScroll;
-  for (int k = 0; k < i; ++k) top += ModalRowHAt(st, k);
+  for (int k = 0; k < i; ++k) {
+    if (!FieldVisible(st, k)) continue;
+    top += ModalRowHAt(st, k);
+  }
   return Rect{ panel.l + st.S(22.0f), top, panel.r - st.S(22.0f), top + ModalRowHAt(st, i) };
 }
 
@@ -776,6 +748,51 @@ Rect ModalCloseRect(const AppState& st, const Rect& panel) {
   float s = st.S(22.0f);
   return Rect{ panel.r - st.S(18.0f) - s, panel.t + st.S(18.0f), panel.r - st.S(18.0f),
                panel.t + st.S(18.0f) + s };
+}
+
+Rect DpDayRect(const AppState& st, const Rect& panel, int index) {
+  Rect g = DpGridRect(st, panel);
+  float w = g.W() / 7.0f;
+  float h = g.H() / 6.0f;
+  int row = index / 7;
+  int col = index % 7;
+  return Rect{ g.l + w * (float)col, g.t + h * (float)row, g.l + w * (float)(col + 1),
+               g.t + h * (float)(row + 1) };
+}
+
+Rect DpCellRect(const AppState& st, const Rect& panel, int index) {
+  Rect g = DpGridRect(st, panel);
+  int cols = st.dpDrop == 1 ? 6 : 10;
+  int rows = st.dpDrop == 1 ? 4 : 6;
+  float w = g.W() / (float)cols;
+  float h = g.H() / (float)rows;
+  int row = index / cols;
+  int col = index % cols;
+  return Rect{ g.l + w * (float)col, g.t + h * (float)row, g.l + w * (float)(col + 1),
+               g.t + h * (float)(row + 1) };
+}
+
+Rect DpArrowRect(const AppState& st, const Rect& panel, int slot) {
+  float top = panel.t + st.S(68.0f);
+  float s = st.S(30.0f);
+  if (slot == 0) return Rect{ panel.l + st.S(22.0f), top, panel.l + st.S(22.0f) + s, top + s };
+  return Rect{ panel.r - st.S(22.0f) - s, top, panel.r - st.S(22.0f), top + s };
+}
+
+Rect DpTimeBtnRect(const AppState& st, const Rect& panel, int slot) {
+  float top = DpGridRect(st, panel).b + st.S(14.0f);
+  float w = st.S(74.0f);
+  float gap = st.S(8.0f);
+  float left = panel.l + st.S(22.0f) + (w + gap) * (float)slot;
+  return Rect{ left, top, left + w, top + st.S(34.0f) };
+}
+
+Rect DpAuxRect(const AppState& st, const Rect& panel, int slot) {
+  float w = st.S(64.0f);
+  float h = st.S(30.0f);
+  float left = panel.l + st.S(22.0f) + (w + st.S(8.0f)) * (float)slot;
+  float top = panel.b - st.S(16.0f) - h;
+  return Rect{ left, top, left + w, top + h };
 }
 
 void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
@@ -822,6 +839,7 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     float valRight = panel.r - st.S(22.0f);
     for (int i = 0; i < rowN && i < (int)st.form.size(); ++i) {
       const FormField& f = st.form[i];
+      if (!FieldVisible(st, i)) continue;
       Rect row = ModalFieldRect(st, panel, i);
       if (row.b <= body.t || row.t >= body.b) continue;
       if (f.kind == FieldKind::Group) {
@@ -855,7 +873,8 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
         continue;
       }
       bool browse = f.kind == FieldKind::File;
-      float boxRight = browse ? valRight - st.S(64.0f) : valRight;
+      bool datePick = f.kind == FieldKind::Date;
+      float boxRight = (browse || datePick) ? valRight - st.S(64.0f) : valRight;
       Rect box{ valLeft, row.t + st.S(9.0f), boxRight, row.b - st.S(9.0f) };
       r.FillRound(box.D2D(), st.S(L::RCtrl), p.surface2);
       if (focus) r.StrokeRound(box.Inset(st.S(0.5f)).D2D(), st.S(L::RCtrl), p.accent, st.S(1.5f));
@@ -882,10 +901,11 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
                  p.accent);
         }
       }
-      if (browse) {
+      if (browse || datePick) {
         Rect br{ boxRight + st.S(8.0f), box.t, valRight, box.b };
         r.StrokeRound(br.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-        r.TextVertCenter(L"浏览…", br.D2D(), p.text2, FontId::Small, Align::Center);
+        r.TextVertCenter(browse ? L"浏览…" : L"选择…", br.D2D(), p.text2, FontId::Small,
+                         Align::Center);
       }
     }
     r.PopClip();
@@ -895,6 +915,92 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
                                    panel.r - st.S(120.0f), panel.b - st.S(28.0f)),
                        p.danger, FontId::Micro);
     }
+  } else if (st.modal == ModalKind::DatePicker) {
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    float navTop = panel.t + st.S(64.0f) + st.S(4.0f);
+    std::wstring head = std::to_wstring(st.dpYear) + L" 年 " + std::to_wstring(st.dpMonth) + L" 月";
+    r.TextVertCenter(head.c_str(),
+                     D2D1::RectF(panel.l + st.S(60.0f), navTop, panel.r - st.S(60.0f),
+                                 navTop + st.S(30.0f)),
+                     p.text, FontId::Body, Align::Center);
+    for (int k = 0; k < 2; ++k) {
+      Rect ar = DpArrowRect(st, panel, k);
+      float cx = ar.l + ar.W() * kHalf;
+      float cy = MidY(ar);
+      float aw = st.S(4.0f);
+      float ah = st.S(6.0f);
+      if (k == 0) {
+        r.Line(cx + aw * kHalf, cy - ah, cx - aw * kHalf, cy, p.text2, st.S(1.4f));
+        r.Line(cx - aw * kHalf, cy, cx + aw * kHalf, cy + ah, p.text2, st.S(1.4f));
+      } else {
+        r.Line(cx - aw * kHalf, cy - ah, cx + aw * kHalf, cy, p.text2, st.S(1.4f));
+        r.Line(cx + aw * kHalf, cy, cx - aw * kHalf, cy + ah, p.text2, st.S(1.4f));
+      }
+    }
+    const wchar_t* wd[7] = { L"日", L"一", L"二", L"三", L"四", L"五", L"六" };
+    Rect g = DpGridRect(st, panel);
+    float cw = g.W() / 7.0f;
+    float weekTop = g.t - st.S(22.0f);
+    for (int k = 0; k < 7; ++k) {
+      Rect cell{ g.l + cw * (float)k, weekTop, g.l + cw * (float)(k + 1), weekTop + st.S(22.0f) };
+      r.TextVertCenter(wd[k], cell.D2D(), p.text3, FontId::Micro, Align::Center);
+    }
+    if (st.dpDrop == 0) {
+      int lead = FirstWeekdayOfMonth(st.dpYear, st.dpMonth);
+      int dim = DaysInMonth(st.dpYear, st.dpMonth);
+      for (int k = 0; k < 42; ++k) {
+        Rect cell = DpDayRect(st, panel, k);
+        int day = k - lead + 1;
+        if (day < 1 || day > dim) continue;
+        bool sel = day == st.dpDay;
+        bool today = st.dpYear == now.wYear && st.dpMonth == now.wMonth && day == now.wDay;
+        if (sel) {
+          r.FillRound(cell.Inset(st.S(6.0f)).D2D(), st.S(L::RBtn), p.accent);
+        } else if (today) {
+          r.StrokeRound(cell.Inset(st.S(6.0f)).D2D(), st.S(L::RBtn), p.accent, st.S(1.2f));
+        }
+        std::wstring ds = std::to_wstring(day);
+        r.TextVertCenter(ds.c_str(), cell.D2D(), sel ? p.accentFg : p.text, FontId::Small,
+                         Align::Center);
+      }
+    } else {
+      int n = st.dpDrop == 1 ? 24 : 60;
+      int cur = st.dpDrop == 1 ? st.dpHour : st.dpMinute;
+      if (st.dpDrop == 3) cur = st.dpSecond;
+      r.FillRound(g.D2D(), st.S(L::RCtrl), p.surface2);
+      for (int k = 0; k < n; ++k) {
+        Rect cell = DpCellRect(st, panel, k);
+        bool on = k == cur;
+        if (on) r.FillRound(cell.Inset(st.S(2.0f)).D2D(), st.S(6.0f), p.accent);
+        std::wstring vs = std::to_wstring(k);
+        r.TextVertCenter(vs.c_str(), cell.D2D(), on ? p.accentFg : p.text2, FontId::Small,
+                         Align::Center);
+      }
+    }
+    const wchar_t* tl[3] = { L"时", L"分", L"秒" };
+    int tv[3] = { st.dpHour, st.dpMinute, st.dpSecond };
+    for (int k = 0; k < 3; ++k) {
+      Rect b = DpTimeBtnRect(st, panel, k);
+      bool open = st.dpDrop == k + 1;
+      r.FillRound(b.D2D(), st.S(L::RBtn), open ? p.accentSoft : p.surface2);
+      if (open) r.StrokeRound(b.Inset(st.S(0.5f)).D2D(), st.S(L::RBtn), p.accent, st.S(1.2f));
+      wchar_t buf[32];
+      swprintf_s(buf, L"%ls %02d", tl[k], tv[k]);
+      r.TextVertCenter(buf, b.D2D(), open ? p.accent : p.text2, FontId::Small, Align::Center);
+    }
+    for (int k = 0; k < 2; ++k) {
+      Rect b = DpAuxRect(st, panel, k);
+      r.StrokeRound(b.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+      r.TextVertCenter(k == 0 ? L"今天" : L"清除", b.D2D(), p.text2, FontId::Small,
+                       Align::Center);
+    }
+    Rect okRc = ModalOkRect(st, panel);
+    Rect cancelRc = ModalCancelRect(st, panel);
+    r.FillRound(okRc.D2D(), st.S(L::RBtn), p.accent);
+    r.TextVertCenter(L"确定", okRc.D2D(), p.accentFg, FontId::Body, Align::Center);
+    r.StrokeRound(cancelRc.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(L"取消", cancelRc.D2D(), p.text2, FontId::Body, Align::Center);
   } else if (st.modal == ModalKind::Confirm) {
     Rect body = ModalBodyRect(st, panel);
     r.TextVertCenter(st.confirmNote.c_str(), body.D2D(), p.text2, FontId::Body, Align::Center);
@@ -921,7 +1027,10 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
               body.t + st.S(54.0f) };
     r.FillRound(box.D2D(), st.S(L::RCtrl), p.surface2);
     r.StrokeRound(box.Inset(st.S(0.5f)).D2D(), st.S(L::RCtrl), p.accent, st.S(1.5f));
-    std::wstring shown = st.promptValue.empty() ? std::wstring(L"输入名称") : st.promptValue;
+    bool pwdPrompt = st.promptKind == 3;
+    std::wstring shown = st.promptValue;
+    if (pwdPrompt && !shown.empty()) shown.assign(shown.size(), L'\x2022');
+    if (shown.empty()) shown = pwdPrompt ? L"登录密码" : L"输入名称";
     r.TextVertCenter(shown.c_str(),
                      D2D1::RectF(box.l + st.S(10.0f), box.t, box.r - st.S(8.0f), box.b),
                      st.promptValue.empty() ? p.text3 : p.text, FontId::Body);
@@ -1014,6 +1123,12 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
 
 }
 
+Rect DashSearchRect(const AppState& st, const Rect& c) {
+  float right = c.r - st.S(28.0f);
+  float nr = right - st.S(112.0f) - st.S(10.0f);
+  return Rect{ nr - st.S(220.0f), c.t + st.S(34.0f), nr, c.t + st.S(68.0f) };
+}
+
 const Palette& DarkPalette() {
   static const Palette p = BuildPalette(true);
   return p;
@@ -1100,25 +1215,35 @@ static const wchar_t* PageTitle(View v) {
   }
 }
 
+int AppState::SessionForHost(int hostId) {
+  if (hostId < 0 || hostId >= (int)hosts.size()) return -1;
+  Host& h = hosts[(size_t)hostId];
+  if (h.sessionId >= 0) return h.sessionId;
+  h.sessionId = nextSessionId++;
+  SessionHub::Instance().Ensure(h.sessionId);
+  return h.sessionId;
+}
+
 int AppState::OpenHostSession(int hostId) {
   if (hostId < 0 || hostId >= (int)hosts.size()) return -1;
+  int sid = SessionForHost(hostId);
+  if (sid < 0) return -1;
   int found = FindTabByHost(hostId);
   if (found >= 0) {
     ActivateTab(found);
-    return tabs[(size_t)found].sessionId;
+    return sid;
   }
   Tab t;
   t.view = (int)View::Term;
   t.hostId = hostId;
-  t.sessionId = nextSessionId++;
+  t.sessionId = sid;
   t.title = hosts[(size_t)hostId].name + L" · 终端";
   t.icon = (int)View::Term;
   tabs.push_back(t);
   activeHost = hostId;
   activeTab = (int)tabs.size() - 1;
   view = View::Term;
-  SessionHub::Instance().Ensure(t.sessionId);
-  return t.sessionId;
+  return sid;
 }
 
 void AppState::OpenPage(View v) {
@@ -1231,6 +1356,60 @@ void AppState::ResetFingerprint(int hostIndex) {
   dirty = true;
 }
 
+void AppState::OpenDatePicker(int fieldIndex) {
+  if (fieldIndex < 0 || fieldIndex >= (int)form.size()) return;
+  dateField = fieldIndex;
+  dateReturn = modal;
+  SYSTEMTIME now{};
+  GetLocalTime(&now);
+  SYSTEMTIME cur{};
+  if (ParseStamp(TrimWs(form[(size_t)fieldIndex].value), cur)) {
+    dpYear = cur.wYear;
+    dpMonth = cur.wMonth;
+    dpDay = cur.wDay;
+    dpHour = cur.wHour;
+    dpMinute = cur.wMinute;
+    dpSecond = cur.wSecond;
+  } else {
+    dpYear = now.wYear;
+    dpMonth = now.wMonth;
+    dpDay = now.wDay;
+    dpHour = 0;
+    dpMinute = 0;
+    dpSecond = 0;
+  }
+  dpDrop = 0;
+  modal = ModalKind::DatePicker;
+  modalTitle = form[(size_t)fieldIndex].label;
+  modalNote = L"选日期后调整时 / 分 / 秒，确定写回字段";
+}
+
+void AppState::CommitDatePicker() {
+  if (dateField < 0 || dateField >= (int)form.size()) return;
+  int dim = DaysInMonth(dpYear, dpMonth);
+  if (dpDay > dim) dpDay = dim;
+  if (dpDay < 1) dpDay = 1;
+  SYSTEMTIME out{};
+  out.wYear = (WORD)dpYear;
+  out.wMonth = (WORD)dpMonth;
+  out.wDay = (WORD)dpDay;
+  out.wHour = (WORD)dpHour;
+  out.wMinute = (WORD)dpMinute;
+  out.wSecond = (WORD)dpSecond;
+  form[(size_t)dateField].value = FormatStamp(out);
+  form[(size_t)dateField].fresh = false;
+  modal = dateReturn;
+  dateField = -1;
+}
+
+void AppState::ClearDateField() {
+  if (dateField < 0 || dateField >= (int)form.size()) return;
+  form[(size_t)dateField].value.clear();
+  form[(size_t)dateField].fresh = false;
+  modal = dateReturn;
+  dateField = -1;
+}
+
 void AppState::OpenHostForm(int index) {
   form.clear();
   formTarget = index;
@@ -1252,15 +1431,17 @@ void AppState::OpenHostForm(int index) {
   form.push_back({ L"g2", L"认证", L"", L"", FieldKind::Group });
   form.push_back({ L"auth", L"认证方式", L"", L"", FieldKind::Seg,
                    { L"密码", L"密钥" }, authOpt });
-  form.push_back({ L"password", L"密码", h.password, L"随配置保存在本机", FieldKind::Pass });
+  form.push_back({ L"password", L"密码", h.password, L"随配置保存在本机", FieldKind::Pass,
+                   {}, 0, false, L"auth", 0 });
   form.push_back({ L"keyPath", L"私钥文件", h.keyPath, L"留空则自动查找 keys 目录",
-                   FieldKind::File });
-  form.push_back({ L"keyPass", L"私钥口令", h.keyPass, L"私钥无口令可留空", FieldKind::Pass });
+                   FieldKind::File, {}, 0, false, L"auth", 1 });
+  form.push_back({ L"keyPass", L"私钥口令", h.keyPass, L"私钥无口令可留空", FieldKind::Pass,
+                   {}, 0, false, L"auth", 1 });
 
   form.push_back({ L"g3", L"时间与自动化", L"", L"", FieldKind::Group });
-  form.push_back({ L"registeredAt", L"注册时间", h.registeredAt, L"YYYY-MM-DD HH:mm:ss",
-                   FieldKind::Text });
-  form.push_back({ L"expireAt", L"到期时间", h.expireAt, L"留空表示不限", FieldKind::Text });
+  form.push_back({ L"registeredAt", L"注册时间", h.registeredAt, L"点击选择日期",
+                   FieldKind::Date });
+  form.push_back({ L"expireAt", L"到期时间", h.expireAt, L"留空表示不限", FieldKind::Date });
   form.push_back({ L"autoConnect", L"启动连接", L"", L"", FieldKind::Seg,
                    { L"关闭", L"开启" }, h.autoConnect ? 1 : 0 });
   if (edit && !h.hostKey.empty()) {
@@ -1596,6 +1777,27 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
     if (!panel.Hit(x, y)) return HitModalBackdrop;
     if (ModalCloseRect(st, panel).Hit(x, y)) return HitModalClose;
     if (ModalOkRect(st, panel).Hit(x, y)) return HitModalOk;
+    if (st.modal == ModalKind::DatePicker) {
+      if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
+      if (DpArrowRect(st, panel, 0).Hit(x, y)) return HitDpPrev;
+      if (DpArrowRect(st, panel, 1).Hit(x, y)) return HitDpNext;
+      if (DpAuxRect(st, panel, 0).Hit(x, y)) return HitDpToday;
+      if (DpAuxRect(st, panel, 1).Hit(x, y)) return HitDpClear;
+      for (int k = 0; k < 3; ++k) {
+        if (DpTimeBtnRect(st, panel, k).Hit(x, y)) return HitDpHour + k;
+      }
+      if (st.dpDrop == 0) {
+        for (int k = 0; k < 42; ++k) {
+          if (DpDayRect(st, panel, k).Hit(x, y)) return HitDpDayBase + k;
+        }
+      } else {
+        int n = st.dpDrop == 1 ? 24 : 60;
+        for (int k = 0; k < n; ++k) {
+          if (DpCellRect(st, panel, k).Hit(x, y)) return HitDpCellBase + k;
+        }
+      }
+      return HitNone;
+    }
     if (ModalIsForm(st)) {
       if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
       if (st.modal == ModalKind::HostForm) {
@@ -1618,7 +1820,7 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
             if (cell.Hit(x, y)) return HitFormSegBase + i * 4 + k;
           }
         }
-        if (f.kind == FieldKind::File) {
+        if (f.kind == FieldKind::File || f.kind == FieldKind::Date) {
           Rect br{ row.r - st.S(64.0f), row.t + st.S(9.0f), row.r, row.b - st.S(9.0f) };
           if (br.Hit(x, y)) return HitFormBrowseBase + i;
         }
@@ -1639,21 +1841,9 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
       if (TitleButtonRect(st, client, i).Hit(x, y)) return HitTitleMin + i;
     }
 
-    if (SidebarSearchRect(st, sidebar).Hit(x, y)) return HitSearch;
-
-    float foot = SidebarFootTop(st, sidebar);
-    int vis[64];
-    int visN = SidebarVisibleHosts(st, vis, 64);
-    for (int k = 0; k < visN; ++k) {
-      Rect row = SidebarHostRect(st, sidebar, k);
-      if (row.b > foot - st.S(4)) break;
-      if (!row.Hit(x, y)) continue;
-      if (st.hoverHost == vis[k] && HostEditRect(st, sidebar, k).Hit(x, y)) {
-        return HitHostEditBase + vis[k];
-      }
-      return HitHostBase + vis[k];
+    for (int k = 0; k < 5; ++k) {
+      if (NavItemRect(st, sidebar, k).Hit(x, y)) return HitNavBase + k;
     }
-    if (SidebarFootItemRect(st, sidebar, 0).Hit(x, y)) return HitSettings;
     if (SidebarFootItemRect(st, sidebar, 1).Hit(x, y)) return HitHelp;
 
     for (int i = 0; i < (int)st.tabs.size(); ++i) {
@@ -1670,14 +1860,19 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
   if (content.Hit(x, y)) {
     if (st.view == View::Dash) {
       if (DashNewHostRect(st, content).Hit(x, y)) return HitDashNewHost;
-      for (int i = 0; i < (int)st.hosts.size(); ++i) {
-        if (!DashCardRect(st, content, i).Hit(x, y)) continue;
-        if (DashEditRectOf(st, content, i).Hit(x, y)) return HitDashEditBase + i;
-        if (DashToggleRectOf(st, content, i).Hit(x, y)) return HitDashToggleBase + i;
+      if (DashSearchRect(st, content).Hit(x, y)) return HitDashSearch;
+      int vis[64];
+      int visN = SidebarVisibleHosts(st, vis, 64);
+      for (int s = 0; s < visN; ++s) {
+        if (!DashCardRect(st, content, s).Hit(x, y)) continue;
+        if (DashEditRectOf(st, content, s).Hit(x, y)) return HitDashEditBase + vis[s];
+        if (DashToggleRectOf(st, content, s).Hit(x, y)) return HitDashToggleBase + vis[s];
         for (int k = 0; k < 3; ++k) {
-          if (DashQuickRectOf(st, content, i, k).Hit(x, y)) return HitDashQuickBase + i * 4 + k;
+          if (DashQuickRectOf(st, content, s, k).Hit(x, y)) {
+            return HitDashQuickBase + vis[s] * 4 + k;
+          }
         }
-        return HitDashCardBase + i;
+        return HitDashCardBase + vis[s];
       }
     } else if (st.view == View::Set) {
       for (int i = 0; i < 6; ++i) {
@@ -1737,6 +1932,82 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
 }
 
 void OnHit(AppState& st, int id, HWND hwnd) {
+  if (st.modal == ModalKind::DatePicker && id != HitNone) {
+    if (id == HitModalOk) {
+      st.CommitDatePicker();
+      return;
+    }
+    if (id == HitModalBackdrop || id == HitModalClose || id == HitModalCancel) {
+      st.modal = st.dateReturn;
+      st.dateField = -1;
+      return;
+    }
+    if (id == HitDpPrev) {
+      if (st.dpMonth == 1) {
+        st.dpMonth = 12;
+        --st.dpYear;
+      } else {
+        --st.dpMonth;
+      }
+      int dim = DaysInMonth(st.dpYear, st.dpMonth);
+      if (st.dpDay > dim) st.dpDay = dim;
+      st.dpDrop = 0;
+      st.dirty = true;
+      return;
+    }
+    if (id == HitDpNext) {
+      if (st.dpMonth == 12) {
+        st.dpMonth = 1;
+        ++st.dpYear;
+      } else {
+        ++st.dpMonth;
+      }
+      int dim = DaysInMonth(st.dpYear, st.dpMonth);
+      if (st.dpDay > dim) st.dpDay = dim;
+      st.dpDrop = 0;
+      st.dirty = true;
+      return;
+    }
+    if (id == HitDpToday) {
+      SYSTEMTIME now{};
+      GetLocalTime(&now);
+      st.dpYear = now.wYear;
+      st.dpMonth = now.wMonth;
+      st.dpDay = now.wDay;
+      st.dpDrop = 0;
+      st.dirty = true;
+      return;
+    }
+    if (id == HitDpClear) {
+      st.ClearDateField();
+      return;
+    }
+    if (id >= HitDpHour && id <= HitDpSecond) {
+      int k = id - HitDpHour + 1;
+      st.dpDrop = st.dpDrop == k ? 0 : k;
+      st.dirty = true;
+      return;
+    }
+    if (id >= HitDpDayBase && id < HitDpCellBase) {
+      int k = id - HitDpDayBase;
+      int lead = FirstWeekdayOfMonth(st.dpYear, st.dpMonth);
+      int dim = DaysInMonth(st.dpYear, st.dpMonth);
+      int day = k - lead + 1;
+      if (day >= 1 && day <= dim) st.dpDay = day;
+      st.dirty = true;
+      return;
+    }
+    if (id >= HitDpCellBase) {
+      int v = id - HitDpCellBase;
+      if (st.dpDrop == 1) st.dpHour = v;
+      else if (st.dpDrop == 2) st.dpMinute = v;
+      else if (st.dpDrop == 3) st.dpSecond = v;
+      st.dpDrop = 0;
+      st.dirty = true;
+      return;
+    }
+    return;
+  }
   if (st.modal != ModalKind::None && id != HitNone) {
     if (id == HitModalBackdrop || id == HitModalClose || id == HitModalCancel) {
       if (st.modal == ModalKind::KeyStore && st.keyReturn != ModalKind::None) {
@@ -1753,8 +2024,16 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     }
     if (id == HitModalOk) {
       if (st.modal == ModalKind::Prompt) {
+        int kind = st.promptKind;
         st.modal = ModalKind::None;
-        st.pendingSftp = 7;
+        if (kind == 3) {
+          st.pendingPassword = st.promptValue;
+          st.pendingPasswordHost = st.formHost;
+          st.promptKind = 0;
+          st.promptValue.clear();
+        } else {
+          st.pendingSftp = 7;
+        }
         return;
       }
       if (ModalIsForm(st)) {
@@ -1826,6 +2105,14 @@ void OnHit(AppState& st, int id, HWND hwnd) {
             if (st.form[n].key == L"keyPath") st.form[n].fresh = false;
           }
         }
+        if (!FieldVisible(st, st.formFocus)) {
+          for (int n = 0; n < (int)st.form.size(); ++n) {
+            if (FieldVisible(st, n) && st.form[n].kind != FieldKind::Group) {
+              st.formFocus = n;
+              break;
+            }
+          }
+        }
       }
       return;
     }
@@ -1833,6 +2120,10 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       int i = id - HitFormBrowseBase;
       if (i < 0 || i >= (int)st.form.size()) return;
       st.formFocus = i;
+      if (st.form[i].kind == FieldKind::Date) {
+        st.OpenDatePicker(i);
+        return;
+      }
       std::wstring pick = PickKeyFile(hwnd);
       if (!pick.empty()) {
         st.form[(size_t)i].value = pick;
@@ -1848,6 +2139,8 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       if (i >= 0 && i < (int)st.form.size() && st.form[i].kind == FieldKind::Seg) {
         int n = (int)st.form[i].options.size();
         if (n > 0) st.form[i].opt = (st.form[i].opt + 1) % n;
+      } else if (i >= 0 && i < (int)st.form.size() && st.form[i].kind == FieldKind::Date) {
+        st.OpenDatePicker(i);
       }
       return;
     }
@@ -1859,7 +2152,17 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     return;
   }
 
-  st.searchFocus = (id == HitSearch);
+  st.searchFocus = (id == HitSearch || id == HitDashSearch);
+
+  if (id >= HitNavBase && id < HitDashSearch) {
+    int slot = id - HitNavBase;
+    if (slot == 0) st.OpenPage(View::Dash);
+    else if (slot == 1) st.OpenPage(View::Term);
+    else if (slot == 2) st.OpenPage(View::Sftp);
+    else if (slot == 3) st.OpenPage(View::Tun);
+    else st.OpenPage(View::Set);
+    return;
+  }
 
   if (id == HitTitleClose) {
     if (hwnd) PostMessageW(hwnd, WM_CLOSE, 0, 0);
@@ -1910,6 +2213,7 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         st.pendingDisconnect = index;
       } else {
         st.pendingConnect = index;
+        st.pendingConnectTerm = false;
       }
     }
     return;
@@ -1921,7 +2225,10 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     int slot = rel % 4;
     if (index >= 0 && index < (int)st.hosts.size()) {
       st.OpenHostView(index, slot);
-      if (slot == 0) st.pendingConnect = index;
+      if (slot == 0) {
+        st.pendingConnect = index;
+        st.pendingConnectTerm = true;
+      }
       if (slot == 2) st.pendingSftp = 1;
     }
     return;
@@ -1990,6 +2297,7 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     if (index >= 0 && index < (int)st.hosts.size()) {
       st.OpenHostSession(index);
       st.pendingConnect = index;
+      st.pendingConnectTerm = true;
     }
     return;
   }
@@ -2254,10 +2562,27 @@ void ModalChar(AppState& st, wchar_t ch) {
 
 void ModalKey(AppState& st, int vk) {
   if (st.modal == ModalKind::None) return;
+  if (st.modal == ModalKind::DatePicker) {
+    if (vk == VK_ESCAPE) {
+      st.modal = st.dateReturn;
+      st.dateField = -1;
+    } else if (vk == VK_RETURN) {
+      st.CommitDatePicker();
+    }
+    return;
+  }
   if (st.modal == ModalKind::Prompt) {
     if (vk == VK_RETURN) {
+      int kind = st.promptKind;
       st.modal = ModalKind::None;
-      st.pendingSftp = 7;
+      if (kind == 3) {
+        st.pendingPassword = st.promptValue;
+        st.pendingPasswordHost = st.formHost;
+        st.promptKind = 0;
+        st.promptValue.clear();
+      } else {
+        st.pendingSftp = 7;
+      }
     } else if (vk == VK_ESCAPE) {
       st.modal = ModalKind::None;
     }
@@ -2266,10 +2591,14 @@ void ModalKey(AppState& st, int vk) {
   if (ModalIsForm(st)) {
     int n = (int)st.form.size();
     if (n < 1) return;
-    if (vk == VK_TAB || vk == VK_DOWN) {
-      st.formFocus = (st.formFocus + 1) % n;
-    } else if (vk == VK_UP) {
-      st.formFocus = (st.formFocus + n - 1) % n;
+    if (vk == VK_TAB || vk == VK_DOWN || vk == VK_UP) {
+      int step = vk == VK_UP ? -1 : 1;
+      int i = st.formFocus;
+      for (int k = 0; k < n; ++k) {
+        i = (i + step + n) % n;
+        if (FieldVisible(st, i) && st.form[i].kind != FieldKind::Group) break;
+      }
+      st.formFocus = i;
     } else if (vk == VK_RETURN) {
       st.CommitForm();
     } else if (vk == VK_ESCAPE) {

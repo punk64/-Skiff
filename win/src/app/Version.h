@@ -1,0 +1,9 @@
+#pragma once
+
+#define SKIFF_WIN_VERSION_MAJOR 0
+#define SKIFF_WIN_VERSION_MINOR 1
+#define SKIFF_WIN_VERSION_PATCH 0
+
+#define SKIFF_WIN_FILEVER 0,1,0,0
+#define SKIFF_WIN_VERSTR "0.1.0.0"
+#define SKIFF_WIN_VERSION L"0.1.0"
