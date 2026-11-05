@@ -220,6 +220,9 @@ public:
 
     std::string getHostKeyType() const { return hostKeyTypeName; }
 
+    std::string getCipherName();
+    std::string getMacName();
+
     SshSession();
     
     ~SshSession() override;

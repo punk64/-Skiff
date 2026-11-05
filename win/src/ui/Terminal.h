@@ -26,13 +26,18 @@ public:
   void Reset(int cols, int rows);
   void Resize(int cols, int rows);
   void Feed(const std::string& utf8);
-  void Draw(Render& r, const Rect& area, float fontSize, const Palette& p);
+  void Draw(Render& r, const Rect& area, float fontSize, const Palette& p, int cursor = 0);
   void OnKey(wchar_t ch, bool ctrl, bool alt, bool shift);
   std::wstring TakeOut();
   int Cols() const { return cols_; }
   int Rows() const { return rows_; }
   void ScrollToBottom();
-  bool HasSelection() const { return false; }
+  void SetFocused(bool f) { focused_ = f; }
+  bool Focused() const { return focused_; }
+  void SetSelection(int r0, int c0, int r1, int c1);
+  void ClearSelection();
+  bool HasSelection() const { return selR0_ >= 0; }
+  std::wstring SelectedText() const;
 
 private:
   void NewLine();
@@ -41,6 +46,7 @@ private:
   void Backspace();
   void ClearAll();
   void ParseSgr(const std::vector<int>& args);
+  void HoldSeq(const std::string& src, size_t from);
   D2D1_COLOR_F ColorOf(unsigned char idx, bool bold, const Palette& p) const;
 
   int cols_ = 80;
@@ -53,6 +59,13 @@ private:
   std::deque<Line> screen_;
   std::wstring out_;
   bool dirty_ = true;
+  bool focused_ = true;
+  std::string seq_;
+  int cursor_ = 0;
+  int selR0_ = -1;
+  int selC0_ = -1;
+  int selR1_ = -1;
+  int selC1_ = -1;
 };
 
 }

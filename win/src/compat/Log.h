@@ -2,6 +2,7 @@
 
 namespace sk {
 void LogWrite(const char* level, const char* fmt, ...);
+void SetLogLevel(int lv);
 }
 
 #define LOG_APP 0

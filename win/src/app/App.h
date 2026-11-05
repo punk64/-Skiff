@@ -13,7 +13,7 @@ enum class HostState { Off, Busy, Live };
 enum class TunState { Up = 0, Listen = 1, Retry = 2, Down = 3 };
 enum class ModalKind {
   None = 0, HostForm = 1, TunForm = 2, StatusPanel = 3, Queue = 4, Help = 5,
-  Confirm = 6, KeyStore = 7, Prompt = 8, DatePicker = 9
+  Confirm = 6, KeyStore = 7, Prompt = 8, DatePicker = 9, Channel = 10
 };
 
 enum class FieldKind { Text = 0, Seg = 1, Pass = 2, Info = 3, Group = 4, File = 5, Date = 6 };
@@ -67,6 +67,7 @@ struct Host {
   std::wstring hostKeyType;
   std::wstring registeredAt;
   std::wstring expireAt;
+  std::wstring lastConnected;
   bool autoConnect = false;
   HostState state = HostState::Off;
   int latency = -1;
@@ -74,6 +75,9 @@ struct Host {
   int ram = 0;
   std::wstring net;
   int netp = 0;
+  long long retryAt = 0;
+  int retryN = 0;
+  bool manualStop = false;
   std::vector<Tunnel> tunnels;
 
   std::wstring Addr() const {
@@ -104,8 +108,13 @@ struct AppState {
   bool dark = true;
   bool fullscreen = false;
   bool searchFocus = false;
+  bool selectAll = false;
   float termFontSize = 13.0f;
-  float sidebarW = 240.0f;
+  float sidebarW = 360.0f;
+  bool sideCollapsed = false;
+  int sortKey = 0;
+  bool sortAsc = true;
+  float sideScroll = 0.0f;
   int activeHost = 0;
   int activeTab = 0;
   int sessTab = 0;
@@ -161,7 +170,6 @@ struct AppState {
   int confirmHost = -1;
   int confirmTunnel = -1;
   std::wstring promptValue;
-  int promptKind = 0;
   int dateField = -1;
   ModalKind dateReturn = ModalKind::HostForm;
   int dpYear = 0;
@@ -173,23 +181,39 @@ struct AppState {
   int dpDrop = 0;
   int pendingConnect = -1;
   bool pendingConnectTerm = true;
-  int pendingPasswordHost = -1;
-  std::wstring pendingPassword;
   int pendingDisconnect = -1;
   int pendingSftp = 0;
+  int pendingTunBrowse = -1;
+  long long refreshAt = 0;
+  int toastKind = 0;
+  int chanPort = 0;
+  std::wstring chanAddr;
+  std::wstring chanNote;
   int nextSessionId = 1;
   int nextHostId = 1;
   int nextTunnelId = 1;
   int hoverHost = -1;
+  int hoverId = -1;
   int menuHost = -1;
   long long statsNextAt = 0;
   int statsChunk = 0;
   long long tunNextAt = 0;
   bool tunPatrolling = false;
+  int lastView = 0;
+  int lastHost = -1;
+  std::vector<int> bootQueue;
+  long long bootNextAt = 0;
+  std::wstring toast;
+  long long toastAt = 0;
   bool dirty = false;
   UINT dpi = 96;
 
-  float S(float v) const { return v * dpi / 96.0f; }
+  float UiScale() const {
+    static const float kScale[4] = { 0.9f, 1.0f, 1.1f, 1.25f };
+    int i = uiScaleIdx < 0 ? 1 : (uiScaleIdx > 3 ? 3 : uiScaleIdx);
+    return kScale[i];
+  }
+  float S(float v) const { return v * dpi / 96.0f * UiScale(); }
   int CurrentSessionId() const {
     if (activeTab < 0 || activeTab >= (int)tabs.size()) return -1;
     return tabs[(size_t)activeTab].sessionId;
@@ -246,6 +270,7 @@ struct AppState {
   void OpenPage(View v);
   void ActivateTab(int index);
   void CloseTab(int index);
+  void CloseTabAndSession(int index);
   void RemoveHost(int hostId);
   void RecalcDaysLeft();
   void Seed();
@@ -259,6 +284,11 @@ struct AppState {
   void ClearDateField();
   bool CommitForm();
   void MarkDirty() { dirty = true; }
+  void MarkLastView() {
+    lastView = (int)view;
+    int hid = CurrentHostId();
+    lastHost = (hid >= 0 && hid < (int)hosts.size()) ? hosts[(size_t)hid].id : -1;
+  }
 };
 
 const wchar_t* ViewTitle(View v);

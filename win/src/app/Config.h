@@ -8,6 +8,8 @@ namespace sk {
 std::wstring ExeDirectory();
 std::wstring KeyDirectory();
 std::vector<std::wstring> ListKeyFiles();
+std::wstring FindKeyFor(const std::string& hostName);
+bool HostHasCredential(const Host& h);
 
 struct StorePath {
     std::wstring file;

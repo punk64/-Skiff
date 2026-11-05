@@ -37,6 +37,7 @@ add_executable(Skiff WIN32
   src/core/SshService.cpp
   src/app/KeyGen.cpp
   src/app/Config.cpp
+  src/app/Lang.cpp
   res/app.rc
   ${CORE_DIR}/jsonAnalyse/cJSON.c
   ${CORE_SOURCES}

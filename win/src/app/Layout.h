@@ -6,7 +6,7 @@ namespace L {
 constexpr float TitleH = 32.0f;
 constexpr float TabsH = 36.0f;
 constexpr float StatusH = 24.0f;
-constexpr float SidebarW = 240.0f;
+constexpr float SidebarW = 300.0f;
 constexpr float SidebarMin = 180.0f;
 constexpr float SidebarMax = 320.0f;
 constexpr float SplitterW = 4.0f;

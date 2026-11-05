@@ -88,7 +88,13 @@ SessionAnalyse* encapsulateSSHFromJson(std::string inputSessionJson) {
         goto error;
     }
     SessionHandle->keepAlive = item->valueint;
-    
+
+    SessionHandle->timeout = 10;
+    item = cJSON_GetObjectItemCaseSensitive(connection, "timeout");
+    if (item && cJSON_IsNumber(item)) {
+        SessionHandle->timeout = item->valueint;
+    }
+
     item = cJSON_GetObjectItemCaseSensitive(connection, "version");
     if (!(cJSON_IsString(item) && item->valuestring != NULL)) {
         goto error;

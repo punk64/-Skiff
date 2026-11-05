@@ -167,6 +167,7 @@ void Terminal::Resize(int cols, int rows) {
   if (cols < 1) cols = 1;
   if (rows < 1) rows = 1;
   int oldRows = static_cast<int>(screen_.size());
+  if (cols == cols_ && rows == rows_ && oldRows == rows_) return;
   std::deque<Line> old;
   old.swap(screen_);
   cols_ = cols;
@@ -182,10 +183,17 @@ void Terminal::Resize(int cols, int rows) {
     if (n > cols_) n = cols_;
     for (int c = 0; c < n; ++c) d.cells[static_cast<size_t>(c)] = s.cells[static_cast<size_t>(c)];
   }
+  cy_ += dstStart - srcStart;
   if (cx_ >= cols_) cx_ = cols_ - 1;
   if (cx_ < 0) cx_ = 0;
   if (cy_ >= rows_) cy_ = rows_ - 1;
   if (cy_ < 0) cy_ = 0;
+  if (selR0_ >= 0) {
+    selR0_ += dstStart - srcStart;
+    selR1_ += dstStart - srcStart;
+    if (selR0_ < 0) selR0_ = 0;
+    if (selR1_ < 0) selR1_ = 0;
+  }
   dirty_ = true;
 }
 
@@ -320,11 +328,23 @@ void Terminal::ParseSgr(const std::vector<int>& args) {
   }
 }
 
+void Terminal::HoldSeq(const std::string& src, size_t from) {
+  seq_ = src.substr(from);
+  if (seq_.size() > 4096) seq_.clear();
+}
+
 void Terminal::Feed(const std::string& utf8) {
+  std::string src;
+  if (seq_.empty()) {
+    src = utf8;
+  } else {
+    src.swap(seq_);
+    src += utf8;
+  }
   size_t i = 0;
-  size_t n = utf8.size();
+  size_t n = src.size();
   while (i < n) {
-    unsigned char c = static_cast<unsigned char>(utf8[i]);
+    unsigned char c = static_cast<unsigned char>(src[i]);
     if (c == '\r') {
       CarriageReturn();
       ++i;
@@ -347,22 +367,66 @@ void Terminal::Feed(const std::string& utf8) {
       ++i;
       continue;
     }
+    if (c == 0x07) {
+      ++i;
+      continue;
+    }
     if (c == 0x1B) {
-      if (i + 1 >= n) return;
-      if (utf8[i + 1] != '[') {
-        ++i;
-        if (i < n) ++i;
+      if (i + 1 >= n) {
+        HoldSeq(src, i);
+        return;
+      }
+      char kind = src[i + 1];
+      if (kind == ']' || kind == 'P' || kind == 'X' || kind == '^' || kind == '_') {
+        size_t j = i + 2;
+        size_t stop = 0;
+        bool closed = false;
+        while (j < n) {
+          unsigned char d = static_cast<unsigned char>(src[j]);
+          if (d == 0x07) {
+            stop = j + 1;
+            closed = true;
+            break;
+          }
+          if (d == 0x1B && j + 1 < n && src[j + 1] == '\\') {
+            stop = j + 2;
+            closed = true;
+            break;
+          }
+          ++j;
+        }
+        if (!closed) {
+        HoldSeq(src, i);
+        return;
+        }
+        i = stop;
+        continue;
+      }
+      if (kind == '(' || kind == ')' || kind == '*' || kind == '+' || kind == '-' ||
+          kind == '.' || kind == '/') {
+        if (i + 2 >= n) {
+        HoldSeq(src, i);
+        return;
+        }
+        i += 3;
+        continue;
+      }
+      if (kind != '[') {
+        i += 2;
         continue;
       }
       size_t j = i + 2;
       while (j < n) {
-        unsigned char d = static_cast<unsigned char>(utf8[j]);
+        unsigned char d = static_cast<unsigned char>(src[j]);
         if (d >= 0x40 && d <= 0x7E) break;
         ++j;
       }
-      if (j >= n) return;
-      char finalByte = utf8[j];
-      std::string raw = utf8.substr(i + 2, j - (i + 2));
+      if (j >= n) {
+        HoldSeq(src, i);
+        return;
+      }
+      char finalByte = src[j];
+      std::string raw = src.substr(i + 2, j - (i + 2));
       std::vector<int> args;
       int value = 0;
       bool has = false;
@@ -413,11 +477,11 @@ void Terminal::Feed(const std::string& utf8) {
       i = j + 1;
       continue;
     }
-    wchar_t buf[2] = { 0, 0 };
+    wchar_t pair[2] = { 0, 0 };
     int units = 0;
-    int used = DecodeUtf8(utf8, i, buf, &units);
+    int used = DecodeUtf8(src, i, pair, &units);
     if (used <= 0) return;
-    PutChar(buf[0], units == 2 ? buf[1] : 0);
+    PutChar(pair[0], units == 2 ? pair[1] : 0);
     i += static_cast<size_t>(used);
   }
 }
@@ -452,7 +516,55 @@ D2D1_COLOR_F Terminal::ColorOf(unsigned char idx, bool bold, const Palette& p) c
   return c;
 }
 
-void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& p) {
+void Terminal::SetSelection(int r0, int c0, int r1, int c1) {
+  selR0_ = r0;
+  selC0_ = c0;
+  selR1_ = r1;
+  selC1_ = c1;
+  dirty_ = true;
+}
+
+void Terminal::ClearSelection() {
+  selR0_ = -1;
+  selC0_ = -1;
+  selR1_ = -1;
+  selC1_ = -1;
+  dirty_ = true;
+}
+
+std::wstring Terminal::SelectedText() const {
+  if (selR0_ < 0) return std::wstring();
+  int sr = selR0_, sc = selC0_, er = selR1_, ec = selC1_;
+  if (sr > er || (sr == er && sc > ec)) {
+    int t = sr; sr = er; er = t;
+    t = sc; sc = ec; ec = t;
+  }
+  int maxRow = er;
+  if (maxRow >= (int)screen_.size()) maxRow = (int)screen_.size() - 1;
+  std::wstring out;
+  for (int row = sr; row <= maxRow; ++row) {
+    if (row < 0) continue;
+    const Line& ln = screen_[static_cast<size_t>(row)];
+    int cs = row == sr ? sc : 0;
+    int ce = row == er ? ec + 1 : cols_;
+    if (cs < 0) cs = 0;
+    if (ce > (int)ln.cells.size()) ce = (int)ln.cells.size();
+    std::wstring line;
+    for (int c = cs; c < ce; ++c) {
+      const Cell& cell = ln.cells[static_cast<size_t>(c)];
+      if (cell.cont) continue;
+      line.push_back(cell.ch ? cell.ch : L' ');
+      if (cell.ch2) line.push_back(cell.ch2);
+    }
+    while (!line.empty() && line.back() == L' ') line.pop_back();
+    out += line;
+    if (row < maxRow) out += L"\r\n";
+  }
+  return out;
+}
+
+void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& p, int cursor) {
+  cursor_ = cursor;
   float scale = r.Dpi() > 0.0f ? r.Dpi() / 96.0f : 1.0f;
   float fs = fontSize > 0.0f ? fontSize * scale : L::TermFontSize * scale;
   float cw = r.CharW(FontId::Mono) * fs / 13.0f;
@@ -464,22 +576,30 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
   r.Fill(area.D2D(), p.termBg);
   r.PushClip(area.D2D());
 
-  if (area.W() > 0.0f && area.H() > 0.0f) {
-    int vc = static_cast<int>(area.W() / cw);
-    int vr = static_cast<int>(area.H() / lh);
-    if (vc >= 20 && vr >= 6) {
-      int dc = vc > cols_ ? vc - cols_ : cols_ - vc;
-      int dr = vr > rows_ ? vr - rows_ : rows_ - vr;
-      if (dc > 1 || dr > 1) Resize(vc, vr);
-    }
-  }
-
   int rowCount = static_cast<int>(screen_.size());
   if (rowCount > rows_) rowCount = rows_;
   for (int row = 0; row < rowCount; ++row) {
     const Line& ln = screen_[static_cast<size_t>(row)];
     float y = area.t + lh * static_cast<float>(row);
     if (y >= area.b) break;
+    if (selR0_ >= 0) {
+      int sr = selR0_, sc = selC0_, er = selR1_, ec = selC1_;
+      if (sr > er || (sr == er && sc > ec)) {
+        int t = sr; sr = er; er = t;
+        t = sc; sc = ec; ec = t;
+      }
+      if (row >= sr && row <= er) {
+        int cs = row == sr ? sc : 0;
+        int ce = row == er ? ec + 1 : cols_;
+        float x0 = area.l + cw * static_cast<float>(cs);
+        float x1 = area.l + cw * static_cast<float>(ce);
+        if (x1 > area.r) x1 = area.r;
+        if (x1 > x0) {
+          r.Fill(D2D1::RectF(x0, y, x1, y + lh),
+                 D2D1::ColorF(p.accent.r, p.accent.g, p.accent.b, 0.22f));
+        }
+      }
+    }
     int count = static_cast<int>(ln.cells.size());
     if (count > cols_) count = cols_;
     int c = 0;
@@ -535,7 +655,8 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
     }
   }
 
-  if (cy_ >= 0 && cy_ < rows_ && cx_ >= 0 && cx_ <= cols_) {
+  bool blinkOn = !focused_ || ((GetTickCount64() / 530ULL) % 2ULL) == 0ULL;
+  if (blinkOn && cy_ >= 0 && cy_ < rows_ && cx_ >= 0 && cx_ <= cols_) {
     int wide = 1;
     if (cy_ < static_cast<int>(screen_.size())) {
       const Line& ln = screen_[static_cast<size_t>(cy_)];
@@ -550,7 +671,17 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
     float cursorH = lh * 0.86f;
     if (x + cursorW > area.r) x = area.r - cursorW;
     if (x < area.l) x = area.l;
-    r.Fill(D2D1::RectF(x, y + lh * 0.07f, x + cursorW, y + lh * 0.07f + cursorH), p.accent);
+    if (cursor_ == 1) {
+      r.Fill(D2D1::RectF(x, y + lh * 0.07f, x + cursorW, y + lh * 0.07f + cursorH), p.accent);
+    } else if (cursor_ == 2) {
+      float uh = lh * 0.12f;
+      if (uh < 2.0f) uh = 2.0f;
+      r.Fill(D2D1::RectF(x, y + lh - uh, x + cursorW, y + lh), p.accent);
+    } else {
+      float lw = cw * 0.14f;
+      if (lw < 2.0f) lw = 2.0f;
+      r.Fill(D2D1::RectF(x, y + lh * 0.07f, x + lw, y + lh * 0.07f + cursorH), p.accent);
+    }
   }
 
   r.PopClip();

@@ -1,6 +1,7 @@
 #include "ui/Chrome.h"
 
 #include <commdlg.h>
+#include <cmath>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "core/SshService.h"
 #include "ui/Sessions.h"
 #include "app/Config.h"
+#include "app/Lang.h"
 #include "app/Version.h"
 #include "compat/Log.h"
 
@@ -19,6 +21,14 @@ constexpr float kHalf = 0.5f;
 float MidY(const Rect& rc) { return rc.t + rc.H() * kHalf; }
 
 std::wstring Num(int v) { return std::to_wstring(v); }
+
+std::wstring U8ToW(const std::string& s) {
+  if (s.empty()) return std::wstring();
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+  std::wstring w((size_t)n, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+  return w;
+}
 
 const FormField* FieldOf(const std::vector<FormField>& form, const std::wstring& key) {
   for (size_t i = 0; i < form.size(); ++i) {
@@ -44,7 +54,7 @@ std::wstring PickKeyFile(HWND owner) {
   ofn.hwndOwner = owner;
   ofn.lpstrFile = file;
   ofn.nMaxFile = MAX_PATH * 2;
-  ofn.lpstrTitle = L"选择私钥文件";
+  ofn.lpstrTitle = Tr(L"选择私钥文件");
   ofn.lpstrFilter = L"私钥文件\0*.pem;*.key;*_rsa;*_ed25519;*\0所有文件\0*.*\0";
   ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   if (!GetOpenFileNameW(&ofn)) return std::wstring();
@@ -57,9 +67,12 @@ float EstTextW(const AppState& st, const std::wstring& s, float fs) {
   return st.S(units * fs);
 }
 
-Palette BuildPalette(bool dark) {
+Palette BuildPalette(bool dark, int accentIdx) {
+  static const unsigned kAccentHex[5] = { 0x3DDC97, 0x60A5FA, 0xA78BFA, 0xFBBF24, 0xF87171 };
   Palette p{};
   p.dark = dark;
+  int ai = accentIdx < 0 ? 0 : (accentIdx > 4 ? 4 : accentIdx);
+  D2D1_COLOR_F base = Rgb(kAccentHex[ai]);
   if (dark) {
     p.bg = Rgb(0x08090C);
     p.surface = Rgb(0x14171D);
@@ -69,9 +82,8 @@ Palette BuildPalette(bool dark) {
     p.text = Rgb(0xE8EDF5);
     p.text2 = Rgb(0x98A4B6);
     p.text3 = Rgb(0x78849B);
-    p.accent = Rgb(0x3DDC97);
-    p.accentFg = Rgb(0x04140D);
-    p.accentSoft = Alpha(Rgb(0x3DDC97), 0.13f);
+    p.accent = base;
+    p.accentSoft = Alpha(base, 0.13f);
     p.danger = Rgb(0xF87171);
     p.warn = Rgb(0xFBBF24);
     p.info = Rgb(0x60A5FA);
@@ -89,9 +101,8 @@ Palette BuildPalette(bool dark) {
     p.text = Rgb(0x0F141B);
     p.text2 = Rgb(0x5A6474);
     p.text3 = Rgb(0x646F80);
-    p.accent = Rgb(0x0E9F6E);
-    p.accentFg = Rgb(0xFFFFFF);
-    p.accentSoft = Alpha(Rgb(0x0E9F6E), 0.10f);
+    p.accent = Mix(base, Rgb(0x000000), 0.22f);
+    p.accentSoft = Alpha(p.accent, 0.10f);
     p.danger = Rgb(0xDC2626);
     p.warn = Rgb(0xB45309);
     p.info = Rgb(0x2563EB);
@@ -101,6 +112,8 @@ Palette BuildPalette(bool dark) {
     p.termText = Rgb(0xD7DEE9);
     p.termDim = Rgb(0x6D7889);
   }
+  float lum = 0.299f * p.accent.r + 0.587f * p.accent.g + 0.114f * p.accent.b;
+  p.accentFg = lum > 0.55f ? Rgb(0x0B1014) : Rgb(0xFFFFFF);
   return p;
 }
 
@@ -146,9 +159,203 @@ Rect SidebarFootItemRect(const AppState& st, const Rect& s, int index) {
   return Rect{ s.l + st.S(8), top, s.r - st.S(8), top + st.S(34) };
 }
 
-Rect NavItemRect(const AppState& st, const Rect& s, int index) {
-  float top = s.t + st.S(64.0f) + st.S(46.0f) * (float)index;
-  return Rect{ s.l + st.S(10.0f), top, s.r - st.S(10.0f), top + st.S(42.0f) };
+Rect SideExpandRect(const AppState& st, const Rect& s) {
+  float top = s.t + st.S(56.0f);
+  return Rect{ s.l + st.S(8.0f), top, s.r - st.S(8.0f), top + st.S(36.0f) };
+}
+
+Rect SideCollapsedSettingsRect(const AppState& st, const Rect& s) {
+  float size = st.S(36.0f);
+  float top = s.b - st.S(12.0f) - size;
+  float left = s.l + (s.W() - size) * kHalf;
+  return Rect{ left, top, left + size, top + size };
+}
+
+Rect SideBrandFoldRect(const AppState& st, const Rect& s) {
+  float top = s.t + st.S(19.0f);
+  return Rect{ s.r - st.S(38.0f), top, s.r - st.S(14.0f), top + st.S(24.0f) };
+}
+
+Rect SideSettingsRect(const AppState& st, const Rect& s) {
+  return SidebarFootItemRect(st, s, 0);
+}
+
+Rect SideCollapseRect(const AppState& st, const Rect& s) {
+  Rect row = SidebarFootItemRect(st, s, 1);
+  float w = st.S(76.0f);
+  return Rect{ row.r - w, row.t, row.r, row.b };
+}
+
+Rect SideSummaryRect(const AppState& st, const Rect& s) {
+  float top = s.t + st.S(52.0f);
+  return Rect{ s.l + st.S(12.0f), top, s.r - st.S(12.0f), top + st.S(24.0f) };
+}
+
+Rect SideSearchRect(const AppState& st, const Rect& s) {
+  float top = s.t + st.S(82.0f);
+  return Rect{ s.l + st.S(12.0f), top, s.r - st.S(12.0f), top + st.S(32.0f) };
+}
+
+Rect SideSortKeyRect(const AppState& st, const Rect& s) {
+  float top = s.t + st.S(120.0f);
+  return Rect{ s.l + st.S(12.0f), top, s.r - st.S(12.0f) - st.S(38.0f), top + st.S(26.0f) };
+}
+
+Rect SideSortDirRect(const AppState& st, const Rect& s) {
+  float top = s.t + st.S(120.0f);
+  return Rect{ s.r - st.S(12.0f) - st.S(32.0f), top, s.r - st.S(12.0f), top + st.S(26.0f) };
+}
+
+float SideListTop(const AppState& st, const Rect& s) {
+  return s.t + st.S(154.0f);
+}
+
+float SideListBottom(const AppState& st, const Rect& s) {
+  return SidebarFootTop(st, s) - st.S(6.0f);
+}
+
+Rect SideCardRect(const AppState& st, const Rect& s, int index) {
+  float h = st.S(148.0f);
+  float gap = st.S(8.0f);
+  float top = SideListTop(st, s) + (h + gap) * (float)index - st.sideScroll;
+  return Rect{ s.l + st.S(10.0f), top, s.r - st.S(10.0f), top + h };
+}
+
+Rect SideEditRectOf(const AppState& st, const Rect& s, int index) {
+  Rect card = SideCardRect(st, s, index);
+  float w = st.S(38.0f);
+  return Rect{ card.r - st.S(12.0f) - w, card.t + st.S(9.0f), card.r - st.S(12.0f),
+               card.t + st.S(9.0f) + st.S(20.0f) };
+}
+
+Rect SideBtnRectOf(const AppState& st, const Rect& s, int index, int slot) {
+  Rect card = SideCardRect(st, s, index);
+  float h = st.S(26.0f);
+  float top = card.b - st.S(12.0f) - h;
+  float l = card.l + st.S(12.0f);
+  float r = card.r - st.S(12.0f);
+  float conn = st.S(76.0f);
+  float gap = st.S(6.0f);
+  float rest = (r - l - conn - gap * 3.0f) / 3.0f;
+  if (slot == 2) return Rect{ l, top, l + conn, top + h };
+  int k = slot - 3;
+  float left = l + conn + gap + (rest + gap) * (float)k;
+  return Rect{ left, top, left + rest, top + h };
+}
+
+void SideBtn(Render& r, const AppState& st, const Rect& rc, const Palette& p,
+             const wchar_t* label, int mode) {
+  if (mode == 1) {
+    r.FillRound(rc.D2D(), st.S(L::RCtrl), p.accent);
+    r.TextVertCenter(label, rc.D2D(), p.accentFg, FontId::Small, Align::Center);
+  } else if (mode == 2) {
+    r.StrokeRound(rc.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(label, rc.D2D(), p.danger, FontId::Small, Align::Center);
+  } else {
+    r.StrokeRound(rc.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(label, rc.D2D(), p.text2, FontId::Small, Align::Center);
+  }
+}
+
+void DrawSideHostCard(Render& r, const AppState& st, const Rect& s, int index,
+                      int hostIndex, const Palette& p) {
+  Rect card = SideCardRect(st, s, index);
+  r.FillRound(card.D2D(), st.S(L::RCard), p.surface2);
+  if (st.activeHost == hostIndex) {
+    r.StrokeRound(card.D2D(), st.S(L::RCard), p.accent, st.S(1.2f));
+  }
+  const Host& h = st.hosts[(size_t)hostIndex];
+
+  D2D1_COLOR_F dc = p.text3;
+  if (h.state == HostState::Live) dc = p.accent;
+  if (h.state == HostState::Busy) dc = p.warn;
+  float dotX = card.l + st.S(14.0f);
+  float dotY = card.t + st.S(20.0f);
+  r.Circle(dotX, dotY, st.S(4.0f), dc);
+
+  Rect edit = SideEditRectOf(st, s, index);
+  float nameRight = edit.l - st.S(6.0f);
+  float nameLeft = dotX + st.S(10.0f);
+  if (nameRight > nameLeft) {
+    r.PushClip(D2D1::RectF(nameLeft, card.t, nameRight, card.t + st.S(34.0f)));
+    r.TextVertCenter(h.name.c_str(), D2D1::RectF(nameLeft, card.t + st.S(6.0f), nameRight,
+                                                 card.t + st.S(32.0f)),
+                     p.text, FontId::Title);
+    r.PopClip();
+  }
+  r.TextVertCenter(Tr(L"编辑"), edit.D2D(), p.text3, FontId::Micro, Align::Center);
+
+  r.PushClip(D2D1::RectF(card.l + st.S(12.0f), card.t + st.S(34.0f),
+                         card.r - st.S(12.0f), card.t + st.S(54.0f)));
+  r.TextVertCenter(h.Addr().c_str(),
+                   D2D1::RectF(card.l + st.S(14.0f), card.t + st.S(34.0f),
+                               card.r - st.S(12.0f), card.t + st.S(54.0f)),
+                   p.text3, FontId::MonoSm);
+  r.PopClip();
+
+  std::wstring meta;
+  D2D1_COLOR_F mc = p.text3;
+  if (h.HasExpire()) {
+    int dl = h.DaysLeft();
+    meta = dl < 0 ? std::wstring(Tr(L"已过期 ")) + Num(-dl) + Tr(L" 天")
+                  : std::wstring(Tr(L"剩 ")) + Num(dl) + Tr(L" 天");
+    if (dl < 0) mc = p.danger;
+    else if (dl <= 7) mc = p.warn;
+  } else {
+    meta = Tr(L"未设到期");
+  }
+  r.TextVertCenter(meta.c_str(),
+                   D2D1::RectF(card.l + st.S(14.0f), card.t + st.S(56.0f),
+                               card.r - st.S(14.0f), card.t + st.S(76.0f)),
+                   mc, FontId::Micro);
+  std::wstring reg = h.registeredAt.empty() ? std::wstring(Tr(L"未填注册时间"))
+                                            : h.registeredAt.substr(0, 10);
+  r.TextVertCenter(reg.c_str(),
+                   D2D1::RectF(card.l + st.S(14.0f), card.t + st.S(56.0f),
+                               card.r - st.S(14.0f), card.t + st.S(76.0f)),
+                   p.text3, FontId::Micro, Align::Right);
+
+  float perfTop = card.t + st.S(80.0f);
+  float perfH = st.S(22.0f);
+  float perfGap = st.S(6.0f);
+  float perfW = (card.W() - st.S(24.0f) - perfGap * 2.0f) / 3.0f;
+  std::wstring perfText[3];
+  int perfPct[3] = { 0, 0, 0 };
+  if (h.state == HostState::Live) {
+    perfText[0] = std::wstring(L"CPU ") + (h.cpu > 0 ? Num(h.cpu) + L"%" : std::wstring(L"--"));
+    perfText[1] = std::wstring(L"RAM ") + (h.ram > 0 ? Num(h.ram) + L"%" : std::wstring(L"--"));
+    perfText[2] = h.net.empty() ? std::wstring(L"--") : h.net;
+    perfPct[0] = h.cpu;
+    perfPct[1] = h.ram;
+    perfPct[2] = h.netp;
+  } else {
+    perfText[0] = L"CPU --";
+    perfText[1] = L"RAM --";
+    perfText[2] = L"--";
+  }
+  for (int k = 0; k < 3; ++k) {
+    float lx = card.l + st.S(12.0f) + (perfW + perfGap) * (float)k;
+    Rect cell{ lx, perfTop, lx + perfW, perfTop + perfH };
+    r.FillRound(cell.D2D(), st.S(5.0f), p.bg);
+    if (perfPct[k] > 0) {
+      float pw = cell.W() * (float)perfPct[k] / 100.0f;
+      if (pw > 0.0f) {
+        D2D1_COLOR_F bc = perfPct[k] >= 85 ? p.danger : (perfPct[k] >= 60 ? p.warn : p.accent);
+        r.FillRound(D2D1::RectF(cell.l, cell.t, cell.l + pw, cell.b), st.S(5.0f),
+                    Alpha(bc, 0.20f));
+      }
+    }
+    r.TextVertCenter(perfText[k].c_str(), cell.D2D(), p.text2, FontId::Micro, Align::Center);
+  }
+
+  bool live = h.state == HostState::Live;
+  const wchar_t* connLabel = live ? Tr(L"断开") : (h.state == HostState::Busy ? Tr(L"连接中") : Tr(L"连接"));
+  int connMode = live ? 2 : (h.state == HostState::Busy ? 0 : 1);
+  SideBtn(r, st, SideBtnRectOf(st, s, index, 2), p, connLabel, connMode);
+  const wchar_t* names[3] = { Tr(L"终端"), Tr(L"隧道"), Tr(L"文件") };
+  for (int k = 0; k < 3; ++k) {
+    SideBtn(r, st, SideBtnRectOf(st, s, index, 3 + k), p, names[k], 0);
+  }
 }
 
 float TabWidthOf(const AppState& st, const Tab& tab) {
@@ -182,21 +389,6 @@ Rect HostEditRect(const AppState& st, const Rect& sidebar, int index) {
   float h = st.S(18);
   float right = row.r - st.S(9);
   return Rect{ right - w, MidY(row) - h * kHalf, right, MidY(row) + h * kHalf };
-}
-
-float TabsInnerRight(const AppState& st, const Rect& tabs) {
-  float x = tabs.l + st.S(6);
-  for (size_t i = 0; i < st.tabs.size(); ++i) x += TabWidthOf(st, st.tabs[i]) + st.S(2);
-  return x;
-}
-
-Rect TabAddRect(const AppState& st, const Rect& tabs) {
-  float size = st.S(30);
-  float x = TabsInnerRight(st, tabs);
-  float limit = tabs.r - st.S(6) - st.S(28) * 2 - st.S(4);
-  if (x + size > limit) x = limit - size;
-  float top = tabs.t + (tabs.H() - size) * kHalf;
-  return Rect{ x, top, x + size, top + size };
 }
 
 Rect TabsRightButtonRect(const AppState& st, const Rect& tabs, int index) {
@@ -339,6 +531,31 @@ void DrawRefreshIcon(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F
   r.Line(cx + rad * 1.05f, cy - rad * 0.55f, cx + rad * 0.25f, cy - rad * 0.70f, c, st.S(1.2f));
 }
 
+void DrawChevronPair(Render& r, const AppState& st, const Rect& rc, bool left, D2D1_COLOR_F c) {
+  float cx = rc.l + rc.W() * kHalf;
+  float cy = MidY(rc);
+  float h = st.S(3.8f);
+  float w = st.S(2.4f);
+  float gap = st.S(3.6f);
+  float dir = left ? -1.0f : 1.0f;
+  for (int i = 0; i < 2; ++i) {
+    float x = cx + dir * (i == 0 ? -gap * kHalf : gap * kHalf);
+    r.Line(x - dir * w * kHalf, cy - h, x + dir * w * kHalf, cy, c, st.S(1.3f));
+    r.Line(x + dir * w * kHalf, cy, x - dir * w * kHalf, cy + h, c, st.S(1.3f));
+  }
+}
+
+void DrawSettingsIcon(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
+  float lw = st.S(1.2f);
+  float knob = st.S(2.4f);
+  float y1 = rc.t + rc.H() * 0.30f;
+  float y2 = rc.t + rc.H() * 0.70f;
+  r.Line(rc.l, y1, rc.r, y1, c, lw);
+  r.Line(rc.l, y2, rc.r, y2, c, lw);
+  r.Circle(rc.l + rc.W() * 0.64f, y1, knob, c);
+  r.Circle(rc.l + rc.W() * 0.34f, y2, knob, c);
+}
+
 void DrawChip(Render& r, const AppState& st, const std::wstring& text, const Rect& rc,
               D2D1_COLOR_F fg, D2D1_COLOR_F bg) {
   r.FillRound(rc.D2D(), st.S(L::RChip), bg);
@@ -367,7 +584,7 @@ void DrawTitleBar(Render& r, const AppState& st, const Rect& client, const Palet
   float limit = bar.r - st.S(44) * 3 - st.S(10);
   if (limit > tx) {
     r.PushClip(D2D1::RectF(tx, bar.t, limit, bar.b));
-    const wchar_t* brand = L"轻舟 Skiff";
+    const wchar_t* brand = Tr(L"轻舟 Skiff");
     float bw = r.Measure(brand, FontId::Small);
     r.TextVertCenter(brand, D2D1::RectF(tx, bar.t, tx + bw + st.S(1), bar.b), p.text,
                      FontId::Small);
@@ -400,63 +617,159 @@ void DrawSidebar(Render& r, const AppState& st, const Rect& s, const Palette& p)
   r.Fill(Rect{ s.r - st.S(1), s.t, s.r, s.b }.D2D(), p.line);
 
   float logo = st.S(30);
-  Rect lg{ s.l + st.S(14), s.t + st.S(16), s.l + st.S(14) + logo, s.t + st.S(16) + logo };
+  float logoX = st.sideCollapsed ? s.l + (s.W() - logo) * kHalf : s.l + st.S(14.0f);
+  Rect lg{ logoX, s.t + st.S(16), logoX + logo, s.t + st.S(16) + logo };
   r.FillRound(lg.D2D(), st.S(9), p.accentSoft);
   DrawSail(r, st, lg.Inset(st.S(9)), p.accent);
 
+  if (st.sideCollapsed) {
+    Rect ex = SideExpandRect(st, s);
+    r.FillRound(ex.D2D(), st.S(8.0f),
+                st.hoverId == HitSideExpand ? p.lineStrong : p.surface2);
+    r.StrokeRound(ex.D2D(), st.S(8.0f), p.line, st.S(1.0f));
+    DrawChevronPair(r, st, ex, false, p.accent);
+
+    Rect stg = SideCollapsedSettingsRect(st, s);
+    r.FillRound(stg.D2D(), st.S(8.0f),
+                st.hoverId == HitSideSettings ? p.lineStrong : p.surface2);
+    DrawSettingsIcon(r, st, stg.Inset(st.S(11.0f)), p.text2);
+    return;
+  }
+
   float tx = lg.r + st.S(9);
-  float textRight = s.r - st.S(14);
-  r.TextVertCenter(L"轻舟", D2D1::RectF(tx, lg.t, textRight, lg.t + lg.H() * 0.60f), p.text,
+  Rect bf = SideBrandFoldRect(st, s);
+  float textRight = bf.l - st.S(8);
+  r.TextVertCenter(Tr(L"轻舟"), D2D1::RectF(tx, lg.t, textRight, lg.t + lg.H() * 0.60f), p.text,
                    FontId::Body);
   r.TextVertCenter(L"SKIFF · PORTABLE",
                    D2D1::RectF(tx, lg.t + lg.H() * 0.52f, textRight, lg.b), p.text3,
                    FontId::Micro);
 
-  const wchar_t* navNames[5] = { L"主机", L"终端", L"文件", L"转发", L"设置" };
-  const wchar_t* navKeys[5] = { L"Ctrl 0", L"Ctrl 1", L"Ctrl 2", L"Ctrl 3", L"Ctrl ," };
-  View navViews[5] = { View::Dash, View::Term, View::Sftp, View::Tun, View::Set };
-  int navSel = 0;
-  for (int k = 0; k < 5; ++k) {
-    if (navViews[k] == st.view) navSel = k;
-  }
-  int liveN = 0;
-  for (size_t i = 0; i < st.hosts.size(); ++i) {
-    if (st.hosts[i].state == HostState::Live) ++liveN;
-  }
+  r.FillRound(bf.D2D(), st.S(6.0f),
+              st.hoverId == HitSideCollapse ? p.lineStrong : p.surface2);
+  DrawChevronPair(r, st, bf, true, p.text2);
 
-  for (int k = 0; k < 5; ++k) {
-    Rect row = NavItemRect(st, s, k);
-    bool on = k == navSel;
-    if (on) {
-      r.FillRound(row.D2D(), st.S(L::RCtrl), p.accentSoft);
-      Rect edge{ row.l, row.t + st.S(10), row.l + st.S(3), row.b - st.S(10) };
-      r.FillRound(edge.D2D(), st.S(1.5f), p.accent);
+  int liveN = 0;
+  int tunUp = 0;
+  int tunTotal = 0;
+  for (size_t i = 0; i < st.hosts.size(); ++i) {
+    const Host& h = st.hosts[i];
+    if (h.state == HostState::Live) ++liveN;
+    for (size_t k = 0; k < h.tunnels.size(); ++k) {
+      if (!h.tunnels[k].on) continue;
+      ++tunTotal;
+      if (h.tunnels[k].state == TunState::Up) ++tunUp;
     }
-    r.TextVertCenter(navNames[k],
-                     D2D1::RectF(row.l + st.S(16), row.t, row.r - st.S(64), row.b),
-                     on ? p.text : p.text2, FontId::Body);
-    if (k == 0 && !st.hosts.empty()) {
-      std::wstring cnt = Num(liveN) + L"/" + Num((int)st.hosts.size());
-      r.TextVertCenter(cnt.c_str(), D2D1::RectF(row.r - st.S(66), row.t, row.r - st.S(10), row.b),
-                       on ? p.accent : p.text3, FontId::Micro, Align::Right);
-    } else {
-      r.TextVertCenter(navKeys[k], D2D1::RectF(row.r - st.S(66), row.t, row.r - st.S(10), row.b),
-                       p.text3, FontId::Micro, Align::Right);
-    }
+  }
+  Rect sum = SideSummaryRect(st, s);
+  r.FillRound(sum.D2D(), st.S(L::RCtrl), p.surface2);
+  std::wstring sumText = std::wstring(Tr(L"在线设备 ")) + Num(liveN) + L"/" +
+                         Num((int)st.hosts.size()) + Tr(L"  ·  连通隧道 ") + Num(tunUp) + L"/" +
+                         Num(tunTotal);
+  r.TextVertCenter(sumText.c_str(),
+                   D2D1::RectF(sum.l + st.S(10.0f), sum.t, sum.r - st.S(10.0f), sum.b),
+                   p.text2, FontId::Micro);
+
+  Rect sq = SideSearchRect(st, s);
+  r.FillRound(sq.D2D(), st.S(L::RCtrl), p.surface2);
+  if (st.searchFocus) r.StrokeRound(sq.D2D(), st.S(L::RCtrl), p.accent, st.S(1.2f));
+  float scy = sq.t + sq.H() * kHalf;
+  float icx = sq.l + st.S(15.0f);
+  r.Circle(icx, scy, st.S(4.0f), Alpha(p.text3, 0.55f));
+  r.Line(icx + st.S(3.0f), scy + st.S(3.0f), icx + st.S(7.0f), scy + st.S(7.0f), p.text3,
+         st.S(1.5f));
+  if (st.selectAll && st.searchFocus && !st.query.empty()) {
+    float vw = r.Measure(st.query.c_str(), FontId::Small);
+    r.Fill(D2D1::RectF(icx + st.S(10.0f), sq.t + st.S(4.0f),
+                       icx + st.S(14.0f) + vw, sq.b - st.S(4.0f)),
+           Alpha(p.accent, 0.25f));
+  }
+  std::wstring shint = st.query.empty() ? std::wstring(Tr(L"搜索主机…")) : st.query;
+  r.PushClip(D2D1::RectF(icx + st.S(12.0f), sq.t, sq.r - st.S(8.0f), sq.b));
+  r.TextVertCenter(shint.c_str(),
+                   D2D1::RectF(icx + st.S(12.0f), sq.t, sq.r - st.S(8.0f), sq.b),
+                   st.query.empty() ? p.text3 : p.text, FontId::Small);
+  r.PopClip();
+
+  Rect sk = SideSortKeyRect(st, s);
+  Rect sd = SideSortDirRect(st, s);
+  r.FillRound(sk.D2D(), st.S(L::RCtrl), p.surface2);
+  std::wstring sortText = std::wstring(Tr(L"排序：")) +
+                          (st.sortKey == 0 ? Tr(L"到期时间") : Tr(L"注册时间"));
+  r.TextVertCenter(sortText.c_str(),
+                   D2D1::RectF(sk.l + st.S(10.0f), sk.t, sk.r - st.S(6.0f), sk.b), p.text2,
+                   FontId::Micro);
+  r.FillRound(sd.D2D(), st.S(L::RCtrl), p.surface2);
+  r.TextVertCenter(st.sortAsc ? L"↑" : L"↓", sd.D2D(), p.accent, FontId::Body, Align::Center);
+
+  int vis[kSideCardCap];
+  int visN = SidebarVisibleHosts(st, vis, kSideCardCap);
+  float listTop = SideListTop(st, s);
+  float listBottom = SideListBottom(st, s);
+  r.PushClip(D2D1::RectF(s.l, listTop, s.r, listBottom));
+  for (int i = 0; i < visN; ++i) {
+    Rect card = SideCardRect(st, s, i);
+    if (card.b <= listTop || card.t >= listBottom) continue;
+    DrawSideHostCard(r, st, s, i, vis[i], p);
+  }
+  if (visN == 0) {
+    const wchar_t* tip = st.hosts.empty() ? Tr(L"还没有主机，点首页右上角新建")
+                                          : Tr(L"没有匹配的主机");
+    r.TextVertCenter(tip,
+                     D2D1::RectF(s.l + st.S(16.0f), listTop + st.S(24.0f),
+                                 s.r - st.S(16.0f), listTop + st.S(58.0f)),
+                     p.text3, FontId::Micro, Align::Center);
+  }
+  r.PopClip();
+
+  float totalH = (st.S(148.0f) + st.S(8.0f)) * (float)visN - st.S(8.0f);
+  float viewH = listBottom - listTop;
+  if (totalH > viewH && viewH > 0) {
+    float maxScroll = totalH - viewH;
+    float sc = st.sideScroll;
+    if (sc < 0) sc = 0;
+    if (sc > maxScroll) sc = maxScroll;
+    float th = viewH * viewH / totalH;
+    if (th < st.S(24.0f)) th = st.S(24.0f);
+    float ty = listTop + (viewH - th) * sc / maxScroll;
+    r.FillRound(D2D1::RectF(s.r - st.S(6.0f), ty, s.r - st.S(2.0f), ty + th), st.S(2.0f),
+                p.lineStrong);
   }
 
   float foot = SidebarFootTop(st, s);
   r.Fill(Rect{ s.l, foot, s.r, foot + st.S(1) }.D2D(), p.line);
-  Rect vrow = SidebarFootItemRect(st, s, 0);
-  Rect hk = SidebarFootItemRect(st, s, 1);
-  std::wstring ver = std::wstring(L"轻舟 ") + SKIFF_WIN_VERSION + L" · Windows";
-  r.TextVertCenter(ver.c_str(),
-                   D2D1::RectF(vrow.l + st.S(10), vrow.t, vrow.r - st.S(10), vrow.b), p.text3,
-                   FontId::Micro);
-  r.TextVertCenter(L"快捷键", D2D1::RectF(hk.l + st.S(10), hk.t, hk.r - st.S(54), hk.b), p.text2,
+
+  Rect setRc = SideSettingsRect(st, s);
+  r.FillRound(setRc.D2D(), st.S(L::RCtrl),
+              st.hoverId == HitSideSettings ? p.lineStrong : p.surface2);
+  float setTw = r.Measure(Tr(L"设置"), FontId::Body);
+  float setIco = st.S(14.0f);
+  float setGap = st.S(7.0f);
+  float setX = setRc.l + (setRc.W() - (setIco + setGap + setTw)) * kHalf;
+  Rect setIc{ setX, MidY(setRc) - setIco * kHalf, setX + setIco, MidY(setRc) + setIco * kHalf };
+  DrawSettingsIcon(r, st, setIc, p.text2);
+  r.TextVertCenter(Tr(L"设置"),
+                   D2D1::RectF(setX + setIco + setGap, setRc.t, setRc.r, setRc.b), p.text2,
                    FontId::Body);
-  r.TextVertCenter(L"F1", D2D1::RectF(hk.r - st.S(54), hk.t, hk.r - st.S(10), hk.b), p.text3,
-                   FontId::Micro, Align::Right);
+
+  Rect vrow = SidebarFootItemRect(st, s, 1);
+  Rect fold = SideCollapseRect(st, s);
+  std::wstring ver = std::wstring(L"v") + SKIFF_WIN_VERSION;
+  r.TextVertCenter(ver.c_str(),
+                   D2D1::RectF(vrow.l + st.S(10), vrow.t, fold.l - st.S(6), vrow.b), p.text3,
+                   FontId::Micro);
+
+  r.FillRound(fold.D2D(), st.S(6.0f),
+              st.hoverId == HitSideCollapse ? p.lineStrong : p.surface2);
+  float foldTw = r.Measure(Tr(L"收起"), FontId::Micro);
+  float foldIco = st.S(12.0f);
+  float foldGap = st.S(6.0f);
+  float foldX = fold.l + (fold.W() - (foldIco + foldGap + foldTw)) * kHalf;
+  Rect foldIc{ foldX, MidY(fold) - foldIco * kHalf, foldX + foldIco, MidY(fold) + foldIco * kHalf };
+  DrawChevronPair(r, st, foldIc, true, p.text2);
+  r.TextVertCenter(Tr(L"收起"),
+                   D2D1::RectF(foldX + foldIco + foldGap, fold.t, fold.r, fold.b), p.text2,
+                   FontId::Micro);
 }
 
 void DrawTabs(Render& r, const AppState& st, const Rect& tabs, const Palette& p) {
@@ -494,24 +807,30 @@ void DrawTabs(Render& r, const AppState& st, const Rect& tabs, const Palette& p)
     r.Line(xc + xs, yc - xs, xc - xs, yc + xs, p.text3, st.S(1.1f));
   }
 
-  Rect add = TabAddRect(st, tabs);
-  float plus = st.S(6);
-  float acx = add.l + add.W() * kHalf;
-  float acy = MidY(add);
-  r.Line(acx - plus, acy, acx + plus, acy, p.text3, st.S(1.4f));
-  r.Line(acx, acy - plus, acx, acy + plus, p.text3, st.S(1.4f));
-
   Rect refresh = TabsRightButtonRect(st, tabs, 0);
-  DrawRefreshIcon(r, st, refresh.Inset(st.S(7)), p.text3);
-  Rect more = TabsRightButtonRect(st, tabs, 1);
-  float mcx = more.l + more.W() * kHalf;
-  float mcy = MidY(more);
-  float dotR = st.S(1.3f);
-  float step = st.S(5);
-  r.Circle(mcx - step, mcy, dotR, p.text3);
-  r.Circle(mcx, mcy, dotR, p.text3);
-  r.Circle(mcx + step, mcy, dotR, p.text3);
-
+  bool spinning = st.refreshAt > 0 && (long long)GetTickCount64() - st.refreshAt < 1200;
+  bool rHot = st.hoverId == HitTabsRightBase;
+  if (spinning || rHot) {
+    Rect bgc = refresh.Inset(st.S(1.0f));
+    r.FillRound(bgc.D2D(), st.S(7.0f), Alpha(p.accent, spinning ? 0.18f : 0.12f));
+    r.StrokeRound(bgc.D2D(), st.S(7.0f), Alpha(p.accent, 0.55f), st.S(1.0f));
+  }
+  Rect ri = refresh.Inset(st.S(7));
+  DrawRefreshIcon(r, st, ri, (spinning || rHot) ? p.accent : p.text3);
+  if (spinning) {
+    float cx = ri.l + ri.W() * kHalf;
+    float cy = MidY(ri);
+    float rad = ri.W() * 0.48f;
+    double ang = (double)((GetTickCount64() - (ULONGLONG)st.refreshAt) % 1200ULL) / 1200.0 * 6.283185307179586;
+    for (int k = 0; k < 3; ++k) {
+      double a = ang + (double)k * 2.0943951023931953;
+      float x0 = cx + (float)std::cos(a) * rad * 0.55f;
+      float y0 = cy + (float)std::sin(a) * rad * 0.55f;
+      float x1 = cx + (float)std::cos(a) * rad;
+      float y1 = cy + (float)std::sin(a) * rad;
+      r.Line(x0, y0, x1, y1, p.accent, st.S(1.3f));
+    }
+  }
   r.Fill(Rect{ tabs.l, tabs.b - st.S(1), tabs.r, tabs.b }.D2D(), p.line);
 }
 
@@ -532,17 +851,17 @@ void DrawStatus(Render& r, const AppState& st, const Rect& status, const Palette
   if (ss == SshState::Connected) {
     dotColor = p.accent;
     textColor = p.accent;
-    conn = L"已连接";
+    conn = Tr(L"已连接");
   } else if (ss == SshState::Connecting) {
     dotColor = p.warn;
     textColor = p.warn;
-    conn = L"连接中";
+    conn = Tr(L"连接中");
   } else if (ss == SshState::Failed) {
     dotColor = p.danger;
     textColor = p.danger;
-    conn = L"连接失败";
+    conn = Tr(L"连接失败");
   } else {
-    conn = L"未连接";
+    conn = Tr(L"未连接");
   }
   if (!hostName.empty()) conn += std::wstring(L" · ") + hostName;
 
@@ -560,8 +879,12 @@ void DrawStatus(Render& r, const AppState& st, const Rect& status, const Palette
   int latency = (hid >= 0 && hid < (int)st.hosts.size()) ? st.hosts[(size_t)hid].latency : -1;
   std::wstring left[3];
   left[0] = latency >= 0 ? Num(latency) + L" ms" : std::wstring(L"—");
-  left[1] = ss == SshState::Connected ? std::wstring(L"aes256-ctr") : std::wstring(L"—");
-  left[2] = ss == SshState::Connected ? std::wstring(L"chacha20-poly1305") : std::wstring(L"—");
+  std::wstring cipher = ss == SshState::Connected ? U8ToW(SshService::Instance().CipherName(sid))
+                                                  : std::wstring();
+  std::wstring mac = ss == SshState::Connected ? U8ToW(SshService::Instance().MacName(sid))
+                                               : std::wstring();
+  left[1] = cipher.empty() ? std::wstring(L"—") : cipher;
+  left[2] = mac.empty() ? std::wstring(L"—") : mac;
   for (int i = 0; i < 3; ++i) {
     x += st.S(14);
     r.Fill(Rect{ x, status.t + st.S(6), x + st.S(1), status.b - st.S(6) }.D2D(), p.line);
@@ -606,11 +929,11 @@ void TunCols(const AppState& st, const Rect& c, float* xs) {
   float left = c.l + st.S(24.0f);
   float right = c.r - st.S(24.0f);
   float inner = (right - left) - st.S(28.0f);
-  float fixedW = st.S(108.0f) + st.S(72.0f) + st.S(84.0f) + st.S(62.0f) + st.S(76.0f);
+  float fixedW = st.S(108.0f) + st.S(72.0f) + st.S(84.0f) + st.S(62.0f) + st.S(110.0f);
   float unit = (inner - fixedW) / 2.6f;
   if (unit < st.S(36.0f)) unit = st.S(36.0f);
   float cw[7] = { st.S(108.0f), st.S(72.0f), unit * 1.1f, unit * 1.5f,
-                  st.S(84.0f), st.S(62.0f), st.S(76.0f) };
+                  st.S(84.0f), st.S(62.0f), st.S(110.0f) };
   float totalW = 0.0f;
   for (int i = 0; i < 7; ++i) totalW += cw[i];
   if (totalW > inner) {
@@ -659,10 +982,10 @@ bool FieldVisible(const AppState& st, int index) {
 int ModalRowCount(const AppState& st) {
   if (IsFormModal(st)) return (int)st.form.size();
   if (st.modal == ModalKind::StatusPanel) return 7;
-  if (st.modal == ModalKind::Help) return 7;
   if (st.modal == ModalKind::Queue) return st.sftpQueue.empty() ? 1 : (int)st.sftpQueue.size();
   if (st.modal == ModalKind::KeyStore) return st.keyStore.empty() ? 1 : (int)st.keyStore.size();
   if (st.modal == ModalKind::Prompt) return 1;
+  if (st.modal == ModalKind::Channel) return 2;
   return 0;
 }
 
@@ -797,7 +1120,7 @@ Rect DpAuxRect(const AppState& st, const Rect& panel, int slot) {
 
 void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
   if (st.modal == ModalKind::None) return;
-  const Palette& p = PaletteFor(st.dark);
+  const Palette& p = PaletteFor(st.dark, st.accentIdx);
   r.Fill(client.D2D(), Alpha(Rgb(0x000000), st.dark ? 0.58f : 0.34f));
 
   Rect panel = ModalPanel(st, client);
@@ -880,6 +1203,12 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
       if (focus) r.StrokeRound(box.Inset(st.S(0.5f)).D2D(), st.S(L::RCtrl), p.accent, st.S(1.5f));
       std::wstring shown = f.value;
       if (f.kind == FieldKind::Pass && !shown.empty()) shown.assign(shown.size(), L'\x2022');
+      if (focus && st.selectAll && !shown.empty()) {
+        float vw = r.Measure(shown.c_str(), FontId::Body);
+        r.Fill(D2D1::RectF(box.l + st.S(9.0f), box.t + st.S(3.0f),
+                           box.l + st.S(13.0f) + vw, box.b - st.S(3.0f)),
+               Alpha(p.accent, 0.25f));
+      }
       if (shown.empty() && !focus) {
         r.PushClip(D2D1::RectF(box.l + st.S(10.0f), box.t, box.r - st.S(8.0f), box.b));
         r.TextVertCenter(f.hint.c_str(),
@@ -904,7 +1233,7 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
       if (browse || datePick) {
         Rect br{ boxRight + st.S(8.0f), box.t, valRight, box.b };
         r.StrokeRound(br.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-        r.TextVertCenter(browse ? L"浏览…" : L"选择…", br.D2D(), p.text2, FontId::Small,
+        r.TextVertCenter(browse ? Tr(L"浏览…") : Tr(L"选择…"), br.D2D(), p.text2, FontId::Small,
                          Align::Center);
       }
     }
@@ -919,7 +1248,7 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     SYSTEMTIME now{};
     GetLocalTime(&now);
     float navTop = panel.t + st.S(64.0f) + st.S(4.0f);
-    std::wstring head = std::to_wstring(st.dpYear) + L" 年 " + std::to_wstring(st.dpMonth) + L" 月";
+    std::wstring head = std::to_wstring(st.dpYear) + Tr(L" 年 ") + std::to_wstring(st.dpMonth) + Tr(L" 月");
     r.TextVertCenter(head.c_str(),
                      D2D1::RectF(panel.l + st.S(60.0f), navTop, panel.r - st.S(60.0f),
                                  navTop + st.S(30.0f)),
@@ -938,7 +1267,7 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
         r.Line(cx + aw * kHalf, cy, cx - aw * kHalf, cy + ah, p.text2, st.S(1.4f));
       }
     }
-    const wchar_t* wd[7] = { L"日", L"一", L"二", L"三", L"四", L"五", L"六" };
+    const wchar_t* wd[7] = { Tr(L"日"), Tr(L"一"), Tr(L"二"), Tr(L"三"), Tr(L"四"), Tr(L"五"), Tr(L"六") };
     Rect g = DpGridRect(st, panel);
     float cw = g.W() / 7.0f;
     float weekTop = g.t - st.S(22.0f);
@@ -978,7 +1307,7 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
                          Align::Center);
       }
     }
-    const wchar_t* tl[3] = { L"时", L"分", L"秒" };
+    const wchar_t* tl[3] = { Tr(L"时"), Tr(L"分"), Tr(L"秒") };
     int tv[3] = { st.dpHour, st.dpMinute, st.dpSecond };
     for (int k = 0; k < 3; ++k) {
       Rect b = DpTimeBtnRect(st, panel, k);
@@ -992,15 +1321,15 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     for (int k = 0; k < 2; ++k) {
       Rect b = DpAuxRect(st, panel, k);
       r.StrokeRound(b.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-      r.TextVertCenter(k == 0 ? L"今天" : L"清除", b.D2D(), p.text2, FontId::Small,
+      r.TextVertCenter(k == 0 ? Tr(L"今天") : Tr(L"清除"), b.D2D(), p.text2, FontId::Small,
                        Align::Center);
     }
     Rect okRc = ModalOkRect(st, panel);
     Rect cancelRc = ModalCancelRect(st, panel);
     r.FillRound(okRc.D2D(), st.S(L::RBtn), p.accent);
-    r.TextVertCenter(L"确定", okRc.D2D(), p.accentFg, FontId::Body, Align::Center);
+    r.TextVertCenter(Tr(L"确定"), okRc.D2D(), p.accentFg, FontId::Body, Align::Center);
     r.StrokeRound(cancelRc.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-    r.TextVertCenter(L"取消", cancelRc.D2D(), p.text2, FontId::Body, Align::Center);
+    r.TextVertCenter(Tr(L"取消"), cancelRc.D2D(), p.text2, FontId::Body, Align::Center);
   } else if (st.modal == ModalKind::Confirm) {
     Rect body = ModalBodyRect(st, panel);
     r.TextVertCenter(st.confirmNote.c_str(), body.D2D(), p.text2, FontId::Body, Align::Center);
@@ -1008,7 +1337,7 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     Rect body = ModalBodyRect(st, panel);
     r.PushClip(D2D1::RectF(body.l, body.t, body.r, body.b));
     if (st.keyStore.empty()) {
-      r.TextVertCenter(L"keys 目录为空，可放置私钥文件后重开", body.D2D(), p.text3, FontId::Body,
+      r.TextVertCenter(Tr(L"keys 目录为空，可放置私钥文件后重开"), body.D2D(), p.text3, FontId::Body,
                        Align::Center);
     } else {
       for (int i = 0; i < rowN && i < (int)st.keyStore.size(); ++i) {
@@ -1027,15 +1356,25 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
               body.t + st.S(54.0f) };
     r.FillRound(box.D2D(), st.S(L::RCtrl), p.surface2);
     r.StrokeRound(box.Inset(st.S(0.5f)).D2D(), st.S(L::RCtrl), p.accent, st.S(1.5f));
-    bool pwdPrompt = st.promptKind == 3;
-    std::wstring shown = st.promptValue;
-    if (pwdPrompt && !shown.empty()) shown.assign(shown.size(), L'\x2022');
-    if (shown.empty()) shown = pwdPrompt ? L"登录密码" : L"输入名称";
+    std::wstring shown = st.promptValue.empty() ? Tr(L"输入名称") : st.promptValue;
     r.TextVertCenter(shown.c_str(),
                      D2D1::RectF(box.l + st.S(10.0f), box.t, box.r - st.S(8.0f), box.b),
                      st.promptValue.empty() ? p.text3 : p.text, FontId::Body);
+  } else if (st.modal == ModalKind::Channel) {
+    Rect body = ModalBodyRect(st, panel);
+    Rect box{ body.l + st.S(10.0f), body.t + st.S(14.0f), body.r - st.S(10.0f),
+              body.t + st.S(58.0f) };
+    r.FillRound(box.D2D(), st.S(L::RCtrl), p.surface2);
+    r.TextVertCenter(st.chanAddr.c_str(), box.D2D(), p.accent, FontId::Mono, Align::Center);
+    if (!st.chanNote.empty()) {
+      Rect nrc{ body.l + st.S(10.0f), box.b + st.S(6.0f), body.r - st.S(10.0f),
+                box.b + st.S(34.0f) };
+      r.PushClip(nrc.D2D());
+      r.TextVertCenter(st.chanNote.c_str(), nrc.D2D(), p.text3, FontId::Caption);
+      r.PopClip();
+    }
   } else if (st.modal == ModalKind::StatusPanel) {
-    std::wstring keys[7] = { L"主机", L"地址", L"认证", L"加密", L"密钥交换", L"延迟", L"主机指纹" };
+    std::wstring keys[7] = { Tr(L"主机"), Tr(L"地址"), Tr(L"认证"), Tr(L"加密"), Tr(L"密钥交换"), Tr(L"延迟"), Tr(L"主机指纹") };
     std::wstring vals[7];
     const Host* h = nullptr;
     if (st.activeHost >= 0 && st.activeHost < (int)st.hosts.size()) {
@@ -1043,11 +1382,11 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     }
     vals[0] = h ? h->name : L"—";
     vals[1] = h ? h->Addr() : std::wstring(L"—");
-    vals[2] = h ? h->auth : L"—";
+    vals[2] = h ? std::wstring(Tr(h->auth.c_str())) : std::wstring(L"—");
     vals[3] = L"aes256-ctr";
     vals[4] = L"curve25519-sha256";
     vals[5] = st.statusLatency >= 0 ? std::to_wstring(st.statusLatency) + L" ms" : L"—";
-    vals[6] = st.statusKey.empty() ? std::wstring(L"未记录") : st.statusKey;
+    vals[6] = st.statusKey.empty() ? std::wstring(Tr(L"未记录")) : st.statusKey;
     for (int i = 0; i < 7; ++i) {
       Rect row = ModalFieldRect(st, panel, i);
       r.TextVertCenter(keys[i].c_str(),
@@ -1059,24 +1398,10 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
                        i >= 5 ? FontId::MonoSm : FontId::Body);
       r.PopClip();
     }
-  } else if (st.modal == ModalKind::Help) {
-    const wchar_t* keys[7] = { L"Ctrl + K", L"Ctrl + 1", L"Ctrl + 2", L"Ctrl + 3",
-                               L"Ctrl + 4", L"Ctrl + 0", L"F11" };
-    const wchar_t* vals[7] = { L"搜索主机", L"终端视图", L"SFTP 视图", L"端口转发",
-                               L"设置", L"主机台", L"全屏 / 退出全屏" };
-    for (int i = 0; i < 7; ++i) {
-      Rect row = ModalFieldRect(st, panel, i);
-      r.PushClip(D2D1::RectF(row.l, row.t, row.l + st.S(112.0f), row.b));
-      r.TextVertCenter(keys[i], D2D1::RectF(row.l, row.t, row.l + st.S(112.0f), row.b), p.accent,
-                       FontId::MonoSm);
-      r.PopClip();
-      r.TextVertCenter(vals[i], D2D1::RectF(row.l + st.S(112.0f), row.t, row.r, row.b), p.text2,
-                       FontId::Body);
-    }
   } else if (st.modal == ModalKind::Queue) {
     if (st.sftpQueue.empty()) {
       Rect row = ModalFieldRect(st, panel, 0);
-      r.TextVertCenter(L"传输队列为空", row.D2D(), p.text3, FontId::Body, Align::Center);
+      r.TextVertCenter(Tr(L"传输队列为空"), row.D2D(), p.text3, FontId::Body, Align::Center);
     } else {
       for (int i = 0; i < rowN; ++i) {
         Rect row = ModalFieldRect(st, panel, i);
@@ -1097,27 +1422,34 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     Rect ok = ModalOkRect(st, panel);
     Rect cancel = ModalCancelRect(st, panel);
     r.FillRound(ok.D2D(), st.S(L::RBtn), p.accent);
-    r.TextVertCenter(L"保存", ok.D2D(), p.accentFg, FontId::Body, Align::Center);
+    r.TextVertCenter(Tr(L"保存"), ok.D2D(), p.accentFg, FontId::Body, Align::Center);
     r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-    r.TextVertCenter(L"取消", cancel.D2D(), p.text2, FontId::Body, Align::Center);
+    r.TextVertCenter(Tr(L"取消"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
     if (st.modal == ModalKind::HostForm) {
       Rect ks{ panel.l + st.S(22.0f), ok.t, panel.l + st.S(22.0f) + st.S(84.0f), ok.b };
       r.StrokeRound(ks.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-      r.TextVertCenter(L"密钥库", ks.D2D(), p.text2, FontId::Body, Align::Center);
+      r.TextVertCenter(Tr(L"密钥库"), ks.D2D(), p.text2, FontId::Body, Align::Center);
     }
   } else if (st.modal == ModalKind::Confirm) {
     Rect ok = ModalOkRect(st, panel);
     Rect cancel = ModalCancelRect(st, panel);
     bool danger = st.confirmHost >= 0 || st.confirmTunnel >= 0;
     r.FillRound(ok.D2D(), st.S(L::RBtn), danger ? p.danger : p.accent);
-    r.TextVertCenter(danger ? L"删除" : L"确定", ok.D2D(),
+    r.TextVertCenter(danger ? Tr(L"删除") : Tr(L"确定"), ok.D2D(),
                      danger ? Rgb(0xFFFFFF) : p.accentFg, FontId::Body, Align::Center);
     r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-    r.TextVertCenter(L"取消", cancel.D2D(), p.text2, FontId::Body, Align::Center);
+    r.TextVertCenter(Tr(L"取消"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
+  } else if (st.modal == ModalKind::Channel) {
+    Rect ok = ModalOkRect(st, panel);
+    Rect cancel = ModalCancelRect(st, panel);
+    r.FillRound(ok.D2D(), st.S(L::RBtn), p.accent);
+    r.TextVertCenter(Tr(L"用浏览器打开"), ok.D2D(), p.accentFg, FontId::Body, Align::Center);
+    r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(Tr(L"复制地址"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
   } else {
     Rect ok = ModalOkRect(st, panel);
     r.FillRound(ok.D2D(), st.S(L::RBtn), p.surface2);
-    r.TextVertCenter(L"关闭", ok.D2D(), p.text2, FontId::Body, Align::Center);
+    r.TextVertCenter(Tr(L"关闭"), ok.D2D(), p.text2, FontId::Body, Align::Center);
   }
 }
 
@@ -1129,17 +1461,18 @@ Rect DashSearchRect(const AppState& st, const Rect& c) {
   return Rect{ nr - st.S(220.0f), c.t + st.S(34.0f), nr, c.t + st.S(68.0f) };
 }
 
-const Palette& DarkPalette() {
-  static const Palette p = BuildPalette(true);
-  return p;
+const Palette& PaletteFor(bool dark, int accentIdx) {
+  static Palette cache[2][5];
+  static bool ready = false;
+  if (!ready) {
+    for (int d = 0; d < 2; ++d) {
+      for (int a = 0; a < 5; ++a) cache[d][a] = BuildPalette(d == 0, a);
+    }
+    ready = true;
+  }
+  int ai = accentIdx < 0 ? 0 : (accentIdx > 4 ? 4 : accentIdx);
+  return cache[dark ? 0 : 1][ai];
 }
-
-const Palette& LightPalette() {
-  static const Palette p = BuildPalette(false);
-  return p;
-}
-
-const Palette& PaletteFor(bool dark) { return dark ? DarkPalette() : LightPalette(); }
 
 void AppState::Seed() {
   hosts.clear();
@@ -1147,57 +1480,15 @@ void AppState::Seed() {
   nextHostId = 1;
   nextTunnelId = 1;
 
-  auto addHost = [this](const wchar_t* name, const wchar_t* user, const wchar_t* host, int port,
-                        const wchar_t* auth, int expireDays, bool autoConn) {
-    Host h;
-    h.id = nextHostId++;
-    h.name = name;
-    h.user = user;
-    h.host = host;
-    h.port = port;
-    h.auth = auth;
-    h.registeredAt = StampPlusDays(-120);
-    h.expireAt = expireDays == 0 ? std::wstring() : StampPlusDays(expireDays);
-    h.autoConnect = autoConn;
-    hosts.push_back(h);
-  };
-
-  addHost(L"生产机", L"demo", L"192.0.2.10", 22, L"密钥", 300, false);
-  addHost(L"测试环境", L"demo", L"192.0.2.24", 2222, L"密码", 60, true);
-  addHost(L"跳板机", L"demo", L"example.com", 22, L"密钥", 5, false);
-  addHost(L"构建节点", L"demo", L"192.0.2.31", 22, L"密钥", 120, true);
-  addHost(L"归档服务器", L"demo", L"192.0.2.48", 2200, L"密码", 0, false);
-
   Tab home;
   home.view = (int)View::Dash;
-  home.title = L"主机台";
+  home.title = Tr(L"首页");
   home.icon = (int)View::Dash;
   tabs.push_back(home);
   activeTab = 0;
 
-  statusHost = L"生产机";
-
-  auto addTun = [this](int hi, const wchar_t* type, const wchar_t* port, const wchar_t* dest,
-                       bool on) {
-    if (hi < 0 || hi >= (int)hosts.size()) return;
-    Tunnel t;
-    t.id = nextTunnelId++;
-    t.hostId = hosts[(size_t)hi].id;
-    t.type = type;
-    t.port = port;
-    t.dest = dest;
-    t.on = on;
-    t.state = TunState::Down;
-    hosts[(size_t)hi].tunnels.push_back(t);
-  };
-  addTun(0, L"L", L"8080", L"192.0.2.10:80", true);
-  addTun(0, L"L", L"6379", L"192.0.2.10:6379", false);
-  addTun(1, L"L", L"5432", L"192.0.2.24:5432", true);
-  addTun(2, L"L", L"9200", L"192.0.2.31:9200", true);
-  addTun(3, L"R", L"2222", L"127.0.0.1:22", true);
-
   sftpPath = L"/";
-  sftpStatus = L"未连接";
+  sftpStatus = Tr(L"未连接");
   sftpSelRemote = -1;
   sftpSelLocal = -1;
   sftpQueue.clear();
@@ -1209,9 +1500,9 @@ void AppState::Seed() {
 static const wchar_t* PageTitle(View v) {
   switch (v) {
     case View::Sftp: return L"SFTP";
-    case View::Tun: return L"端口转发";
-    case View::Set: return L"设置";
-    default: return L"主机台";
+    case View::Tun: return Tr(L"端口转发");
+    case View::Set: return Tr(L"设置");
+    default: return Tr(L"首页");
   }
 }
 
@@ -1237,12 +1528,13 @@ int AppState::OpenHostSession(int hostId) {
   t.view = (int)View::Term;
   t.hostId = hostId;
   t.sessionId = sid;
-  t.title = hosts[(size_t)hostId].name + L" · 终端";
+  t.title = hosts[(size_t)hostId].name + Tr(L" · 终端");
   t.icon = (int)View::Term;
   tabs.push_back(t);
   activeHost = hostId;
   activeTab = (int)tabs.size() - 1;
   view = View::Term;
+  MarkLastView();
   return sid;
 }
 
@@ -1270,6 +1562,7 @@ void AppState::OpenPage(View v) {
   tabs.push_back(t);
   activeTab = (int)tabs.size() - 1;
   view = v;
+  MarkLastView();
 }
 
 void AppState::ActivateTab(int index) {
@@ -1277,25 +1570,16 @@ void AppState::ActivateTab(int index) {
   activeTab = index;
   view = (View)tabs[(size_t)index].view;
   if (tabs[(size_t)index].hostId >= 0) activeHost = tabs[(size_t)index].hostId;
+  MarkLastView();
 }
 
 void AppState::CloseTab(int index) {
   if (index < 0 || index >= (int)tabs.size()) return;
-  int sid = tabs[(size_t)index].sessionId;
-  if (sid >= 0) {
-    SshService::Instance().Disconnect(sid);
-    SessionHub::Instance().Close(sid);
-    int hid = tabs[(size_t)index].hostId;
-    if (hid >= 0 && hid < (int)hosts.size()) {
-      hosts[(size_t)hid].state = HostState::Off;
-      hosts[(size_t)hid].latency = -1;
-    }
-  }
   tabs.erase(tabs.begin() + index);
   if (tabs.empty()) {
     Tab home;
     home.view = (int)View::Dash;
-    home.title = L"主机台";
+    home.title = Tr(L"首页");
     home.icon = (int)View::Dash;
     tabs.push_back(home);
     activeTab = 0;
@@ -1308,10 +1592,28 @@ void AppState::CloseTab(int index) {
   ActivateTab(activeTab);
 }
 
+void AppState::CloseTabAndSession(int index) {
+  if (index < 0 || index >= (int)tabs.size()) return;
+  int sid = tabs[(size_t)index].sessionId;
+  if (sid >= 0) {
+    SshService::Instance().Disconnect(sid);
+    SessionHub::Instance().Close(sid);
+    int hid = tabs[(size_t)index].hostId;
+    if (hid >= 0 && hid < (int)hosts.size()) {
+      hosts[(size_t)hid].state = HostState::Off;
+      hosts[(size_t)hid].latency = -1;
+      hosts[(size_t)hid].sessionId = -1;
+      hosts[(size_t)hid].manualStop = true;
+      hosts[(size_t)hid].retryAt = 0;
+    }
+  }
+  CloseTab(index);
+}
+
 void AppState::RemoveHost(int hostId) {
   if (hostId < 0 || hostId >= (int)hosts.size()) return;
   for (int i = (int)tabs.size() - 1; i >= 0; --i) {
-    if (tabs[(size_t)i].hostId == hostId) CloseTab(i);
+    if (tabs[(size_t)i].hostId == hostId) CloseTabAndSession(i);
   }
   hosts.erase(hosts.begin() + hostId);
   for (size_t i = 0; i < tabs.size(); ++i) {
@@ -1345,8 +1647,8 @@ void AppState::OpenKeyStore() {
   RefreshKeyStore();
   keyReturn = modal;
   modal = ModalKind::KeyStore;
-  modalTitle = L"密钥库";
-  modalNote = L"取自程序目录 keys\\，选中即填入私钥路径";
+  modalTitle = Tr(L"密钥库");
+  modalNote = Tr(L"取自程序目录 keys\\，选中即填入私钥路径");
 }
 
 void AppState::ResetFingerprint(int hostIndex) {
@@ -1381,7 +1683,7 @@ void AppState::OpenDatePicker(int fieldIndex) {
   dpDrop = 0;
   modal = ModalKind::DatePicker;
   modalTitle = form[(size_t)fieldIndex].label;
-  modalNote = L"选日期后调整时 / 分 / 秒，确定写回字段";
+  modalNote = Tr(L"选日期后调整时 / 分 / 秒，确定写回字段");
 }
 
 void AppState::CommitDatePicker() {
@@ -1420,39 +1722,39 @@ void AppState::OpenHostForm(int index) {
   Host h = edit ? hosts[static_cast<size_t>(index)] : blank;
   int authOpt = edit && h.IsKeyAuth() ? 1 : 0;
 
-  form.push_back({ L"g1", L"基本信息", L"", L"", FieldKind::Group });
-  form.push_back({ L"name", L"名称", h.name, L"例如 生产机", FieldKind::Text });
-  form.push_back({ L"host", L"主机", h.host, L"域名或 IP", FieldKind::Text });
-  form.push_back({ L"port", L"端口", edit ? std::to_wstring(h.port) : std::wstring(L"22"),
-                   L"默认 22", FieldKind::Text });
-  form.push_back({ L"user", L"用户名", edit ? h.user : std::wstring(L"root"), L"登录用户",
+  form.push_back({ L"g1", Tr(L"基本信息"), L"", L"", FieldKind::Group });
+  form.push_back({ L"name", Tr(L"名称"), h.name, Tr(L"例如 生产机"), FieldKind::Text });
+  form.push_back({ L"host", Tr(L"主机"), h.host, Tr(L"域名或 IP"), FieldKind::Text });
+  form.push_back({ L"port", Tr(L"端口"), edit ? std::to_wstring(h.port) : std::wstring(L"22"),
+                   Tr(L"默认 22"), FieldKind::Text });
+  form.push_back({ L"user", Tr(L"用户名"), edit ? h.user : std::wstring(L"root"), Tr(L"登录用户"),
                    FieldKind::Text });
 
-  form.push_back({ L"g2", L"认证", L"", L"", FieldKind::Group });
-  form.push_back({ L"auth", L"认证方式", L"", L"", FieldKind::Seg,
-                   { L"密码", L"密钥" }, authOpt });
-  form.push_back({ L"password", L"密码", h.password, L"随配置保存在本机", FieldKind::Pass,
+  form.push_back({ L"g2", Tr(L"认证"), L"", L"", FieldKind::Group });
+  form.push_back({ L"auth", Tr(L"认证方式"), L"", L"", FieldKind::Seg,
+                   { Tr(L"密码"), Tr(L"密钥") }, authOpt });
+  form.push_back({ L"password", Tr(L"密码"), h.password, Tr(L"随配置保存在本机"), FieldKind::Pass,
                    {}, 0, false, L"auth", 0 });
-  form.push_back({ L"keyPath", L"私钥文件", h.keyPath, L"留空则自动查找 keys 目录",
+  form.push_back({ L"keyPath", Tr(L"私钥文件"), h.keyPath, Tr(L"留空则自动查找 keys 目录"),
                    FieldKind::File, {}, 0, false, L"auth", 1 });
-  form.push_back({ L"keyPass", L"私钥口令", h.keyPass, L"私钥无口令可留空", FieldKind::Pass,
+  form.push_back({ L"keyPass", Tr(L"私钥口令"), h.keyPass, Tr(L"私钥无口令可留空"), FieldKind::Pass,
                    {}, 0, false, L"auth", 1 });
 
-  form.push_back({ L"g3", L"时间与自动化", L"", L"", FieldKind::Group });
-  form.push_back({ L"registeredAt", L"注册时间", h.registeredAt, L"点击选择日期",
+  form.push_back({ L"g3", Tr(L"时间与自动化"), L"", L"", FieldKind::Group });
+  form.push_back({ L"registeredAt", Tr(L"注册时间"), h.registeredAt, Tr(L"点击选择日期"),
                    FieldKind::Date });
-  form.push_back({ L"expireAt", L"到期时间", h.expireAt, L"留空表示不限", FieldKind::Date });
-  form.push_back({ L"autoConnect", L"启动连接", L"", L"", FieldKind::Seg,
-                   { L"关闭", L"开启" }, h.autoConnect ? 1 : 0 });
+  form.push_back({ L"expireAt", Tr(L"到期时间"), h.expireAt, Tr(L"留空表示不限"), FieldKind::Date });
+  form.push_back({ L"autoConnect", Tr(L"启动连接"), L"", L"", FieldKind::Seg,
+                   { Tr(L"关闭"), Tr(L"开启") }, h.autoConnect ? 1 : 0 });
   if (edit && !h.hostKey.empty()) {
-    form.push_back({ L"hostKey", L"主机指纹", h.hostKey, L"重置后下次连接重新记录",
+    form.push_back({ L"hostKey", Tr(L"主机指纹"), h.hostKey, Tr(L"重置后下次连接重新记录"),
                      FieldKind::Info });
   }
 
   formFocus = 1;
   modal = ModalKind::HostForm;
-  modalTitle = edit ? L"编辑主机" : L"新建主机";
-  modalNote = L"配置写入程序同目录 skiff_store.json，不写注册表";
+  modalTitle = edit ? Tr(L"编辑主机") : Tr(L"新建主机");
+  modalNote = Tr(L"配置写入程序同目录 skiff_store.json，不写注册表");
 }
 
 void AppState::OpenTunForm(int hostIndex, int tunnelId) {
@@ -1467,19 +1769,19 @@ void AppState::OpenTunForm(int hostIndex, int tunnelId) {
   Tunnel blank;
   Tunnel tv = edit ? *t : blank;
 
-  form.push_back({ L"g1", L"转发规则", L"", L"", FieldKind::Group });
-  form.push_back({ L"tunType", L"类型", L"", L"", FieldKind::Seg,
-                   { L"本地 L", L"远程 R" }, tv.IsRemote() ? 1 : 0 });
-  form.push_back({ L"tunPort", L"本地端口", tv.port, L"例如 8080", FieldKind::Text });
-  form.push_back({ L"tunDest", L"目标地址", tv.dest, L"例如 192.0.2.10:80", FieldKind::Text });
-  form.push_back({ L"tunHost", L"所属主机", hi >= 0 && hi < (int)hosts.size()
-                                               ? hosts[(size_t)hi].name : std::wstring(L"未选择"),
-                   L"转发经由的主机", FieldKind::Info });
+  form.push_back({ L"g1", Tr(L"转发规则"), L"", L"", FieldKind::Group });
+  form.push_back({ L"tunType", Tr(L"类型"), L"", L"", FieldKind::Seg,
+                   { Tr(L"本地 L"), Tr(L"远程 R") }, tv.IsRemote() ? 1 : 0 });
+  form.push_back({ L"tunPort", Tr(L"本地端口"), tv.port, Tr(L"例如 8080"), FieldKind::Text });
+  form.push_back({ L"tunDest", Tr(L"目标地址"), tv.dest, Tr(L"例如 192.0.2.10:80"), FieldKind::Text });
+  form.push_back({ L"tunHost", Tr(L"所属主机"), hi >= 0 && hi < (int)hosts.size()
+                                               ? hosts[(size_t)hi].name : std::wstring(Tr(L"未选择")),
+                   Tr(L"转发经由的主机"), FieldKind::Info });
 
   formFocus = 1;
   modal = ModalKind::TunForm;
-  modalTitle = edit ? L"编辑转发" : L"新建转发";
-  modalNote = L"保存后立即进入巡检队列";
+  modalTitle = edit ? Tr(L"编辑转发") : Tr(L"新建转发");
+  modalNote = Tr(L"保存后立即进入巡检队列");
 }
 
 bool AppState::CommitForm() {
@@ -1492,16 +1794,16 @@ bool AppState::CommitForm() {
     std::wstring reg = TrimWs(FormValue(form, L"registeredAt"));
     std::wstring exp = TrimWs(FormValue(form, L"expireAt"));
     if (name.empty()) {
-      formError = L"请填写名称";
+      formError = Tr(L"请填写名称");
       return false;
     }
     if (host.empty()) {
-      formError = L"请填写主机地址";
+      formError = Tr(L"请填写主机地址");
       return false;
     }
     for (size_t i = 0; i < host.size(); ++i) {
       if (host[i] == L' ' || host[i] == L'@' || host[i] == L':') {
-        formError = L"主机地址不能包含空格、@ 或冒号，端口请填在端口栏";
+        formError = Tr(L"主机地址不能包含空格、@ 或冒号，端口请填在端口栏");
         return false;
       }
     }
@@ -1509,24 +1811,24 @@ bool AppState::CommitForm() {
     if (!portText.empty()) {
       port = _wtoi(portText.c_str());
       if (port < 1 || port > 65535) {
-        formError = L"端口需在 1 ~ 65535 之间";
+        formError = Tr(L"端口需在 1 ~ 65535 之间");
         return false;
       }
     }
     if (user.empty()) {
-      formError = L"请填写用户名";
+      formError = Tr(L"请填写用户名");
       return false;
     }
     if (!reg.empty() && StampMillis(reg) < 0) {
-      formError = L"注册时间格式应为 YYYY-MM-DD HH:mm:ss";
+      formError = Tr(L"注册时间格式应为 YYYY-MM-DD HH:mm:ss");
       return false;
     }
     if (!exp.empty() && StampMillis(exp) < 0) {
-      formError = L"到期时间格式应为 YYYY-MM-DD HH:mm:ss";
+      formError = Tr(L"到期时间格式应为 YYYY-MM-DD HH:mm:ss");
       return false;
     }
     if (!reg.empty() && !exp.empty() && StampMillis(exp) < StampMillis(reg)) {
-      formError = L"到期时间早于注册时间";
+      formError = Tr(L"到期时间早于注册时间");
       return false;
     }
 
@@ -1553,7 +1855,7 @@ bool AppState::CommitForm() {
       hosts[(size_t)hi] = h;
       for (size_t i = 0; i < tabs.size(); ++i) {
         if (tabs[i].hostId == hi && tabs[i].view == (int)View::Term) {
-          tabs[i].title = h.name + L" · 终端";
+          tabs[i].title = h.name + Tr(L" · 终端");
         }
       }
     } else {
@@ -1570,21 +1872,21 @@ bool AppState::CommitForm() {
     std::wstring portText = TrimWs(FormValue(form, L"tunPort"));
     std::wstring dest = TrimWs(FormValue(form, L"tunDest"));
     if (portText.empty()) {
-      formError = L"请填写本地端口";
+      formError = Tr(L"请填写本地端口");
       return false;
     }
     int port = _wtoi(portText.c_str());
     if (port < 1 || port > 65535) {
-      formError = L"本地端口需在 1 ~ 65535 之间";
+      formError = Tr(L"本地端口需在 1 ~ 65535 之间");
       return false;
     }
     if (dest.empty()) {
-      formError = L"请填写目标地址";
+      formError = Tr(L"请填写目标地址");
       return false;
     }
     int hi = formHost >= 0 ? formHost : ActiveHostIndex();
     if (hi < 0 || hi >= (int)hosts.size()) {
-      formError = L"请先创建一台主机";
+      formError = Tr(L"请先创建一台主机");
       return false;
     }
     std::vector<Tunnel>& list = hosts[(size_t)hi].tunnels;
@@ -1616,13 +1918,13 @@ bool AppState::CommitForm() {
 
 const wchar_t* ViewTitle(View v) {
   switch (v) {
-    case View::Dash: return L"主机台";
-    case View::Term: return L"终端";
+    case View::Dash: return Tr(L"首页");
+    case View::Term: return Tr(L"终端");
     case View::Sftp: return L"SFTP";
-    case View::Tun: return L"端口转发";
-    case View::Set: return L"设置";
+    case View::Tun: return Tr(L"端口转发");
+    case View::Set: return Tr(L"设置");
   }
-  return L"主机台";
+  return Tr(L"首页");
 }
 
 int SidebarVisibleHosts(const AppState& st, int* out, int cap) {
@@ -1647,7 +1949,57 @@ int SidebarVisibleHosts(const AppState& st, int* out, int cap) {
     }
     if (name.find(q) != std::wstring::npos || addr.find(q) != std::wstring::npos) out[n++] = i;
   }
+  auto keyOf = [&st](const Host& h) {
+    return StampMillis(st.sortKey == 0 ? h.expireAt : h.registeredAt);
+  };
+  for (int i = 1; i < n; ++i) {
+    int cur = out[i];
+    long long b = keyOf(st.hosts[(size_t)cur]);
+    int j = i - 1;
+    while (j >= 0) {
+      long long a = keyOf(st.hosts[(size_t)out[j]]);
+      bool move = false;
+      if (a < 0 && b >= 0) move = true;
+      else if (a >= 0 && b >= 0) move = st.sortAsc ? (b < a) : (b > a);
+      if (!move) break;
+      out[j + 1] = out[j];
+      --j;
+    }
+    out[j + 1] = cur;
+  }
   return n;
+}
+
+int RecentHosts(const AppState& st, int* out, int cap) {
+  if (!out || cap <= 0) return 0;
+  int n = 0;
+  for (int i = 0; i < (int)st.hosts.size(); ++i) {
+    long long ms = StampMillis(st.hosts[(size_t)i].lastConnected);
+    if (ms < 0) continue;
+    int pos;
+    if (n < cap) {
+      pos = n++;
+    } else {
+      if (ms <= StampMillis(st.hosts[(size_t)out[cap - 1]].lastConnected)) continue;
+      pos = cap - 1;
+    }
+    out[pos] = i;
+    for (int j = pos; j > 0; --j) {
+      long long a = StampMillis(st.hosts[(size_t)out[j - 1]].lastConnected);
+      long long b = StampMillis(st.hosts[(size_t)out[j]].lastConnected);
+      if (a >= b) break;
+      std::swap(out[j - 1], out[j]);
+    }
+  }
+  return n;
+}
+
+float SideScrollMax(const AppState& st, const Rect& sidebar) {
+  int vis[kSideCardCap];
+  int n = SidebarVisibleHosts(st, vis, kSideCardCap);
+  float totalH = (st.S(126.0f) + st.S(8.0f)) * (float)n - st.S(8.0f);
+  float viewH = SideListBottom(st, sidebar) - SideListTop(st, sidebar);
+  return totalH > viewH ? totalH - viewH : 0.0f;
 }
 
 int SidebarHostAt(const AppState& st, const Rect& sidebar, float x, float y) {
@@ -1679,7 +2031,7 @@ void LayoutMetrics(const AppState& st, const Rect& client, Rect& sidebar, Rect& 
   float titleH = st.S(L::TitleH);
   float tabsH = st.S(L::TabsH);
   float statusH = st.S(L::StatusH);
-  float sideW = st.S(st.sidebarW);
+  float sideW = st.sideCollapsed ? st.S(kSideCollapsedW) : st.S(st.sidebarW);
   if (sideW > client.W() * kHalf) sideW = client.W() * kHalf;
   sidebar = Rect{ client.l, client.t + titleH, client.l + sideW, client.b };
   tabs = Rect{ sidebar.r, client.t + titleH, client.r, client.t + titleH + tabsH };
@@ -1708,12 +2060,12 @@ Rect SessInnerRect(const AppState& st, const Rect& c) {
 }
 
 void DrawSessionPage(Render& r, AppState& st, const Rect& rc) {
-  const Palette& p = PaletteFor(st.dark);
+  const Palette& p = PaletteFor(st.dark, st.accentIdx);
   r.Fill(rc.D2D(), p.bg);
   Rect bar{ rc.l, rc.t, rc.r, rc.t + st.S(42.0f) };
   r.Fill(bar.D2D(), p.surface);
   r.Fill(D2D1::RectF(bar.l, bar.b - st.S(1.0f), bar.r, bar.b), p.line);
-  const wchar_t* names[3] = { L"终端", L"隧道", L"文件" };
+  const wchar_t* names[3] = { Tr(L"终端"), Tr(L"隧道"), Tr(L"文件") };
   for (int k = 0; k < 3; ++k) {
     Rect seg = SessSegRectOf(st, rc, k);
     bool on = k == st.sessTab;
@@ -1739,7 +2091,7 @@ void DrawSessionPage(Render& r, AppState& st, const Rect& rc) {
 }
 
 void DrawAll(Render& r, AppState& st, const Rect& client) {
-  const Palette& p = st.dark ? DarkPalette() : LightPalette();
+  const Palette& p = PaletteFor(st.dark, st.accentIdx);
   r.Fill(client.D2D(), p.bg);
 
   Rect sidebar, tabs, content, status;
@@ -1766,6 +2118,17 @@ void DrawAll(Render& r, AppState& st, const Rect& client) {
   }
 
   if (!st.fullscreen) DrawStatus(r, st, status, p);
+  if (!st.toast.empty()) {
+    float pad = st.S(18.0f);
+    float tw = r.Measure(st.toast.c_str(), FontId::Small) + pad * 2.0f;
+    float th = st.S(34.0f);
+    float mid = (client.l + client.r) * kHalf;
+    Rect box{ mid - tw * kHalf, client.b - st.S(78.0f) - th, mid + tw * kHalf,
+              client.b - st.S(78.0f) };
+    r.FillRound(box.D2D(), st.S(L::RBtn),
+                Alpha(st.toastKind == 1 ? p.danger : p.accent, 0.94f));
+    r.TextVertCenter(st.toast.c_str(), box.D2D(), Rgb(0xFFFFFF), FontId::Small, Align::Center);
+  }
   DrawModalImpl(r, st, client);
 }
 int HitTest(const AppState& st, const Rect& client, float x, float y) {
@@ -1826,6 +2189,8 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
         }
         return HitFormFieldBase + i;
       }
+    } else if (st.modal == ModalKind::Channel) {
+      if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
     } else if (st.modal == ModalKind::Confirm) {
       if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
     } else if (st.modal == ModalKind::KeyStore) {
@@ -1841,18 +2206,41 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
       if (TitleButtonRect(st, client, i).Hit(x, y)) return HitTitleMin + i;
     }
 
-    for (int k = 0; k < 5; ++k) {
-      if (NavItemRect(st, sidebar, k).Hit(x, y)) return HitNavBase + k;
+    if (st.sideCollapsed) {
+      if (SideExpandRect(st, sidebar).Hit(x, y)) return HitSideExpand;
+      if (SideCollapsedSettingsRect(st, sidebar).Hit(x, y)) return HitSideSettings;
+    } else {
+      if (SideBrandFoldRect(st, sidebar).Hit(x, y)) return HitSideCollapse;
+      if (SideSettingsRect(st, sidebar).Hit(x, y)) return HitSideSettings;
+      if (SideCollapseRect(st, sidebar).Hit(x, y)) return HitSideCollapse;
+      if (SideSearchRect(st, sidebar).Hit(x, y)) return HitSideSearch;
+      if (SideSortKeyRect(st, sidebar).Hit(x, y)) return HitSortKey;
+      if (SideSortDirRect(st, sidebar).Hit(x, y)) return HitSortDir;
+      if (sidebar.Hit(x, y) && y >= SideListTop(st, sidebar) &&
+          y < SideListBottom(st, sidebar)) {
+        int vis[kSideCardCap];
+        int visN = SidebarVisibleHosts(st, vis, kSideCardCap);
+        for (int s = 0; s < visN; ++s) {
+          if (!SideCardRect(st, sidebar, s).Hit(x, y)) continue;
+          if (SideEditRectOf(st, sidebar, s).Hit(x, y)) {
+            return HitSideCardBase + s * kSideCardSlots + 1;
+          }
+          for (int slot = 2; slot <= 5; ++slot) {
+            if (SideBtnRectOf(st, sidebar, s, slot).Hit(x, y)) {
+              return HitSideCardBase + s * kSideCardSlots + slot;
+            }
+          }
+          return HitSideCardBase + s * kSideCardSlots;
+        }
+      }
     }
-    if (SidebarFootItemRect(st, sidebar, 1).Hit(x, y)) return HitHelp;
 
     for (int i = 0; i < (int)st.tabs.size(); ++i) {
       if (!TabRectOf(st, tabs, i).Hit(x, y)) continue;
       if (TabCloseRect(st, tabs, i).Hit(x, y)) return HitTabCloseBase + i;
       return HitTabBase + i;
     }
-    if (TabAddRect(st, tabs).Hit(x, y)) return HitTabAdd;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 1; ++i) {
       if (TabsRightButtonRect(st, tabs, i).Hit(x, y)) return HitTabsRightBase + i;
     }
   }
@@ -1860,19 +2248,14 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
   if (content.Hit(x, y)) {
     if (st.view == View::Dash) {
       if (DashNewHostRect(st, content).Hit(x, y)) return HitDashNewHost;
-      if (DashSearchRect(st, content).Hit(x, y)) return HitDashSearch;
-      int vis[64];
-      int visN = SidebarVisibleHosts(st, vis, 64);
-      for (int s = 0; s < visN; ++s) {
-        if (!DashCardRect(st, content, s).Hit(x, y)) continue;
-        if (DashEditRectOf(st, content, s).Hit(x, y)) return HitDashEditBase + vis[s];
-        if (DashToggleRectOf(st, content, s).Hit(x, y)) return HitDashToggleBase + vis[s];
-        for (int k = 0; k < 3; ++k) {
-          if (DashQuickRectOf(st, content, s, k).Hit(x, y)) {
-            return HitDashQuickBase + vis[s] * 4 + k;
-          }
+      int rec[kRecentCap];
+      int recN = RecentHosts(st, rec, kRecentCap);
+      for (int i = 0; i < recN; ++i) {
+        if (!DashRecentCardRect(st, content, i).Hit(x, y)) continue;
+        if (DashRecentBtnRect(st, content, i).Hit(x, y)) {
+          return HitRecentBase + i * kSideCardSlots + 2;
         }
-        return HitDashCardBase + vis[s];
+        return HitRecentBase + i * kSideCardSlots;
       }
     } else if (st.view == View::Set) {
       for (int i = 0; i < 6; ++i) {
@@ -1914,11 +2297,12 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
         int tunN = h == nullptr ? 0 : (int)h->tunnels.size();
         for (int i = 0; i < tunN && i < 20; ++i) {
           if (TunSwitchRect(st, inner, i).Hit(x, y)) return HitTunSwitchBase + i;
-          for (int k = 0; k < 3; ++k) {
+          for (int k = 0; k < 4; ++k) {
             if (TunOpRect(st, inner, i, k).Hit(x, y)) {
               if (k == 0) return HitTunRefreshBase + i;
               if (k == 1) return HitTunEditBase + i;
-              return HitTunDelBase + i;
+              if (k == 2) return HitTunDelBase + i;
+              return HitTunBrowseBase + i;
             }
           }
           if (TunRowRectOf(st, inner, i).Hit(x, y)) return HitTunRowBase + i;
@@ -2013,7 +2397,7 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       if (st.modal == ModalKind::KeyStore && st.keyReturn != ModalKind::None) {
         st.modal = st.keyReturn;
         st.keyReturn = ModalKind::None;
-        st.modalTitle = st.modal == ModalKind::HostForm ? L"编辑主机" : L"新建主机";
+        st.modalTitle = st.modal == ModalKind::HostForm ? Tr(L"编辑主机") : Tr(L"新建主机");
         return;
       }
       st.modal = ModalKind::None;
@@ -2024,16 +2408,8 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     }
     if (id == HitModalOk) {
       if (st.modal == ModalKind::Prompt) {
-        int kind = st.promptKind;
         st.modal = ModalKind::None;
-        if (kind == 3) {
-          st.pendingPassword = st.promptValue;
-          st.pendingPasswordHost = st.formHost;
-          st.promptKind = 0;
-          st.promptValue.clear();
-        } else {
-          st.pendingSftp = 7;
-        }
+        st.pendingSftp = 7;
         return;
       }
       if (ModalIsForm(st)) {
@@ -2088,8 +2464,8 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         }
         st.modal = ModalKind::HostForm;
         st.keyReturn = ModalKind::None;
-        st.modalTitle = st.formTarget >= 0 ? L"编辑主机" : L"新建主机";
-        st.modalNote = L"已从密钥库填入私钥路径";
+        st.modalTitle = st.formTarget >= 0 ? Tr(L"编辑主机") : Tr(L"新建主机");
+        st.modalNote = Tr(L"已从密钥库填入私钥路径");
       }
       return;
     }
@@ -2152,15 +2528,80 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     return;
   }
 
-  st.searchFocus = (id == HitSearch || id == HitDashSearch);
+  st.searchFocus = (id == HitSearch || id == HitDashSearch || id == HitSideSearch);
 
-  if (id >= HitNavBase && id < HitDashSearch) {
-    int slot = id - HitNavBase;
-    if (slot == 0) st.OpenPage(View::Dash);
-    else if (slot == 1) st.OpenPage(View::Term);
-    else if (slot == 2) st.OpenPage(View::Sftp);
-    else if (slot == 3) st.OpenPage(View::Tun);
-    else st.OpenPage(View::Set);
+  if (id == HitSideSettings) {
+    st.OpenPage(View::Set);
+    return;
+  }
+  if (id == HitSideCollapse || id == HitSideExpand) {
+    st.sideCollapsed = !st.sideCollapsed;
+    st.sideScroll = 0.0f;
+    st.hoverId = -1;
+    st.dirty = true;
+    return;
+  }
+
+  if (id >= HitSideCardBase && id < HitSortKey) {
+    int base = id >= HitRecentBase ? HitRecentBase : HitSideCardBase;
+    int rel = id - base;
+    int pos = rel / kSideCardSlots;
+    int slot = rel % kSideCardSlots;
+    int idx = -1;
+    if (base == HitRecentBase) {
+      int rec[kRecentCap];
+      int n = RecentHosts(st, rec, kRecentCap);
+      if (pos < n) idx = rec[pos];
+    } else {
+      int vis[kSideCardCap];
+      int n = SidebarVisibleHosts(st, vis, kSideCardCap);
+      if (pos < n) idx = vis[pos];
+    }
+    if (idx >= 0 && idx < (int)st.hosts.size()) {
+      const Host& h = st.hosts[(size_t)idx];
+      if (slot >= 2 && slot <= 5 && h.state != HostState::Live &&
+          !HostHasCredential(h)) {
+        st.OpenHostForm(idx);
+        st.formError = Tr(L"请先设置密码或私钥文件，再连接");
+        return;
+      }
+      if (slot == 0) {
+        st.activeHost = idx;
+      } else if (slot == 1) {
+        st.OpenHostForm(idx);
+      } else if (slot == 2) {
+        if (h.state == HostState::Live) {
+          st.pendingDisconnect = idx;
+        } else {
+          st.pendingConnect = idx;
+          st.pendingConnectTerm = false;
+        }
+      } else if (slot >= 3 && slot <= 5) {
+        bool live = h.sessionId >= 0 && SshService::Instance().IsConnected(h.sessionId);
+        if (!live) {
+          st.toast = Tr(L"该主机未连接，请先点「连接」");
+          st.toastAt = (long long)GetTickCount64();
+          st.dirty = true;
+          return;
+        }
+        st.OpenHostView(idx, slot - 3);
+        if (slot == 5) st.pendingSftp = 1;
+      }
+    }
+    return;
+  }
+
+  if (id == HitSortKey) {
+    st.sortKey = st.sortKey == 0 ? 1 : 0;
+    st.sideScroll = 0.0f;
+    st.dirty = true;
+    return;
+  }
+
+  if (id == HitSortDir) {
+    st.sortAsc = !st.sortAsc;
+    st.sideScroll = 0.0f;
+    st.dirty = true;
     return;
   }
 
@@ -2240,45 +2681,33 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     return;
   }
 
-  if (id == HitTabAdd) {
-    Tab t;
-    t.view = (int)View::Term;
-    t.sessionId = st.nextSessionId++;
-    t.title = L"新会话";
-    t.icon = (int)View::Term;
-    st.tabs.push_back(t);
-    st.activeTab = (int)st.tabs.size() - 1;
-    st.view = View::Term;
-    SessionHub::Instance().Ensure(t.sessionId);
-    return;
-  }
-
   if (id == HitTabsRightBase) {
     int sid = st.CurrentSessionId();
     int hid = st.CurrentHostId();
-    if (sid >= 0 && hid >= 0) {
-      if (SshService::Instance().IsConnected(sid)) SshService::Instance().Disconnect(sid);
-      SessionHub::Instance().Ensure(sid).Reset(80, 24);
-      st.pendingConnect = hid;
+    long long now = (long long)GetTickCount64();
+    st.refreshAt = now;
+    st.toastAt = now;
+    st.toastKind = 0;
+    if (sid < 0) {
+      st.toast = Tr(L"当前页没有活动会话");
+    } else if (!SshService::Instance().IsConnected(sid)) {
+      if (hid >= 0) {
+        st.pendingConnect = hid;
+        st.pendingConnectTerm = false;
+      }
+      st.toast = Tr(L"会话已断开，正在重连…");
+    } else {
+      st.tunNextAt = 0;
+      st.statsNextAt = 0;
+      if (st.view == View::Sftp || (st.view == View::Term && st.sessTab == 2)) st.pendingSftp = 2;
+      st.toast = Tr(L"已刷新当前页");
     }
-    return;
-  }
-
-  if (id == HitTabsRightBase + 1) {
-    st.modal = ModalKind::Help;
-    st.modalTitle = L"快捷键";
-    st.modalNote = L"窗口内全局生效";
+    st.dirty = true;
     return;
   }
 
   if (id == HitSettings) {
     st.OpenPage(View::Set);
-    return;
-  }
-
-  if (id == HitHelp) {
-    st.OpenPage(View::Set);
-    st.setNav = 5;
     return;
   }
 
@@ -2345,7 +2774,22 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         tn.fails = 0;
         tn.retryIn = 0;
         tn.nextAt = 0;
+        st.tunNextAt = 0;
+        st.refreshAt = (long long)GetTickCount64();
         st.dirty = true;
+      }
+    }
+    return;
+  }
+
+  if (id >= HitTunBrowseBase && id < HitTunBrowseBase + 20) {
+    int index = id - HitTunBrowseBase;
+    int hi = st.CurrentHostId() >= 0 ? st.CurrentHostId() : st.ActiveHostIndex();
+    if (hi >= 0 && hi < (int)st.hosts.size()) {
+      std::vector<Tunnel>& list = st.hosts[(size_t)hi].tunnels;
+      if (index >= 0 && index < (int)list.size()) {
+        st.pendingTunBrowse = index;
+        st.refreshAt = (long long)GetTickCount64();
       }
     }
     return;
@@ -2371,9 +2815,9 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         st.confirmTunnel = list[(size_t)index].id;
         st.confirmHost = -1;
         st.modal = ModalKind::Confirm;
-        st.modalTitle = L"删除转发";
+        st.modalTitle = Tr(L"删除转发");
         st.modalNote = list[(size_t)index].port + L" → " + list[(size_t)index].dest;
-        st.confirmNote = L"删除后立即停止该通道，操作不可撤销";
+        st.confirmNote = Tr(L"删除后立即停止该通道，操作不可撤销");
       }
     }
     return;
@@ -2391,15 +2835,15 @@ void OnHit(AppState& st, int id, HWND hwnd) {
 
   if (id == HitFtpNew) {
     st.modal = ModalKind::Prompt;
-    st.modalTitle = L"新建文件夹";
+    st.modalTitle = Tr(L"新建文件夹");
     st.modalNote = st.sftpPath;
-    st.promptKind = 0;
     st.promptValue.clear();
     return;
   }
 
   if (id == HitFtpRefresh) {
     st.pendingSftp = 2;
+    st.refreshAt = (long long)GetTickCount64();
     return;
   }
 
@@ -2415,8 +2859,8 @@ void OnHit(AppState& st, int id, HWND hwnd) {
 
   if (id == HitFtpQueue) {
     st.modal = ModalKind::Queue;
-    st.modalTitle = L"传输队列";
-    st.modalNote = st.sftpQueue.empty() ? L"暂无待传输任务" : L"按加入顺序串行执行";
+    st.modalTitle = Tr(L"传输队列");
+    st.modalNote = st.sftpQueue.empty() ? Tr(L"暂无待传输任务") : Tr(L"按加入顺序串行执行");
     return;
   }
 
@@ -2452,14 +2896,19 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       bool* flag = SetBoolSlot(st, st.setNav, row);
       if (flag) *flag = !*flag;
     }
+    if (st.setNav == 2 && row == 1) {
+      static const float kSizes[4] = { 12.0f, 13.0f, 14.0f, 16.0f };
+      int si = st.termSizeIdx < 0 ? 1 : (st.termSizeIdx > 3 ? 3 : st.termSizeIdx);
+      st.termFontSize = kSizes[si];
+    }
     st.dirty = true;
     return;
   }
 
   if (id == HitStatusConn) {
     st.modal = ModalKind::StatusPanel;
-    st.modalTitle = L"连接详情";
-    st.modalNote = L"当前会话的协议参数与主机指纹";
+    st.modalTitle = Tr(L"连接详情");
+    st.modalNote = Tr(L"当前会话的协议参数与主机指纹");
     return;
   }
 }
@@ -2484,6 +2933,34 @@ Rect SftpRowRectOf(const AppState& st, const Rect& c, int side, int row) {
 
 Rect FtpActionRectOf(const AppState& st, const Rect& c, int slot) {
   return FtpActionRect(st, c, slot);
+}
+
+Rect DashStatCardRect(const AppState& st, const Rect& c, int index) {
+  float left = c.l + st.S(28.0f);
+  float right = c.r - st.S(28.0f);
+  float gap = st.S(10.0f);
+  float w = (right - left - gap * 3.0f) / 4.0f;
+  float top = c.t + st.S(100.0f);
+  float x = left + (w + gap) * (float)index;
+  return Rect{ x, top, x + w, top + st.S(76.0f) };
+}
+
+Rect DashRecentCardRect(const AppState& st, const Rect& c, int index) {
+  float left = c.l + st.S(28.0f);
+  float right = c.r - st.S(28.0f);
+  float gap = st.S(10.0f);
+  float w = (right - left - gap * 2.0f) / 3.0f;
+  float top = c.t + st.S(220.0f);
+  float x = left + (w + gap) * (float)index;
+  return Rect{ x, top, x + w, top + st.S(96.0f) };
+}
+
+Rect DashRecentBtnRect(const AppState& st, const Rect& c, int index) {
+  Rect card = DashRecentCardRect(st, c, index);
+  float w = st.S(64.0f);
+  float h = st.S(24.0f);
+  return Rect{ card.r - st.S(12.0f) - w, card.b - st.S(12.0f) - h,
+               card.r - st.S(12.0f), card.b - st.S(12.0f) };
 }
 
 Rect DashEditRectOf(const AppState& st, const Rect& c, int index) {
@@ -2534,6 +3011,7 @@ void DrawModal(Render& r, AppState& st, const Rect& client) {
 }
 
 void ModalChar(AppState& st, wchar_t ch) {
+  st.selectAll = false;
   if (st.modal == ModalKind::Prompt) {
     if (ch == L'\b') {
       if (!st.promptValue.empty()) st.promptValue.pop_back();
@@ -2561,6 +3039,7 @@ void ModalChar(AppState& st, wchar_t ch) {
 }
 
 void ModalKey(AppState& st, int vk) {
+  if (vk == VK_TAB || vk == VK_UP || vk == VK_DOWN || vk == VK_ESCAPE) st.selectAll = false;
   if (st.modal == ModalKind::None) return;
   if (st.modal == ModalKind::DatePicker) {
     if (vk == VK_ESCAPE) {
@@ -2573,16 +3052,8 @@ void ModalKey(AppState& st, int vk) {
   }
   if (st.modal == ModalKind::Prompt) {
     if (vk == VK_RETURN) {
-      int kind = st.promptKind;
       st.modal = ModalKind::None;
-      if (kind == 3) {
-        st.pendingPassword = st.promptValue;
-        st.pendingPasswordHost = st.formHost;
-        st.promptKind = 0;
-        st.promptValue.clear();
-      } else {
-        st.pendingSftp = 7;
-      }
+      st.pendingSftp = 7;
     } else if (vk == VK_ESCAPE) {
       st.modal = ModalKind::None;
     }

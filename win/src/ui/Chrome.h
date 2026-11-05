@@ -40,10 +40,19 @@ enum HitId {
   HitTunRowBase = 1400,
   HitNavBase = 1500, HitDashSearch = 1510,
   HitDpPrev = 1520, HitDpNext, HitDpToday, HitDpClear, HitDpHour, HitDpMinute, HitDpSecond,
-  HitDpDayBase = 1540, HitDpCellBase = 1600
+  HitDpDayBase = 1540, HitDpCellBase = 1600,
+  HitTunBrowseBase = 1670,
+  HitSideCardBase = 2000, HitRecentBase = 2400,
+  HitSortKey = 2500, HitSortDir = 2501, HitSideSearch = 2510,
+  HitSideSettings = 2511, HitSideCollapse = 2512, HitSideExpand = 2513
 };
 
 enum SetKindId { SetSeg = 0, SetSwatch = 1, SetDrop = 2, SetSwitch = 3, SetPlain = 4 };
+
+constexpr float kSideCollapsedW = 52.0f;
+constexpr int kSideCardSlots = 8;
+constexpr int kSideCardCap = 50;
+constexpr int kRecentCap = 3;
 
 void DrawAll(Render& r, AppState& st, const Rect& client);
 void DrawDash(Render& r, const AppState& st, const Rect& rc);
@@ -63,8 +72,13 @@ int SetIntValue(const AppState& st, int nav, int row);
 bool SetBoolValue(const AppState& st, int nav, int row);
 int SetOptionCount(int nav, int row);
 int SidebarVisibleHosts(const AppState& st, int* out, int cap);
+int RecentHosts(const AppState& st, int* out, int cap);
+float SideScrollMax(const AppState& st, const Rect& sidebar);
 int SidebarHostAt(const AppState& st, const Rect& sidebar, float x, float y);
 Rect DashSearchRect(const AppState& st, const Rect& c);
+Rect DashStatCardRect(const AppState& st, const Rect& c, int index);
+Rect DashRecentCardRect(const AppState& st, const Rect& c, int index);
+Rect DashRecentBtnRect(const AppState& st, const Rect& c, int index);
 void LayoutMetrics(const AppState& st, const Rect& client, Rect& sidebar, Rect& tabs, Rect& content, Rect& status);
 Rect TunOpRectOf(const AppState& st, const Rect& c, int index, int slot);
 Rect SftpPanelRect(const AppState& st, const Rect& c, int side);

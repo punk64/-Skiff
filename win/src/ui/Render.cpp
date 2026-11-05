@@ -39,13 +39,19 @@ void ReleaseFonts(IDWriteTextFormat** fonts) {
   }
 }
 
-void BuildFonts(IDWriteFactory* dw, IDWriteTextFormat** fonts, float dpi) {
+const wchar_t* MonoFamilyOf(int idx) {
+  if (idx == 1) return L"Consolas";
+  if (idx == 2) return L"JetBrains Mono";
+  return L"Cascadia Mono";
+}
+
+void BuildFonts(IDWriteFactory* dw, IDWriteTextFormat** fonts, float dpi, int monoFamily) {
   ReleaseFonts(fonts);
   if (!dw) return;
   float scale = dpi / 96.0f;
   for (int i = 0; i < static_cast<int>(FontId::Count); ++i) {
     FontId id = static_cast<FontId>(i);
-    const wchar_t* family = IsMonoFont(id) ? L"Cascadia Mono" : L"Microsoft YaHei UI";
+    const wchar_t* family = IsMonoFont(id) ? MonoFamilyOf(monoFamily) : L"Microsoft YaHei UI";
     IDWriteTextFormat* fmt = nullptr;
     HRESULT hr = dw->CreateTextFormat(
       family,
@@ -133,7 +139,8 @@ bool Render::Init(HWND hwnd) {
       return false;
     }
   }
-  BuildFonts(dwrite_, fonts_, dpi_);
+  BuildFonts(dwrite_, fonts_, dpi_ * uiScale_, monoFamily_);
+  fontScale_ = dpi_ * uiScale_;
   clip_ = 0;
   return true;
 }
@@ -212,7 +219,27 @@ void Render::Resize(UINT pxW, UINT pxH, float dpi) {
     rt_->SetDpi(96.0f, 96.0f);
     ApplyQuality(rt_);
   }
-  BuildFonts(dwrite_, fonts_, dpi_);
+  float want = dpi_ * uiScale_;
+  if (want != fontScale_) {
+    fontScale_ = want;
+    BuildFonts(dwrite_, fonts_, want, monoFamily_);
+  }
+}
+
+void Render::SetUiScale(float s) {
+  if (s <= 0.0f) s = 1.0f;
+  if (s > uiScale_ - 0.001f && s < uiScale_ + 0.001f) return;
+  uiScale_ = s;
+  fontScale_ = dpi_ * uiScale_;
+  BuildFonts(dwrite_, fonts_, fontScale_, monoFamily_);
+}
+
+void Render::SetMonoFamily(int idx) {
+  int v = idx < 0 ? 0 : (idx > 2 ? 2 : idx);
+  if (v == monoFamily_) return;
+  monoFamily_ = v;
+  fontScale_ = dpi_ * uiScale_;
+  BuildFonts(dwrite_, fonts_, fontScale_, monoFamily_);
 }
 
 void Render::Fill(const D2D1_RECT_F& rc, D2D1_COLOR_F c) {

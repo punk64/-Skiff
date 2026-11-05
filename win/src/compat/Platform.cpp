@@ -139,7 +139,13 @@ int64_t skAccept(int64_t s, void* addr, int* addrlen) {
 int skConnect(int64_t s, const void* name, int namelen) {
     int r = ::connect(static_cast<SOCKET>(s), reinterpret_cast<const struct sockaddr*>(name), namelen);
     if (r == SOCKET_ERROR) {
-        skMapWsaError(WSAGetLastError());
+        int wsa = WSAGetLastError();
+        if (wsa == WSAEWOULDBLOCK) {
+            g_lastErrno = EINPROGRESS;
+            errno = EINPROGRESS;
+            return -1;
+        }
+        skMapWsaError(wsa);
         return -1;
     }
     return 0;
@@ -164,6 +170,13 @@ int skRecv(int64_t s, void* buf, int len, int flags) {
 }
 
 int skSelect(int nfds, void* rd, void* wr, void* ex, void* tv) {
+    if (rd == nullptr && wr == nullptr && ex == nullptr) {
+        struct timeval* t = reinterpret_cast<struct timeval*>(tv);
+        long long us = t == nullptr ? 20000LL
+                                    : (long long)t->tv_sec * 1000000LL + (long long)t->tv_usec;
+        if (us > 0) Sleep(static_cast<DWORD>((us + 999LL) / 1000LL));
+        return 0;
+    }
     int r = ::select(nfds, reinterpret_cast<fd_set*>(rd), reinterpret_cast<fd_set*>(wr),
                      reinterpret_cast<fd_set*>(ex), reinterpret_cast<struct timeval*>(tv));
     if (r == SOCKET_ERROR) {

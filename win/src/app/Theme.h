@@ -52,8 +52,6 @@ inline D2D1_COLOR_F Mix(D2D1_COLOR_F a, D2D1_COLOR_F b, float t) {
     a.a + (b.a - a.a) * t);
 }
 
-const Palette& DarkPalette();
-const Palette& LightPalette();
-const Palette& PaletteFor(bool dark);
+const Palette& PaletteFor(bool dark, int accentIdx);
 
 }

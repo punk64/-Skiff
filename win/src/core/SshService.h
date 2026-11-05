@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@ struct SshParams {
     std::string keyPass;
     std::string expectedHostKey;
     int keepAlive = 60;
+    int timeout = 10;
 };
 
 struct RemoteEntry {
@@ -36,6 +38,7 @@ enum class SshState {
 class SshService {
 public:
     using NotifyFn = void (*)(void* ctx, int id);
+    using ProgressFn = std::function<void(unsigned long long done, unsigned long long total)>;
 
     static SshService& Instance();
 
@@ -50,6 +53,8 @@ public:
     std::string LastError(int id) const;
     std::string HostKey(int id) const;
     std::string ActiveHost(int id) const;
+    std::string CipherName(int id) const;
+    std::string MacName(int id) const;
 
     void SetNotify(NotifyFn fn, void* ctx);
     std::string PumpOutput(int id);
@@ -59,9 +64,9 @@ public:
 
     bool SftpList(int id, const std::string& path, std::vector<RemoteEntry>& out);
     bool SftpUpload(int id, const std::wstring& localPath, const std::string& remotePath,
-                    std::string& err);
+                    std::string& err, ProgressFn prog = nullptr);
     bool SftpDownload(int id, const std::string& remotePath, const std::wstring& localPath,
-                      std::string& err);
+                      std::string& err, ProgressFn prog = nullptr);
     bool SftpDelete(int id, const std::string& path, bool dir);
     bool SftpMkdir(int id, const std::string& path);
     bool SftpRename(int id, const std::string& from, const std::string& to);

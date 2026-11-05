@@ -301,6 +301,7 @@ bool SshSession::openConnect(const std::string& napiInput) {
     SessionAnalyse* SessionAnalyseHandle = encapsulateSSHFromJson(napiInput);
     if (SessionAnalyseHandle == NULL) {
         OH_LOG_INFO(LOG_APP, "Failed to parse JSON input.");
+        lastConnectError = "JSON_PARSE_FAILED";
         return false;
     }
 
@@ -471,7 +472,8 @@ bool SshSession::openConnect(const std::string& napiInput) {
 
     int retryCount = 0;
     const int maxRetries = 3;
-    const int connectTimeout = 1;
+    const int timeoutSec = SessionAnalyseHandle->timeout > 0 ? SessionAnalyseHandle->timeout : 10;
+    const int connectTimeout = timeoutSec >= 3 ? (timeoutSec / 3) : 1;
 
     int flags = fcntl(*sock.get(), F_GETFL, 0);
 
@@ -551,6 +553,7 @@ bool SshSession::openConnect(const std::string& napiInput) {
 
     if (!connected) {
         OH_LOG_INFO(LOG_APP, "Failed to connect after %{public}d attempts", maxRetries);
+        lastConnectError = "TCP_CONNECT_FAILED";
 
         if (sock && *sock != LIBSSH2_INVALID_SOCKET) {
             close(*sock);
@@ -580,6 +583,7 @@ bool SshSession::openConnect(const std::string& napiInput) {
     session.reset(libssh2_session_init());
     if (!session) {
         OH_LOG_INFO(LOG_APP, "Could not initialize SSH session.");
+        lastConnectError = "SESSION_INIT_FAILED";
         return false;
     }
 
@@ -588,19 +592,22 @@ bool SshSession::openConnect(const std::string& napiInput) {
     knownHosts.reset(libssh2_knownhost_init(session.get()));
     if (!knownHosts) {
         OH_LOG_INFO(LOG_APP, "Failed to initialize known hosts");
+        lastConnectError = "KNOWNHOST_INIT_FAILED";
         return false;
     }
 
-    const int handshakeTimeout = 5;
+    const int handshakeTimeout = SessionAnalyseHandle->timeout > 0 ? SessionAnalyseHandle->timeout : 10;
     auto handshakeStartTime = std::chrono::steady_clock::now();
     while ((ret = libssh2_session_handshake(session.get(), *sock)) == LIBSSH2_ERROR_EAGAIN) {
         auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - handshakeStartTime).count();
         if (elapsedTime > handshakeTimeout) {
             OH_LOG_INFO(LOG_APP, "Session handshake failed due to timeout");
+            lastConnectError = "HANDSHAKE_TIMEOUT";
             return false;
         }
         if (waitSocket() <= 0) {
             OH_LOG_INFO(LOG_APP, "Session handshake failed due to timeout");
+            lastConnectError = "HANDSHAKE_TIMEOUT";
             return false;
         }
     }
@@ -616,11 +623,12 @@ bool SshSession::openConnect(const std::string& napiInput) {
         if (SessionAnalyseHandle->authType == AUTH_PASSWORD) {
             if (userAuthList.find("password") == std::string::npos) {
                 OH_LOG_INFO(LOG_APP, "Password authentication not supported by server");
+                lastConnectError = "AUTH_METHOD_UNSUPPORTED";
                 return false;
             }
 
             if (strlen(SessionAnalyseHandle->password) != 0) {
-                const int authTimeout = 5;
+                const int authTimeout = SessionAnalyseHandle->timeout > 0 ? SessionAnalyseHandle->timeout : 10;
                 auto authStartTime = std::chrono::steady_clock::now();
                 while ((ret = libssh2_userauth_password(session.get(),
                     SessionAnalyseHandle->userName,
@@ -628,16 +636,19 @@ bool SshSession::openConnect(const std::string& napiInput) {
                     auto elapsedTime = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - authStartTime).count();
                     if (elapsedTime > authTimeout) {
                         OH_LOG_INFO(LOG_APP, "Authentication timeout");
+                        lastConnectError = "AUTH_TIMEOUT";
                         return false;
                     }
                     if (waitSocket() <= 0) {
                         OH_LOG_INFO(LOG_APP, "Authentication timeout");
+                        lastConnectError = "AUTH_TIMEOUT";
                         return false;
                     }
                 }
 
                 if (ret != 0) {
                     OH_LOG_INFO(LOG_APP, "Password authentication failed with error code: %{public}d", ret);
+                    lastConnectError = "AUTH_FAILED";
                     return false;
                 }
             }
@@ -645,12 +656,14 @@ bool SshSession::openConnect(const std::string& napiInput) {
         else if (SessionAnalyseHandle->authType == AUTH_PUBLICKEY) {
             if (userAuthList.find("publickey") == std::string::npos) {
                 OH_LOG_INFO(LOG_APP, "Public key authentication not supported by server");
+                lastConnectError = "AUTH_METHOD_UNSUPPORTED";
                 return false;
             }
 
             // 使用前端提供的私钥文件描述符进行认证
             if (SessionAnalyseHandle->privateKeyFd < 0) {
                 OH_LOG_INFO(LOG_APP, "Invalid private key file descriptor");
+                lastConnectError = "KEY_FD_INVALID";
                 return false;
             }
 
@@ -664,6 +677,7 @@ bool SshSession::openConnect(const std::string& napiInput) {
 
             if (keyDataVec.empty()) {
                 OH_LOG_INFO(LOG_APP, "Failed to read private key data");
+                lastConnectError = "KEY_READ_FAILED";
                 return false;
             }
             // 将读取到的密钥数据存储到成员变量中
@@ -685,17 +699,20 @@ bool SshSession::openConnect(const std::string& napiInput) {
                 libssh2_session_last_error(session.get(), &errmsg, &errmsg_len, 0);
                 OH_LOG_ERROR(LOG_APP, "Public key auth failed with libssh2 error code: %{public}d, message: %{public}s", last_errno, errmsg ? errmsg : "N/A");
                 // -----------------------
+                lastConnectError = "AUTH_FAILED";
                 return false;
             }
             OH_LOG_INFO(LOG_APP, "Authentication by public key succeeded");
         }
         else {
             OH_LOG_INFO(LOG_APP, "Unsupported authentication type");
+            lastConnectError = "AUTH_METHOD_UNSUPPORTED";
             return false;
         }
     }
     else {
         OH_LOG_INFO(LOG_APP, "Failed to get authentication methods");
+        lastConnectError = "AUTH_LIST_FAILED";
         return false;
     }
 
@@ -2330,4 +2347,18 @@ bool SshSession::configureRemoteShell() {
 bool SshSession::resizeTerminal(int width, int height) {
     // 直接调用内部的 pty 调整方法
     return this->resizePty(width, height);
+}
+
+std::string SshSession::getCipherName() {
+    std::lock_guard<std::recursive_mutex> lk(libssh2Mutex);
+    if (!session) return std::string();
+    const char* m = libssh2_session_methods(session.get(), LIBSSH2_METHOD_CRYPT_CS);
+    return m ? std::string(m) : std::string();
+}
+
+std::string SshSession::getMacName() {
+    std::lock_guard<std::recursive_mutex> lk(libssh2Mutex);
+    if (!session) return std::string();
+    const char* m = libssh2_session_methods(session.get(), LIBSSH2_METHOD_MAC_CS);
+    return m ? std::string(m) : std::string();
 }

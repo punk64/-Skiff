@@ -527,6 +527,7 @@ JValue HostJson(const Host& h) {
   o.Set("hostKeyType", JValue::Str(WideToUtf8(h.hostKeyType)));
   o.Set("registeredAt", JValue::Str(WideToUtf8(h.registeredAt)));
   o.Set("expireAt", JValue::Str(WideToUtf8(h.expireAt)));
+  o.Set("lastConnected", JValue::Str(WideToUtf8(h.lastConnected)));
   o.Set("autoConnect", JValue::Bool(h.autoConnect));
   JValue list = JValue::Arr();
   for (size_t i = 0; i < h.tunnels.size(); ++i) {
@@ -592,6 +593,9 @@ Host HostFromJson(const JValue& j) {
       if (days >= 0) h.expireAt = AddDaysStamp(days);
     }
   }
+  if ((v = j.Find("lastConnected")) != nullptr && v->type == JType::String) {
+    h.lastConnected = Utf8ToWide(v->text);
+  }
   if ((v = j.Find("autoConnect")) != nullptr && v->type == JType::Bool) {
     h.autoConnect = v->boolean;
   }
@@ -640,6 +644,25 @@ std::wstring LocalAppDataSkiff() {
 }
 
 std::wstring ExeDirectory() { return ExeDir(); }
+
+std::wstring FindKeyFor(const std::string& hostName) {
+  std::wstring dir = KeyDirectory();
+  if (dir.empty() || hostName.empty()) return std::wstring();
+  std::wstring base = dir + L"\\" + Utf8ToWide(hostName);
+  const wchar_t* exts[] = { L".pem", L".key", L"_rsa", L"" };
+  for (int i = 0; i < 4; ++i) {
+    std::wstring path = base + exts[i];
+    DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) return path;
+  }
+  return std::wstring();
+}
+
+bool HostHasCredential(const Host& h) {
+  if (!h.IsKeyAuth()) return !h.password.empty();
+  if (!h.keyPath.empty()) return true;
+  return !FindKeyFor(WideToUtf8(h.host)).empty();
+}
 
 std::wstring KeyDirectory() {
   std::wstring base = ExeDir();
@@ -713,8 +736,8 @@ bool LoadStore(AppState& st) {
     if ((v = ui->Find("termFontSize")) != nullptr && v->type == JType::Number) {
       st.termFontSize = (float)v->number;
     }
-    if ((v = ui->Find("sidebarW")) != nullptr && v->type == JType::Number) {
-      st.sidebarW = (float)v->number;
+    if ((v = ui->Find("sideCollapsed")) != nullptr && v->type == JType::Bool) {
+      st.sideCollapsed = v->boolean;
     }
     if ((v = ui->Find("lang")) != nullptr && v->type == JType::String) g_lang = v->text;
     if ((v = ui->Find("accent")) != nullptr && v->type == JType::String) g_accent = v->text;
@@ -747,6 +770,10 @@ bool LoadStore(AppState& st) {
     num("logKeepIdx", &st.logKeepIdx);
     num("activeHost", &st.activeHost);
     num("setNav", &st.setNav);
+    num("sortKey", &st.sortKey);
+    num("lastView", &st.lastView);
+    num("lastHost", &st.lastHost);
+    flag("sortAsc", &st.sortAsc);
     flag("autoReconnect", &st.autoReconnect);
     flag("autoConnectAll", &st.autoConnectAll);
     flag("restoreLast", &st.restoreLast);
@@ -800,6 +827,8 @@ bool LoadStore(AppState& st) {
 
   if (st.activeHost < 0 || st.activeHost >= (int)st.hosts.size()) st.activeHost = 0;
   if (st.setNav < 0 || st.setNav > 5) st.setNav = 0;
+  if (st.sortKey < 0 || st.sortKey > 1) st.sortKey = 0;
+  st.sideScroll = 0.0f;
   for (size_t i = 0; i < st.hosts.size(); ++i) {
     st.hosts[i].state = HostState::Off;
     st.hosts[i].latency = -1;
@@ -818,7 +847,7 @@ bool SaveStore(const AppState& st) {
   ui.Set("dark", JValue::Bool(st.dark));
   ui.Set("lang", JValue::Str(g_lang));
   ui.Set("termFontSize", JValue::Num((double)st.termFontSize));
-  ui.Set("sidebarW", JValue::Num((double)st.sidebarW));
+  ui.Set("sideCollapsed", JValue::Bool(st.sideCollapsed));
   ui.Set("accent", JValue::Str(g_accent));
   ui.Set("themeMode", JValue::Num(st.themeMode));
   ui.Set("langMode", JValue::Num(st.langMode));
@@ -833,6 +862,10 @@ bool SaveStore(const AppState& st) {
   ui.Set("logKeepIdx", JValue::Num(st.logKeepIdx));
   ui.Set("activeHost", JValue::Num(st.activeHost));
   ui.Set("setNav", JValue::Num(st.setNav));
+  ui.Set("sortKey", JValue::Num(st.sortKey));
+  ui.Set("lastView", JValue::Num(st.lastView));
+  ui.Set("lastHost", JValue::Num(st.lastHost));
+  ui.Set("sortAsc", JValue::Bool(st.sortAsc));
   ui.Set("autoReconnect", JValue::Bool(st.autoReconnect));
   ui.Set("autoConnectAll", JValue::Bool(st.autoConnectAll));
   ui.Set("restoreLast", JValue::Bool(st.restoreLast));

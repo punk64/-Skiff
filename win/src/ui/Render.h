@@ -16,6 +16,8 @@ public:
   bool Begin();
   void End();
   void Resize(UINT pxW, UINT pxH, float dpi);
+  void SetUiScale(float s);
+  void SetMonoFamily(int idx);
 
   ID2D1RenderTarget* Target() const { return rt_; }
   float Dpi() const { return dpi_; }
@@ -43,6 +45,9 @@ private:
   IDWriteTextFormat* fonts_[static_cast<int>(FontId::Count)]{};
   ID2D1SolidColorBrush* brush_ = nullptr;
   float dpi_ = 96.0f;
+  float uiScale_ = 1.0f;
+  int monoFamily_ = 0;
+  float fontScale_ = 0.0f;
   int clip_ = 0;
 };
 

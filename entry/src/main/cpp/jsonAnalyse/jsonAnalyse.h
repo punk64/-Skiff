@@ -28,6 +28,7 @@ typedef struct SessionAnalyseStr{
     const char* version;
     int port;
     int keepAlive;
+    int timeout;
     AUTH_TYPE authType;  // 认证方式
     int privateKeyFd;    // 私钥文件描述符
     const char* expectedHostKey;
