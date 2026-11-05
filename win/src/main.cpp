@@ -9,7 +9,11 @@
 #include "ui/Render.h"
 #include "ui/Chrome.h"
 #include "ui/Terminal.h"
+#include "core/SshService.h"
 #include "compat/Log.h"
+
+extern "C" void skPlatformInit(void);
+extern "C" void skPlatformShutdown(void);
 
 namespace sk {
 void LogWrite(const char* level, const char* fmt, ...) {
@@ -33,6 +37,127 @@ sk::Render g_render;
 sk::AppState g_state;
 sk::Rect g_client;
 using sk::g_term;
+
+const UINT kMsgSsh = WM_APP + 1;
+
+bool g_pwdMode = false;
+int g_pwdHost = -1;
+std::string g_pwdBuf;
+
+std::string W2U8(const std::wstring& w) {
+  if (w.empty()) return std::string();
+  int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+  std::string s((size_t)n, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
+  return s;
+}
+
+std::wstring U82W(const std::string& s) {
+  if (s.empty()) return std::wstring();
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+  std::wstring w((size_t)n, L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+  return w;
+}
+
+std::wstring ExeDir() {
+  wchar_t buf[MAX_PATH] = {0};
+  GetModuleFileNameW(nullptr, buf, MAX_PATH);
+  std::wstring p(buf);
+  size_t slash = p.find_last_of(L'\\');
+  return slash == std::wstring::npos ? std::wstring() : p.substr(0, slash);
+}
+
+bool ParseSpec(const std::wstring& spec, std::string& user, std::string& host, int& port) {
+  std::string s = W2U8(spec);
+  size_t at = s.rfind('@');
+  if (at != std::string::npos) {
+    user = s.substr(0, at);
+    host = s.substr(at + 1);
+  } else {
+    user = "root";
+    host = s;
+  }
+  size_t colon = host.rfind(':');
+  if (colon != std::string::npos) {
+    port = atoi(host.c_str() + colon + 1);
+    host = host.substr(0, colon);
+  } else {
+    port = 22;
+  }
+  if (user.empty()) user = "root";
+  return !host.empty();
+}
+
+std::wstring FindKeyFor(const std::string& hostName) {
+  std::wstring dir = ExeDir();
+  if (dir.empty()) return std::wstring();
+  std::wstring base = dir + L"\\keys\\" + U82W(hostName);
+  const wchar_t* exts[] = { L".pem", L".key", L"_rsa", L"" };
+  for (int i = 0; i < 4; ++i) {
+    std::wstring p = base + exts[i];
+    DWORD attr = GetFileAttributesW(p.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) return p;
+  }
+  return std::wstring();
+}
+
+void StartConnect(int idx, const std::string& password, const std::wstring& keyPath) {
+  if (idx < 0 || idx >= (int)g_state.hosts.size()) return;
+  sk::Host& h = g_state.hosts[idx];
+  sk::SshParams p;
+  if (!ParseSpec(h.addr, p.user, p.host, p.port)) {
+    g_term.Feed("\r\n\x1b[31m地址格式无效\x1b[0m\r\n");
+    return;
+  }
+  p.password = password;
+  p.useKey = !keyPath.empty();
+  p.keyPath = W2U8(keyPath);
+  p.expectedHostKey = W2U8(h.hostKey);
+  p.keepAlive = 60;
+  h.state = sk::HostState::Busy;
+  sk::SshService::Instance().Connect(p);
+}
+
+void RequestConnect(int idx) {
+  if (idx < 0 || idx >= (int)g_state.hosts.size()) return;
+  sk::Host& h = g_state.hosts[idx];
+  g_state.view = sk::View::Term;
+  g_state.activeHost = idx;
+  std::string user;
+  std::string host;
+  int port = 22;
+  if (!ParseSpec(h.addr, user, host, port)) return;
+  std::wstring key = h.keyPath.empty() ? FindKeyFor(host) : h.keyPath;
+  if (!key.empty()) {
+    StartConnect(idx, std::string(), key);
+    return;
+  }
+  g_pwdMode = true;
+  g_pwdHost = idx;
+  g_pwdBuf.clear();
+  std::string prompt = user + "@" + host + "'s password: ";
+  g_term.Feed("\r\n" + prompt);
+}
+
+void OnSshNotify(void* ctx) {
+  HWND hwnd = reinterpret_cast<HWND>(ctx);
+  if (hwnd != nullptr) PostMessageW(hwnd, kMsgSsh, 0, 0);
+}
+
+std::string KeyToBytes(wchar_t ch, bool ctrl) {
+  if (ctrl) {
+    if (ch >= L'a' && ch <= L'z') return std::string(1, (char)(ch - L'a' + 1));
+    if (ch >= L'A' && ch <= L'Z') return std::string(1, (char)(ch - L'A' + 1));
+    if (ch == L' ') return std::string(1, '\0');
+    return std::string();
+  }
+  if (ch == L'\r') return std::string("\r");
+  if (ch == L'\b') return std::string("\x7f", 1);
+  if (ch == L'\t') return std::string("\t");
+  if (ch < 32) return std::string();
+  return W2U8(std::wstring(1, ch));
+}
 
 void Relayout(HWND hwnd) {
   RECT rc;
@@ -101,10 +226,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     case WM_CREATE:
       Relayout(hwnd);
+      skPlatformInit();
       g_render.Init(hwnd);
       g_render.Resize((UINT)g_client.W(), (UINT)g_client.H(), (float)g_state.dpi);
       g_state.Seed();
       g_state.statusHost = g_state.hosts.empty() ? L"" : g_state.hosts[0].name;
+      sk::SshService::Instance().SetNotify(&OnSshNotify, hwnd);
       return 0;
     case WM_SIZE:
       Relayout(hwnd);
@@ -134,6 +261,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       float y = (float)GET_Y_LPARAM(lParam);
       int id = sk::HitTest(g_state, g_client, x, y);
       sk::OnHit(g_state, id);
+      int hostIdx = -1;
+      if (id >= sk::HitHostBase && id < sk::HitDashCardBase) {
+        hostIdx = id - sk::HitHostBase;
+      } else if (id >= sk::HitDashCardBase && id < sk::HitDashNewHost) {
+        hostIdx = id - sk::HitDashCardBase;
+      }
+      if (hostIdx >= 0 && hostIdx < (int)g_state.hosts.size()) {
+        RequestConnect(hostIdx);
+      }
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
@@ -150,11 +286,69 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     }
+    case kMsgSsh: {
+      std::string data = sk::SshService::Instance().PumpOutput();
+      if (!data.empty()) {
+        g_term.Feed(data);
+      }
+      sk::SshState st = sk::SshService::Instance().State();
+      if (st == sk::SshState::Connected) {
+        for (size_t i = 0; i < g_state.hosts.size(); ++i) {
+          if (W2U8(g_state.hosts[i].addr).find(sk::SshService::Instance().ActiveHost()) != std::string::npos) {
+            g_state.hosts[i].state = sk::HostState::Live;
+            g_state.hosts[i].latency = 0;
+            g_state.hosts[i].hostKey = U82W(sk::SshService::Instance().HostKey());
+            break;
+          }
+        }
+      } else if (st == sk::SshState::Failed) {
+        std::string err = sk::SshService::Instance().LastError();
+        g_term.Feed("\r\n\x1b[31m连接失败: " + err + "\x1b[0m\r\n");
+        for (size_t i = 0; i < g_state.hosts.size(); ++i) {
+          if (g_state.hosts[i].state == sk::HostState::Busy) g_state.hosts[i].state = sk::HostState::Off;
+        }
+      } else if (st == sk::SshState::Disconnected) {
+        for (size_t i = 0; i < g_state.hosts.size(); ++i) {
+          if (g_state.hosts[i].state == sk::HostState::Live || g_state.hosts[i].state == sk::HostState::Busy) {
+            g_state.hosts[i].state = sk::HostState::Off;
+            g_state.hosts[i].latency = -1;
+          }
+        }
+      }
+      if (!data.empty() || st != sk::SshState::Connected) {
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return 0;
+    }
     case WM_CHAR: {
       if (g_state.view == sk::View::Term) {
         wchar_t ch = (wchar_t)wParam;
-        if (ch >= 32 || ch == L'\r' || ch == 8) {
-          bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        if (g_pwdMode) {
+          if (ch == L'\r') {
+            g_term.Feed("\r\n");
+            g_pwdMode = false;
+            int idx = g_pwdHost;
+            std::string pwd = g_pwdBuf;
+            g_pwdHost = -1;
+            g_pwdBuf.clear();
+            StartConnect(idx, pwd, std::wstring());
+          } else if (ch == L'\b') {
+            if (!g_pwdBuf.empty()) {
+              g_pwdBuf.pop_back();
+              g_term.Feed("\b \b");
+            }
+          } else if (ch >= 32) {
+            g_pwdBuf += (char)ch;
+            g_term.Feed("*");
+          }
+          InvalidateRect(hwnd, nullptr, FALSE);
+          return 0;
+        }
+        if (sk::SshService::Instance().IsConnected()) {
+          std::string bytes = KeyToBytes(ch, ctrl);
+          if (!bytes.empty()) sk::SshService::Instance().Send(bytes);
+        } else if (ch >= 32 || ch == L'\r' || ch == 8) {
           g_term.OnKey(ch, ctrl, false, false);
           InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -188,7 +382,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       break;
     }
     case WM_DESTROY:
+      sk::SshService::Instance().Disconnect();
       g_render.Shutdown();
+      skPlatformShutdown();
       PostQuitMessage(0);
       return 0;
     default:

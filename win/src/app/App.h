@@ -17,6 +17,8 @@ struct Host {
   int daysLeft = -1;
   bool autoConnect = false;
   int latency = -1;
+  std::wstring keyPath;
+  std::wstring hostKey;
 };
 
 struct Tab {
