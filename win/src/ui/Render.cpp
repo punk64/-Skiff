@@ -1,5 +1,6 @@
 #include "ui/Render.h"
 #include "app/Layout.h"
+#include "compat/Log.h"
 #include <d2d1helper.h>
 
 namespace sk {
@@ -59,7 +60,6 @@ void BuildFonts(IDWriteFactory* dw, IDWriteTextFormat** fonts, float dpi) {
       fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
       fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
       fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-      fmt->SetFlowDirection(DWRITE_FLOW_DIRECTION_LEFT_TO_RIGHT);
       fonts[i] = fmt;
     }
   }
@@ -95,24 +95,36 @@ bool Render::Init(HWND hwnd) {
   if (!hwnd) return false;
   hwnd_ = hwnd;
   if (!factory_) {
-    if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory_))) return false;
+    if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &factory_))) {
+      SK_LOGE("d2d factory failed");
+      return false;
+    }
   }
   if (!dwrite_) {
     HRESULT hr = DWriteCreateFactory(
       DWRITE_FACTORY_TYPE_SHARED,
       __uuidof(IDWriteFactory),
       reinterpret_cast<IUnknown**>(&dwrite_));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+      SK_LOGE("dwrite factory failed hr=%08x", (unsigned)hr);
+      return false;
+    }
   }
   UINT w = 1;
   UINT h = 1;
   ClientSize(hwnd, &w, &h);
   if (!rt_) {
-    if (!CreateTarget(factory_, hwnd, w, h, &rt_)) return false;
+    if (!CreateTarget(factory_, hwnd, w, h, &rt_)) {
+      SK_LOGE("create hwnd target failed %ux%u", w, h);
+      return false;
+    }
   }
   rt_->SetDpi(96.0f, 96.0f);
   if (!brush_) {
-    if (FAILED(rt_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &brush_))) return false;
+    if (FAILED(rt_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), &brush_))) {
+      SK_LOGE("create brush failed");
+      return false;
+    }
   }
   BuildFonts(dwrite_, fonts_, dpi_);
   clip_ = 0;
@@ -149,6 +161,17 @@ bool Render::Begin() {
 void Render::End() {
   if (!rt_) return;
   HRESULT hr = rt_->EndDraw();
+  static int fails = 0;
+  if (FAILED(hr)) {
+    if (fails < 5) {
+      ++fails;
+      SK_LOGE("enddraw hr=%08x", (unsigned)hr);
+    }
+    if (hr != D2DERR_RECREATE_TARGET) {
+      if (hwnd_ && fails < 50) InvalidateRect(hwnd_, nullptr, FALSE);
+      return;
+    }
+  }
   if (hr != D2DERR_RECREATE_TARGET) return;
   ReleaseBrush(&brush_);
   rt_->Release();

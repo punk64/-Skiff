@@ -2,6 +2,7 @@
 #include <windowsx.h>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 #include <string>
 
 #include "app/App.h"
@@ -25,6 +26,27 @@ void LogWrite(const char* level, const char* fmt, ...) {
   char line[2100];
   snprintf(line, sizeof(line), "[%s] %s\n", level, buf);
   OutputDebugStringA(line);
+  static FILE* fp = nullptr;
+  static bool opened = false;
+  if (!opened) {
+    opened = true;
+    char dir[MAX_PATH] = {0};
+    GetModuleFileNameA(nullptr, dir, MAX_PATH);
+    char* slash = strrchr(dir, '\\');
+    if (slash) slash[1] = 0;
+    std::string logs = std::string(dir) + "logs";
+    CreateDirectoryA(logs.c_str(), nullptr);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char path[MAX_PATH] = {0};
+    snprintf(path, sizeof(path), "%s\\app-%04d%02d%02d.log", logs.c_str(),
+             st.wYear, st.wMonth, st.wDay);
+    fp = fopen(path, "ab");
+  }
+  if (fp) {
+    fputs(line, fp);
+    fflush(fp);
+  }
 }
 }
 
@@ -227,7 +249,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_CREATE:
       Relayout(hwnd);
       skPlatformInit();
-      g_render.Init(hwnd);
+      if (!g_render.Init(hwnd)) sk::LogWrite("E", "render init failed");
       g_render.Resize((UINT)g_client.W(), (UINT)g_client.H(), (float)g_state.dpi);
       g_state.Seed();
       g_state.statusHost = g_state.hosts.empty() ? L"" : g_state.hosts[0].name;
