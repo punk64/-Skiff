@@ -424,6 +424,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
   wc.lpfnWndProc = WndProc;
   wc.hInstance = hInstance;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1));
+  wc.hIconSm = wc.hIcon;
   wc.hbrBackground = nullptr;
   wc.lpszClassName = kClassName;
   if (!RegisterClassExW(&wc)) return 1;

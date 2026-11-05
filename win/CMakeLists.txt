@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(SkiffWin LANGUAGES C CXX)
+project(SkiffWin LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,6 +36,7 @@ add_executable(Skiff WIN32
   src/core/SshService.cpp
   src/app/KeyGen.cpp
   src/app/Config.cpp
+  res/app.rc
   ${CORE_DIR}/jsonAnalyse/cJSON.c
   ${CORE_SOURCES}
 )
