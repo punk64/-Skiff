@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "app/App.h"
+#include "app/Backup.h"
 #include "app/Layout.h"
 #include "app/Config.h"
 #include "app/Lang.h"
@@ -806,6 +808,75 @@ void OpenChannelUrl(int port) {
   g_state.modal = sk::ModalKind::None;
 }
 
+void RunBackup() {
+  int kind = g_state.pendingBackup;
+  g_state.pendingBackup = 0;
+  if (kind == 0) return;
+  bool encrypt = !g_state.backupPlain;
+  std::wstring pwd = g_state.backupPass;
+  g_state.backupPass.clear();
+
+  wchar_t file[MAX_PATH * 2] = { 0 };
+  if (kind == 1) {
+    std::wstring def = sk::BackupDefaultName();
+    wcsncpy_s(file, MAX_PATH * 2, def.c_str(), _TRUNCATE);
+  }
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = g_hwnd;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH * 2;
+  ofn.lpstrFilter = L"轻舟备份\0*.skbk\0所有文件\0*.*\0";
+  ofn.lpstrDefExt = L"skbk";
+  ofn.lpstrTitle = kind == 1 ? sk::Tr(L"导出备份") : sk::Tr(L"导入备份");
+  ofn.Flags = OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST |
+              (kind == 1 ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+  BOOL picked = kind == 1 ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
+  if (!picked) return;
+  std::wstring path(file);
+
+  g_state.toastKind = 0;
+  if (kind == 1) {
+    std::string payload = sk::BuildBackupPayload(g_state);
+    std::string text = sk::SealBackup(payload, pwd, encrypt);
+    if (text.empty() || !sk::WriteTextFile(path, text)) {
+      g_state.toast = sk::Tr(L"导出失败，请检查目标目录是否可写");
+      g_state.toastKind = 1;
+    } else {
+      wchar_t msg[128];
+      swprintf_s(msg, sk::Tr(L"已导出 %d 台主机"), (int)g_state.hosts.size());
+      g_state.toast = msg;
+    }
+  } else {
+    std::string text;
+    if (!sk::ReadTextFile(path, text)) {
+      g_state.toast = sk::Tr(L"无法读取备份文件");
+      g_state.toastKind = 1;
+    } else {
+      std::string payload;
+      if (!sk::OpenBackup(text, pwd, payload)) {
+        g_state.toast = sk::Tr(L"密码错误或备份文件已损坏");
+        g_state.toastKind = 1;
+      } else {
+        sk::MergeStat stat;
+        std::wstring err;
+        if (!sk::MergeBackupPayload(payload, g_state, stat, err)) {
+          g_state.toast = err;
+          g_state.toastKind = 1;
+        } else {
+          sk::SaveStore(g_state);
+          g_state.dirty = false;
+          wchar_t msg[160];
+          swprintf_s(msg, sk::Tr(L"新增 %d 台，跳过 %d 台，密钥 %d 个"), stat.added,
+                     stat.skipped, stat.keys);
+          g_state.toast = msg;
+        }
+      }
+    }
+  }
+  g_state.toastAt = (long long)GetTickCount64();
+}
+
 bool LoadLocalDir(const std::wstring& dir, std::vector<sk::SftpEntry>& out, std::wstring& err) {
   out.clear();
   std::wstring base = dir;
@@ -1577,6 +1648,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         RunSftp(cmd);
         InvalidateRect(hwnd, nullptr, FALSE);
       }
+      if (g_state.pendingBackup != 0) {
+        RunBackup();
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
       if (g_state.pendingDisconnect >= 0) {
         int idx = g_state.pendingDisconnect;
         g_state.pendingDisconnect = -1;
@@ -1977,7 +2052,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_state.selectAll = false;
       }
       if (g_state.modal != sk::ModalKind::None) {
-        if ((sk::ModalIsForm(g_state) || g_state.modal == sk::ModalKind::Prompt) && ch != L'\r' &&
+        if ((sk::ModalIsForm(g_state) || g_state.modal == sk::ModalKind::Prompt ||
+             g_state.modal == sk::ModalKind::Backup) && ch != L'\r' &&
             ch != L'\t' && (ch >= 32 || ch == L'\b')) {
           sk::ModalChar(g_state, ch);
         }

@@ -13,7 +13,7 @@ enum class HostState { Off, Busy, Live };
 enum class TunState { Up = 0, Listen = 1, Retry = 2, Down = 3 };
 enum class ModalKind {
   None = 0, HostForm = 1, TunForm = 2, StatusPanel = 3, Queue = 4, Help = 5,
-  Confirm = 6, KeyStore = 7, Prompt = 8, DatePicker = 9, Channel = 10
+  Confirm = 6, KeyStore = 7, Prompt = 8, DatePicker = 9, Channel = 10, Backup = 11
 };
 
 enum class FieldKind { Text = 0, Seg = 1, Pass = 2, Info = 3, Group = 4, File = 5, Date = 6 };
@@ -183,6 +183,11 @@ struct AppState {
   bool pendingConnectTerm = true;
   int pendingDisconnect = -1;
   int pendingSftp = 0;
+  int pendingBackup = 0;
+  int backupKind = 0;
+  int backupFocus = 0;
+  bool backupPlain = false;
+  std::wstring backupPass;
   int pendingTunBrowse = -1;
   long long refreshAt = 0;
   int toastKind = 0;

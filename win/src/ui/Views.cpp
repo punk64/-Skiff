@@ -209,11 +209,19 @@ void NavIcon(Render& r, const AppState& st, int i, const Rect& rc, D2D1_COLOR_F 
     r.Line(box.l + rc.W() * 0.14f, box.t + box.H() * 0.30f, box.r - rc.W() * 0.10f, box.t + box.H() * 0.30f, c, w);
     r.Line(box.l + rc.W() * 0.14f, box.t + box.H() * 0.54f, box.r - rc.W() * 0.10f, box.t + box.H() * 0.54f, c, w);
     r.Line(box.l + rc.W() * 0.14f, box.t + box.H() * 0.78f, box.l + rc.W() * 0.60f, box.t + box.H() * 0.78f, c, w);
-  } else {
+  } else if (i == 5) {
     float rad = rc.W() * 0.42f;
     r.StrokeRound(D2D1::RectF(cx - rad, cy - rad, cx + rad, cy + rad), rad, c, w);
     r.Circle(cx, cy - rad * 0.36f, st.S(1.2f), c);
     r.Line(cx, cy - rad * 0.04f, cx, cy + rad * 0.42f, c, w);
+  } else {
+    r.Line(cx, cy - rc.H() * 0.44f, cx, cy + rc.H() * 0.06f, c, w);
+    r.Line(cx - rc.W() * 0.18f, cy - rc.H() * 0.12f, cx, cy + rc.H() * 0.08f, c, w);
+    r.Line(cx + rc.W() * 0.18f, cy - rc.H() * 0.12f, cx, cy + rc.H() * 0.08f, c, w);
+    float w2 = rc.W() * 0.40f;
+    r.Line(cx - w2, cy + rc.H() * 0.20f, cx - w2, cy + rc.H() * 0.44f, c, w);
+    r.Line(cx + w2, cy + rc.H() * 0.20f, cx + w2, cy + rc.H() * 0.44f, c, w);
+    r.Line(cx - w2, cy + rc.H() * 0.44f, cx + w2, cy + rc.H() * 0.44f, c, w);
   }
 }
 
@@ -317,7 +325,7 @@ struct SetRowDef {
   int kind;
 };
 
-const SetRowDef kSetRows[6][4] = {
+const SetRowDef kSetRows[7][4] = {
   { { L"界面语言", L"切换后立即生效", SetSeg },
     { L"断线自动重连", L"连接意外中断后自动恢复会话", SetSwitch },
     { L"启动时自动连接", L"打开程序时连接上次使用的主机", SetSwitch },
@@ -335,10 +343,13 @@ const SetRowDef kSetRows[6][4] = {
     { L"日志目录", L"程序同目录 logs 文件夹", SetPlain } },
   { { L"版本", L"轻舟 Skiff Windows 便携版", SetPlain },
     { L"内核", L"SSH 协议实现与加密后端", SetPlain },
-    { L"许可", L"仅供个人使用", SetPlain } }
+    { L"许可", L"仅供个人使用", SetPlain },
+    { L"项目地址", L"源码、更新记录与问题反馈，点击用系统浏览器打开", SetLink } },
+  { { L"导出备份", L"打包主机、隧道、私钥与设置，可加密保存", SetAction },
+    { L"导入备份", L"读取备份文件后合并追加，不覆盖现有配置", SetAction } }
 };
 
-const int kSetRowN[6] = { 4, 3, 3, 2, 3, 3 };
+const int kSetRowN[7] = { 4, 3, 3, 2, 3, 4, 2 };
 
 const wchar_t** SetOptions(int nav, int row, int* n) {
   static const wchar_t* b[4];
@@ -378,6 +389,9 @@ const wchar_t* SetPlainText(int nav, int row) {
   if (nav == 5 && row == 0) return L"v" SKIFF_WIN_VERSION L" · win64";
   if (nav == 5 && row == 1) return L"libssh2 1.11.1 · WinCNG";
   if (nav == 5 && row == 2) return Tr(L"个人使用");
+  if (nav == 5 && row == 3) return L"https://github.com/punk64/-Skiff";
+  if (nav == 6 && row == 0) return Tr(L"导出");
+  if (nav == 6 && row == 1) return Tr(L"导入");
   return L"";
 }
 
@@ -395,12 +409,12 @@ Rect SetRowRect(const AppState& st, const Rect& c, int index) {
 }
 
 int SetRowCount(int nav) {
-  if (nav < 0 || nav > 5) return 0;
+  if (nav < 0 || nav > 6) return 0;
   return kSetRowN[nav];
 }
 
 int SetKindOf(int nav, int row) {
-  if (nav < 0 || nav > 5 || row < 0 || row >= SetRowCount(nav)) return -1;
+  if (nav < 0 || nav > 6 || row < 0 || row >= SetRowCount(nav)) return -1;
   return kSetRows[nav][row].kind;
 }
 
@@ -881,9 +895,9 @@ void DrawSet(Render& r, const AppState& st, const Rect& rc) {
   r.Fill(nav.D2D(), p.surface);
   r.Fill(D2D1::RectF(nav.r - st.S(1.0f), nav.t, nav.r, nav.b), p.line);
 
-  const wchar_t* navNames[6] = { Tr(L"常规"), Tr(L"外观"), Tr(L"终端"), Tr(L"连接"), Tr(L"日志"), Tr(L"关于") };
-  int navIdx = st.setNav < 0 ? 0 : (st.setNav > 5 ? 5 : st.setNav);
-  for (int i = 0; i < 6; ++i) {
+  const wchar_t* navNames[7] = { Tr(L"常规"), Tr(L"外观"), Tr(L"终端"), Tr(L"连接"), Tr(L"日志"), Tr(L"关于"), Tr(L"备份") };
+  int navIdx = st.setNav < 0 ? 0 : (st.setNav > 6 ? 6 : st.setNav);
+  for (int i = 0; i < 7; ++i) {
     Rect item = SetNavRect(st, rc, i);
     bool on = i == navIdx;
     if (on) r.FillRound(item.D2D(), st.S(8.0f), p.accentSoft);
@@ -932,6 +946,8 @@ void DrawSet(Render& r, const AppState& st, const Rect& rc) {
     else if (kind == SetSeg) ctrlW = SegWidth(r, st, opts, optN);
     else if (kind == SetSwatch) ctrlW = st.S(17.0f) * 5.0f + st.S(8.0f) * 4.0f;
     else if (kind == SetPlain) ctrlW = st.S(190.0f);
+    else if (kind == SetLink) ctrlW = st.S(300.0f);
+    else if (kind == SetAction) ctrlW = st.S(88.0f);
     float ctrlRight = row.r - st.S(18.0f);
     float ctrlLeft = ctrlRight - ctrlW;
 
@@ -977,6 +993,16 @@ void DrawSet(Render& r, const AppState& st, const Rect& rc) {
       r.TextVertCenter(SetPlainText(navIdx, i),
                        D2D1::RectF(ctrlLeft, row.t, ctrlRight, row.b), p.text3, FontId::MonoSm,
                        Align::Right);
+    } else if (kind == SetLink) {
+      r.TextVertCenter(SetPlainText(navIdx, i),
+                       D2D1::RectF(ctrlLeft, row.t, ctrlRight, row.b), p.accent, FontId::MonoSm,
+                       Align::Right);
+    } else if (kind == SetAction) {
+      Rect btn{ ctrlLeft, cy - st.S(14.0f), ctrlRight, cy + st.S(14.0f) };
+      bool hot = st.hoverId == HitSetCtrlBase + i;
+      r.FillRound(btn.D2D(), st.S(L::RBtn), hot ? p.accent : p.accentSoft);
+      r.TextVertCenter(SetPlainText(navIdx, i), btn.D2D(), hot ? p.accentFg : p.accent,
+                       FontId::Small, Align::Center);
     }
   }
 

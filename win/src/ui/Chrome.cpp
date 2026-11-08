@@ -1,6 +1,7 @@
 #include "ui/Chrome.h"
 
 #include <commdlg.h>
+#include <shellapi.h>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -986,14 +987,27 @@ int ModalRowCount(const AppState& st) {
   if (st.modal == ModalKind::KeyStore) return st.keyStore.empty() ? 1 : (int)st.keyStore.size();
   if (st.modal == ModalKind::Prompt) return 1;
   if (st.modal == ModalKind::Channel) return 2;
+  if (st.modal == ModalKind::Backup) return 2;
   return 0;
 }
 
-float ModalRowHAt(const AppState& st, int i) {
-  if (IsFormModal(st)) {
+bool BackupSubmit(AppState& st) {
+  if (st.backupKind == 1 && !st.backupPlain && st.backupPass.empty()) {
+    st.toast = Tr(L"请输入密码，或勾选不加密");
+    st.toastAt = (long long)GetTickCount64();
+    st.toastKind = 1;
+    return false;
+  }
+  st.pendingBackup = st.backupKind;
+  st.modal = ModalKind::None;
+  return true;
+}
+
+float ModalRowHAt(const AppState& st, int i) {  if (IsFormModal(st)) {
     if (i >= 0 && i < (int)st.form.size() && st.form[i].kind == FieldKind::Group) return st.S(32.0f);
     return st.S(50.0f);
   }
+  if (st.modal == ModalKind::Backup) return i == 0 ? st.S(54.0f) : st.S(42.0f);
   return st.S(40.0f);
 }
 
@@ -1002,7 +1016,11 @@ float ModalRowH(const AppState& st) { return ModalRowHAt(st, 0); }
 float ModalBodyH(const AppState& st) {
   int n = ModalRowCount(st);
   if (n <= 0) return 0.0f;
-  if (!IsFormModal(st)) return ModalRowHAt(st, 0) * (float)n;
+  if (!IsFormModal(st)) {
+    float h = 0.0f;
+    for (int i = 0; i < n; ++i) h += ModalRowHAt(st, i);
+    return h;
+  }
   float h = 0.0f;
   for (int i = 0; i < n; ++i) {
     if (!FieldVisible(st, i)) continue;
@@ -1043,7 +1061,7 @@ Rect ModalFieldRect(const AppState& st, const Rect& panel, int i) {
   if (IsFormModal(st) && !FieldVisible(st, i)) return Rect{};
   float top = panel.t + st.S(64.0f) - st.formScroll;
   for (int k = 0; k < i; ++k) {
-    if (!FieldVisible(st, k)) continue;
+    if (IsFormModal(st) && !FieldVisible(st, k)) continue;
     top += ModalRowHAt(st, k);
   }
   return Rect{ panel.l + st.S(22.0f), top, panel.r - st.S(22.0f), top + ModalRowHAt(st, i) };
@@ -1373,6 +1391,44 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
       r.TextVertCenter(st.chanNote.c_str(), nrc.D2D(), p.text3, FontId::Caption);
       r.PopClip();
     }
+  } else if (st.modal == ModalKind::Backup) {
+    Rect fld = ModalFieldRect(st, panel, 0);
+    Rect box{ fld.l, fld.t + st.S(2.0f), fld.r, fld.b - st.S(2.0f) };
+    r.FillRound(box.D2D(), st.S(L::RCtrl), p.surface2);
+    r.StrokeRound(box.Inset(st.S(0.5f)).D2D(), st.S(L::RCtrl),
+                  st.backupFocus == 0 && !st.backupPlain ? p.accent : p.lineStrong, st.S(1.3f));
+    std::wstring shown;
+    D2D1_COLOR_F fg = p.text;
+    if (st.backupPlain) {
+      shown = Tr(L"不加密，无需密码");
+      fg = p.text3;
+    } else if (st.backupPass.empty()) {
+      shown = Tr(L"输入密码");
+      fg = p.text3;
+    } else {
+      shown.assign(st.backupPass.size(), L'\u2022');
+    }
+    Rect inner = box.Inset(st.S(10.0f));
+    r.PushClip(inner.D2D());
+    r.TextVertCenter(shown.c_str(), inner.D2D(), fg, FontId::Body);
+    r.PopClip();
+
+    Rect opt = ModalFieldRect(st, panel, 1);
+    r.PushClip(D2D1::RectF(opt.l, opt.t, opt.r - st.S(46.0f), opt.b));
+    r.TextVertCenter(Tr(L"不加密，密码与私钥将以明文存放"),
+                     D2D1::RectF(opt.l, opt.t, opt.r - st.S(46.0f), opt.b),
+                     st.backupPlain ? p.danger : p.text2, FontId::Small);
+    r.PopClip();
+    Rect tog{ opt.r - st.S(38.0f), MidY(opt) - st.S(10.0f), opt.r - st.S(4.0f),
+              MidY(opt) + st.S(10.0f) };
+    float rad = tog.H() * 0.5f;
+    r.FillRound(tog.D2D(), rad, st.backupPlain ? p.accent : p.surface2);
+    if (!st.backupPlain) {
+      r.StrokeRound(tog.Inset(st.S(0.5f)).D2D(), rad, p.lineStrong, st.S(1.0f));
+    }
+    float kr = rad - st.S(3.0f);
+    float kx = st.backupPlain ? tog.r - st.S(3.0f) - kr : tog.l + st.S(3.0f) + kr;
+    r.Circle(kx, MidY(tog), kr, st.backupPlain ? p.accentFg : p.text3);
   } else if (st.modal == ModalKind::StatusPanel) {
     std::wstring keys[7] = { Tr(L"主机"), Tr(L"地址"), Tr(L"认证"), Tr(L"加密"), Tr(L"密钥交换"), Tr(L"延迟"), Tr(L"主机指纹") };
     std::wstring vals[7];
@@ -1446,6 +1502,13 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     r.TextVertCenter(Tr(L"用浏览器打开"), ok.D2D(), p.accentFg, FontId::Body, Align::Center);
     r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
     r.TextVertCenter(Tr(L"复制地址"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
+  } else if (st.modal == ModalKind::Backup) {
+    Rect ok = ModalOkRect(st, panel);
+    Rect cancel = ModalCancelRect(st, panel);
+    r.FillRound(ok.D2D(), st.S(L::RBtn), p.accent);
+    r.TextVertCenter(Tr(L"确定"), ok.D2D(), p.accentFg, FontId::Body, Align::Center);
+    r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(Tr(L"取消"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
   } else {
     Rect ok = ModalOkRect(st, panel);
     r.FillRound(ok.D2D(), st.S(L::RBtn), p.surface2);
@@ -2193,6 +2256,9 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
       if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
     } else if (st.modal == ModalKind::Confirm) {
       if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
+    } else if (st.modal == ModalKind::Backup) {
+      if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
+      if (ModalFieldRect(st, panel, 1).Hit(x, y)) return HitBackupPlain;
     } else if (st.modal == ModalKind::KeyStore) {
       for (int i = 0; i < (int)st.keyStore.size(); ++i) {
         if (ModalFieldRect(st, panel, i).Hit(x, y)) return HitKeyRowBase + i;
@@ -2258,13 +2324,15 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
         return HitRecentBase + i * kSideCardSlots;
       }
     } else if (st.view == View::Set) {
-      for (int i = 0; i < 6; ++i) {
+      for (int i = 0; i < 7; ++i) {
         if (SetNavRect(st, content, i).Hit(x, y)) return HitSetNavBase + i;
       }
       int rowN = SetRowCount(st.setNav);
       for (int i = 0; i < rowN; ++i) {
         Rect row = SetRowRect(st, content, i);
-        if (x > row.r - st.S(420.0f) && row.Hit(x, y)) return HitSetCtrlBase + i;
+        if (!row.Hit(x, y)) continue;
+        if (SetKindOf(st.setNav, i) == SetLink) return HitSetCtrlBase + i;
+        if (x > row.r - st.S(420.0f)) return HitSetCtrlBase + i;
       }
     } else {
       bool session = st.view == View::Term && st.CurrentHostId() >= 0;
@@ -2406,10 +2474,19 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       st.confirmTunnel = -1;
       return;
     }
+    if (id == HitBackupPlain) {
+      st.backupPlain = !st.backupPlain;
+      st.dirty = true;
+      return;
+    }
     if (id == HitModalOk) {
       if (st.modal == ModalKind::Prompt) {
         st.modal = ModalKind::None;
         st.pendingSftp = 7;
+        return;
+      }
+      if (st.modal == ModalKind::Backup) {
+        BackupSubmit(st);
         return;
       }
       if (ModalIsForm(st)) {
@@ -2886,6 +2963,29 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     int row = id - HitSetCtrlBase;
     int kind = SetKindOf(st.setNav, row);
     int optN = SetOptionCount(st.setNav, row);
+    if (kind == SetLink) {
+      const wchar_t* url = L"https://github.com/punk64/-Skiff";
+      HINSTANCE rc = ShellExecuteW(hwnd, L"open", url, nullptr, nullptr, SW_SHOWNORMAL);
+      st.toast = (INT_PTR)rc > 32 ? std::wstring(Tr(L"已在浏览器打开 ")) + std::wstring(url)
+                                  : std::wstring(Tr(L"无法打开浏览器"));
+      st.toastAt = (long long)GetTickCount64();
+      st.toastKind = (INT_PTR)rc > 32 ? 0 : 1;
+      st.dirty = true;
+      return;
+    }
+    if (kind == SetAction) {
+      st.backupKind = row == 0 ? 1 : 2;
+      st.backupFocus = 0;
+      st.backupPlain = false;
+      st.backupPass.clear();
+      st.formScroll = 0.0f;
+      st.modal = ModalKind::Backup;
+      st.modalTitle = st.backupKind == 1 ? Tr(L"导出备份") : Tr(L"导入备份");
+      st.modalNote = st.backupKind == 1 ? Tr(L"设置密码加密备份文件，或勾选不加密")
+                                        : Tr(L"输入备份文件的密码，未加密的备份留空");
+      st.dirty = true;
+      return;
+    }
     if (kind == SetSwatch) {
       int* slot = SetIntSlot(st, st.setNav, row);
       if (slot) *slot = (*slot + 1) % 5;
@@ -3021,6 +3121,16 @@ void ModalChar(AppState& st, wchar_t ch) {
     st.dirty = true;
     return;
   }
+  if (st.modal == ModalKind::Backup) {
+    if (st.backupPlain) return;
+    if (ch == L'\b') {
+      if (!st.backupPass.empty()) st.backupPass.pop_back();
+    } else if (ch >= 32 && ch != 127 && st.backupPass.size() < 128) {
+      st.backupPass.push_back(ch);
+    }
+    st.dirty = true;
+    return;
+  }
   if (!ModalIsForm(st)) return;
   if (st.formFocus < 0 || st.formFocus >= (int)st.form.size()) return;
   FormField& f = st.form[static_cast<size_t>(st.formFocus)];
@@ -3057,6 +3167,17 @@ void ModalKey(AppState& st, int vk) {
     } else if (vk == VK_ESCAPE) {
       st.modal = ModalKind::None;
     }
+    return;
+  }
+  if (st.modal == ModalKind::Backup) {
+    if (vk == VK_RETURN) {
+      BackupSubmit(st);
+    } else if (vk == VK_ESCAPE) {
+      st.modal = ModalKind::None;
+    } else if (vk == VK_TAB) {
+      st.backupFocus = st.backupFocus == 0 ? 1 : 0;
+    }
+    st.dirty = true;
     return;
   }
   if (ModalIsForm(st)) {

@@ -35,6 +35,7 @@ enum HitId {
   HitTabCloseBase = 900, HitHostEditBase = 940,
   HitFormFieldBase = 1000, HitFormSegBase = 1020, HitFormBrowseBase = 1100,
   HitModalKeyStore = 1120, HitKeyRowBase = 1130,
+  HitBackupPlain = 1150,
   HitSessSegBase = 1160,
   HitDashToggleBase = 1170, HitDashQuickBase = 1190, HitDashStatBase = 1300,
   HitTunRowBase = 1400,
@@ -47,7 +48,10 @@ enum HitId {
   HitSideSettings = 2511, HitSideCollapse = 2512, HitSideExpand = 2513
 };
 
-enum SetKindId { SetSeg = 0, SetSwatch = 1, SetDrop = 2, SetSwitch = 3, SetPlain = 4 };
+enum SetKindId {
+  SetSeg = 0, SetSwatch = 1, SetDrop = 2, SetSwitch = 3, SetPlain = 4, SetLink = 5,
+  SetAction = 6
+};
 
 constexpr float kSideCollapsedW = 52.0f;
 constexpr int kSideCardSlots = 8;
