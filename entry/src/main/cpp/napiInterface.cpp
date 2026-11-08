@@ -5,6 +5,7 @@
 #include "network/netmanager/net_connection_type.h"
 #include "napiPortForward.h"
 #include "napiSftp.h"
+#include "napiBackup.h"
 #include "key_manager.h"
 #include "jsonAnalyse/jsonAnalyse.h"
 #include <hilog/log.h>
@@ -2221,6 +2222,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     RegisterPortForwardingFunctions(env, exports);
 
     RegisterSftpFunctions(env, exports);
+
+    RegisterBackupFunctions(env, exports);
 
     return exports;
 }

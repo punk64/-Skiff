@@ -429,7 +429,9 @@ def record_build(core: str, code: int, abi_tag: str, target: Path,
     row = '| %s | %s | %s | `产出\\%s` | %.2f MB | %s |' % (
         ts, note, abi_tag, target.name, target.stat().st_size / 1048576.0, desc)
     text = _read_text(BUILD_LOG)
-    idx = text.find('\n## 待补')
+    idx = text.find('\n## Windows 桌面版构建')
+    if idx < 0:
+        idx = text.find('\n## 待补')
     if idx < 0:
         if not text.endswith('\n'):
             text += '\n'

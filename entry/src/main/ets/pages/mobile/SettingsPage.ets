@@ -12,6 +12,16 @@ import { MT } from '../../common/MobileTheme'
 import { Arrow } from '../../common/Arrow'
 import { L, Bi } from '../../common/I18n'
 import { APP_VERSION } from '../../common/AppInfo'
+import {
+  BackupMergeResult,
+  buildBackupDoc,
+  exportToFile,
+  importFromFile,
+  mergeBackupDoc,
+  openPayload,
+  persistHosts,
+  sealPayload
+} from '../../common/Backup'
 
 const PROJECT_URL: string = 'https://github.com/punk64/-Skiff'
 
@@ -79,6 +89,10 @@ export struct SettingsPage {
   @State genPass: string = ''
   @State genBusy: boolean = false
   @State known: KnownHostItem[] = []
+  @State backupKind: number = 1
+  @State backupPass: string = ''
+  @State backupPlain: boolean = false
+  @State backupBusy: boolean = false
   @StorageLink('csx_lang') csxLang: string = 'zh'
 
   t(zh: string, en: string): string {
@@ -231,6 +245,12 @@ export struct SettingsPage {
       setTimeout(() => {
         this.refreshLogs()
       }, 300)
+    } else if (key === 'backupPlain') {
+      this.backupPlain = v
+      if (v) {
+        this.backupPass = ''
+      }
+      return
     }
     this.persistUi()
   }
@@ -241,6 +261,14 @@ export struct SettingsPage {
       if (key === 'logs') {
         this.refreshLogs()
       }
+      return
+    }
+    if (key === 'backup-export' || key === 'backup-import') {
+      this.backupKind = key === 'backup-export' ? 1 : 2
+      this.backupPass = ''
+      this.backupPlain = false
+      this.backupBusy = false
+      this.sub = 'backup'
       return
     }
   }
@@ -512,6 +540,8 @@ export struct SettingsPage {
         this.ProxyPage()
       } else if (this.sub === 'logs') {
         this.LogsPage()
+      } else if (this.sub === 'backup') {
+        this.BackupPage()
       }
       if (this.logOpen.length > 0) {
         this.LogViewer()
@@ -625,6 +655,16 @@ export struct SettingsPage {
           this.GroupTitle(L.b('诊断', 'Diagnostics'))
           Column() {
             this.NavRow(L.b('会话日志', 'Session log'), this.logOn ? L.b('已开启', 'On') : L.b('已关闭', 'Off'), 'logs')
+          }
+          .backgroundColor($r('app.color.csx_surface'))
+          .borderRadius(MT.radiusCard)
+          .clip(true)
+
+          this.GroupTitle(L.b('备份与恢复', 'Backup & restore'))
+          Column() {
+            this.NavRow(L.b('导出备份', 'Export backup'), L.b('主机、隧道、私钥与设置', 'Hosts, tunnels, keys and settings'), 'backup-export')
+            Divider().color($r('app.color.csx_line')).margin({ left: 16 })
+            this.NavRow(L.b('导入备份', 'Import backup'), L.b('合并追加，不覆盖现有主机', 'Merge and append, never overwrite'), 'backup-import')
           }
           .backgroundColor($r('app.color.csx_surface'))
           .borderRadius(MT.radiusCard)
@@ -1520,5 +1560,160 @@ export struct SettingsPage {
     .width('100%')
     .padding({ left: 16, right: 16 })
     .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder BackupPage() {
+    Column() {
+      this.SubHeader(this.backupKind === 1 ? L.b('导出备份', 'Export backup') : L.b('导入备份', 'Import backup'))
+      Scroll() {
+        Column() {
+          this.GroupTitle(L.b('密码', 'Password'))
+          Column() {
+            Row() {
+              TextInput({ text: this.backupPass, placeholder: this.t('备份密码', 'Backup password') })
+                .type(InputType.Password)
+                .fontSize(MT.fsBody)
+                .fontColor($r('app.color.csx_text'))
+                .backgroundColor(MT.transparent)
+                .padding({ left: 0, right: 0 })
+                .height(50)
+                .layoutWeight(1)
+                .enabled(!this.backupPlain)
+                .onChange((v: string) => {
+                  this.backupPass = v
+                })
+            }
+            .width('100%')
+            .padding({ left: 16, right: 16 })
+            .alignItems(VerticalAlign.Center)
+            Divider().color($r('app.color.csx_line')).margin({ left: 16 })
+            this.SwitchRow(L.b('不加密', 'No encryption'),
+              L.b('密码与私钥将以明文存放', 'Passwords and keys are stored in plain text'),
+              this.backupPlain, 'backupPlain')
+          }
+          .backgroundColor($r('app.color.csx_surface'))
+          .borderRadius(MT.radiusCard)
+          .clip(true)
+
+          Text(this.backupKind === 1
+            ? this.t('备份包含主机、隧道、私钥与设置，同一文件可在另一台设备导入。',
+              'Includes hosts, tunnels, keys and settings; the same file can be imported on another device.')
+            : this.t('导入只追加不存在的主机，已存在的主机与当前设置不会被覆盖。',
+              'Import only appends new hosts; existing hosts and current settings stay untouched.'))
+            .fontSize(MT.fsCaption)
+            .fontColor($r('app.color.csx_text3'))
+            .width('100%')
+            .margin({ top: 12 })
+            .lineHeight(18)
+
+          Text(this.backupBusy
+            ? this.t('处理中…', 'Working…')
+            : (this.backupKind === 1 ? this.t('导出到文件', 'Export to file') : this.t('选择文件并导入', 'Pick a file and import')))
+            .fontSize(MT.fsBody)
+            .fontColor($r('app.color.csx_accent_fg'))
+            .textAlign(TextAlign.Center)
+            .width('100%')
+            .height(48)
+            .borderRadius(MT.radiusBtn)
+            .backgroundColor($r('app.color.csx_accent'))
+            .opacity(this.backupBusy ? 0.6 : 1)
+            .margin({ top: 20 })
+            .onClick(() => {
+              if (this.backupKind === 1) {
+                this.doExport()
+              } else {
+                this.doImport()
+              }
+            })
+        }
+        .width('100%')
+        .padding({ left: MT.pagePadding, right: MT.pagePadding, top: 6, bottom: MT.tabbarSpace })
+      }
+      .layoutWeight(1)
+      .align(Alignment.Top)
+      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  async doExport(): Promise<void> {
+    if (this.backupBusy) {
+      return
+    }
+    if (!this.backupPlain && this.backupPass.length === 0) {
+      promptAction.showToast({ message: this.t('请输入密码，或勾选不加密', 'Enter a password or check not to encrypt') })
+      return
+    }
+    this.backupBusy = true
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext
+    try {
+      const payload: string = JSON.stringify(buildBackupDoc(ctx, this.hosts))
+      const text: string = sealPayload(payload, this.backupPass, !this.backupPlain)
+      if (text.length === 0) {
+        promptAction.showToast({ message: this.t('加密失败，请重试', 'Encryption failed, try again') })
+        return
+      }
+      const uri: string = await exportToFile(ctx, text)
+      if (uri.length === 0) {
+        return
+      }
+      promptAction.showToast({
+        message: this.t(`已导出 ${this.hosts.length} 台主机`, `Exported ${this.hosts.length} hosts`)
+      })
+      this.sub = ''
+    } catch (e) {
+      const msg: string = e instanceof Error ? e.message : String(e)
+      promptAction.showToast({ message: this.t(`导出失败：${msg}`, `Export failed: ${msg}`) })
+    } finally {
+      this.backupBusy = false
+    }
+  }
+
+  async doImport(): Promise<void> {
+    if (this.backupBusy) {
+      return
+    }
+    this.backupBusy = true
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext
+    try {
+      const raw: string = await importFromFile(ctx)
+      if (raw.length === 0) {
+        return
+      }
+      const payload: string = openPayload(raw, this.backupPass)
+      if (payload.length === 0) {
+        promptAction.showToast({
+          message: this.t('密码错误或备份文件已损坏', 'Wrong password or corrupted backup')
+        })
+        return
+      }
+      const merged: HostItem[] = this.hosts.slice()
+      let stat: BackupMergeResult = { added: 0, skipped: 0, keys: 0 }
+      try {
+        stat = mergeBackupDoc(ctx, payload, merged)
+      } catch (e) {
+        promptAction.showToast({ message: this.t('不是轻舟备份文件', 'Not a Skiff backup file') })
+        return
+      }
+      if (stat.added === 0 && stat.keys === 0 && stat.skipped === 0) {
+        promptAction.showToast({ message: this.t('备份里没有可导入的数据', 'Nothing to import') })
+        return
+      }
+      this.hosts = merged
+      await persistHosts(ctx, merged)
+      this.onHostsChanged()
+      promptAction.showToast({
+        message: this.t(`新增 ${stat.added} 台，跳过 ${stat.skipped} 台，密钥 ${stat.keys} 个`,
+          `Added ${stat.added}, skipped ${stat.skipped}, keys ${stat.keys}`),
+        duration: 3500
+      })
+      this.sub = ''
+    } catch (e) {
+      const msg: string = e instanceof Error ? e.message : String(e)
+      promptAction.showToast({ message: this.t(`导入失败：${msg}`, `Import failed: ${msg}`) })
+    } finally {
+      this.backupBusy = false
+    }
   }
 }
