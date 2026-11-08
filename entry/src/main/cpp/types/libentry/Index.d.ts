@@ -316,3 +316,7 @@ export function listActivePortForwardings(sessionId: number): Promise<PortForwar
  * @returns 形如 "accepts,failures" 的字符串。
  */
 export function getForwardStats(sessionId: number): string;
+
+export function sealBackup(payload: string, password: string, encrypt: boolean): string;
+
+export function openBackup(text: string, password: string): string;

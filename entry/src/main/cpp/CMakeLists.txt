@@ -24,6 +24,7 @@ add_library(entry SHARED
     napiWrapper.hpp
     key_manager.cpp
     napiSftp.cpp
+    napiBackup.cpp
 )
 
 target_link_libraries(entry PUBLIC libace_napi.z.so
