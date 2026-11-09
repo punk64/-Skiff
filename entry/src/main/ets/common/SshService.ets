@@ -81,6 +81,7 @@ interface CfgSession {
   authType: string
   privateKeyFd: number
   expectedHostKey: string
+  expectedHostKeyType: string
 }
 
 interface HostKeyInfo {
@@ -156,7 +157,8 @@ function buildConfig(h: HostItem, keyFd: number): string {
       password: h.password,
       authType: isKeyAuth(h) ? 'publickey' : 'password',
       privateKeyFd: keyFd,
-      expectedHostKey: h.hostKey
+      expectedHostKey: h.hostKey,
+      expectedHostKeyType: h.hostKeyType
     },
     Connection: {
       keepalive: ka ? 30 : -1,

@@ -79,6 +79,8 @@ public:
     
     // 列出目录内容
     bool listDirectory(const std::string& path, std::function<void(const FileInfo&)> callback);
+
+    bool realPath(const std::string& path, std::string& out);
     
     // 获取文件详细信息
     bool getFileInfo(const std::string& path, FileInfo& info);

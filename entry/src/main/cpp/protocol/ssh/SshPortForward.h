@@ -25,6 +25,7 @@
 #define LOG_TAG "MY_TAG"
 
 class SshSession; // 前向声明
+class ThreadPool;
 
 // 端口转发数据结构
 struct PortForwardData {
@@ -104,6 +105,7 @@ private:
     LIBSSH2_CHANNEL* m_pfNightChannel{nullptr};
     std::atomic<int> m_pfPumpReads{0};
     std::atomic<int> m_pfNightBackoff{0};
+    std::unique_ptr<ThreadPool> m_fwdPool;
     void startPfHeartbeat();
     void stopPfHeartbeat();
     void pfHeartbeatThread();

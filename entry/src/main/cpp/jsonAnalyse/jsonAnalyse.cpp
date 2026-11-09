@@ -82,6 +82,11 @@ SessionAnalyse* encapsulateSSHFromJson(std::string inputSessionJson) {
     if (item && cJSON_IsString(item) && item->valuestring != NULL) {
         SessionHandle->expectedHostKey = strdup(item->valuestring);
     }
+
+    item = cJSON_GetObjectItemCaseSensitive(session, "expectedHostKeyType");
+    if (item && cJSON_IsString(item) && item->valuestring != NULL) {
+        SessionHandle->expectedHostKeyType = strdup(item->valuestring);
+    }
     
     item = cJSON_GetObjectItemCaseSensitive(connection, "keepalive");
     if (!(cJSON_IsNumber(item))) {

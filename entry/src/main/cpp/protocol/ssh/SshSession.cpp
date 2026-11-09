@@ -356,6 +356,7 @@ bool SshSession::openConnect(const std::string& napiInput) {
     }
 
     expectedHostKey = SessionAnalyseHandle->expectedHostKey ? std::string(SessionAnalyseHandle->expectedHostKey) : std::string();
+    expectedHostKeyType = SessionAnalyseHandle->expectedHostKeyType ? std::string(SessionAnalyseHandle->expectedHostKeyType) : std::string();
 
     OH_LOG_INFO(LOG_APP, "SSH连接配置: %{public}s@%{public}s:%{public}d, 保活间隔: %{public}d秒",
                username.c_str(), hostname.c_str(), port, keepAliveInterval);
@@ -589,6 +590,16 @@ bool SshSession::openConnect(const std::string& napiInput) {
 
     libssh2_trace(session.get(), 0);
 
+    if (!expectedHostKeyType.empty()) {
+        static const char* kHostKeyOrder =
+            "ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,"
+            "ssh-ed25519,rsa-sha2-512,rsa-sha2-256,ssh-rsa,ssh-dss";
+        std::string hostKeyPref = expectedHostKeyType + "," + kHostKeyOrder;
+        if (libssh2_session_method_pref(session.get(), LIBSSH2_METHOD_HOSTKEY, hostKeyPref.c_str()) == 0) {
+            OH_LOG_INFO(LOG_APP, "host key preference: %{public}s", hostKeyPref.c_str());
+        }
+    }
+
     knownHosts.reset(libssh2_knownhost_init(session.get()));
     if (!knownHosts) {
         OH_LOG_INFO(LOG_APP, "Failed to initialize known hosts");
@@ -612,12 +623,30 @@ bool SshSession::openConnect(const std::string& napiInput) {
         }
     }
 
+    if (ret != 0) {
+        int hsErrno = libssh2_session_last_errno(session.get());
+        char *hsMsg = nullptr;
+        int hsMsgLen = 0;
+        libssh2_session_last_error(session.get(), &hsMsg, &hsMsgLen, 0);
+        OH_LOG_ERROR(LOG_APP, "SSH handshake failed: rc=%{public}d errno=%{public}d msg=%{public}s",
+                     ret, hsErrno, hsMsg ? hsMsg : "N/A");
+        lastConnectError = std::string("HANDSHAKE_FAILED:") + std::to_string(hsErrno);
+        if (sock && *sock != LIBSSH2_INVALID_SOCKET) {
+            close(*sock);
+            *sock = LIBSSH2_INVALID_SOCKET;
+        }
+        return false;
+    }
+
     if (!verifyHostKey()) {
         lastConnectError = "HOSTKEY_ERR:" + hostKeyFingerprint;
         return false;
     }
 
-    userAuthList = libssh2_userauth_list(session.get(), SessionAnalyseHandle->userName, (unsigned int)strlen(SessionAnalyseHandle->userName));
+    const char *authListRaw = libssh2_userauth_list(session.get(), SessionAnalyseHandle->userName, (unsigned int)strlen(SessionAnalyseHandle->userName));
+    if (authListRaw != nullptr) {
+        userAuthList = authListRaw;
+    }
     if (!userAuthList.empty()) {
         // 根据前端配置的认证方式选择认证方法
         if (SessionAnalyseHandle->authType == AUTH_PASSWORD) {
@@ -722,6 +751,17 @@ bool SshSession::openConnect(const std::string& napiInput) {
             break;
         waitSocket();
     } while (1);
+
+    if (!channelShell) {
+        int chErrno = libssh2_session_last_errno(session.get());
+        char *chMsg = nullptr;
+        int chMsgLen = 0;
+        libssh2_session_last_error(session.get(), &chMsg, &chMsgLen, 0);
+        OH_LOG_ERROR(LOG_APP, "Failed to open shell channel: errno=%{public}d msg=%{public}s",
+                     chErrno, chMsg ? chMsg : "N/A");
+        lastConnectError = "CHANNEL_OPEN_FAILED";
+        return false;
+    }
 
     while((ret = libssh2_channel_request_pty(channelShell.get(), "xterm")) == LIBSSH2_ERROR_EAGAIN) {
         waitSocket();
@@ -1811,6 +1851,14 @@ bool SshSession::deleteFile(const std::string& path) {
     bool result = interactiveSftpSession->deleteFile(path);
 
     return result;
+}
+
+bool SshSession::realPath(const std::string& path, std::string& out) {
+    if (!interactiveSftpSession) {
+        OH_LOG_ERROR(LOG_APP, "交互式 SFTP 会话未初始化 (Interactive SFTP session not initialized)");
+        return false;
+    }
+    return interactiveSftpSession->realPath(path, out);
 }
 
 bool SshSession::createDirectory(const std::string& path) {

@@ -1705,6 +1705,27 @@ std::string SftpSession::getTimeString(uint64_t timestamp) {
     return ss.str();
 }
 
+bool SftpSession::realPath(const std::string& path, std::string& out) {
+    std::lock_guard<std::mutex> lock(sessionMutex);
+
+    if (!sftp || !session) return false;
+
+    char buffer[4096];
+    std::string input = path.empty() ? std::string(".") : path;
+    int rc = executeNonBlocking([&]() {
+        if (!sftp) return -1;
+        return libssh2_sftp_realpath(sftp, input.c_str(), buffer, sizeof(buffer));
+    }, "realpath");
+
+    if (rc < 0) return false;
+    if (rc < (int)sizeof(buffer)) {
+        out.assign(buffer, (size_t)rc);
+    } else {
+        out.assign(buffer);
+    }
+    return !out.empty();
+}
+
 bool SftpSession::getFileInfo(const std::string& path, FileInfo& info) {
     std::lock_guard<std::mutex> lock(sessionMutex);
 
