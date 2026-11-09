@@ -13,7 +13,8 @@ enum class HostState { Off, Busy, Live };
 enum class TunState { Up = 0, Listen = 1, Retry = 2, Down = 3 };
 enum class ModalKind {
   None = 0, HostForm = 1, TunForm = 2, StatusPanel = 3, Queue = 4, Help = 5,
-  Confirm = 6, KeyStore = 7, Prompt = 8, DatePicker = 9, Channel = 10, Backup = 11
+  Confirm = 6, KeyStore = 7, Prompt = 8, DatePicker = 9, Channel = 10, Backup = 11,
+  Detail = 12
 };
 
 enum class FieldKind { Text = 0, Seg = 1, Pass = 2, Info = 3, Group = 4, File = 5, Date = 6 };
@@ -36,6 +37,8 @@ struct SftpEntry {
   std::wstring size;
   std::wstring time;
   bool dir = false;
+  unsigned int mode = 0;
+  unsigned long long rawSize = 0;
 };
 
 struct Tunnel {
@@ -131,7 +134,7 @@ struct AppState {
   int cursorIdx = 0;
   bool autoReconnect = true;
   bool autoConnectAll = false;
-  bool restoreLast = true;
+  bool restoreLast = false;
   bool fpCheck = true;
   int keepAliveIdx = 1;
   int timeoutIdx = 1;
@@ -142,7 +145,10 @@ struct AppState {
   std::vector<SftpEntry> sftpRemote;
   std::vector<SftpEntry> sftpLocal;
   std::vector<std::wstring> sftpQueue;
-  std::wstring sftpPath = L"/";
+  std::vector<std::wstring> pendingFiles;
+  std::vector<int> sftpQueueIdx;
+  std::vector<int> sftpQueueState;
+  std::wstring sftpPath;
   std::wstring sftpLocalPath;
   std::wstring sftpStatus;
   int sftpSelRemote = -1;
@@ -150,6 +156,9 @@ struct AppState {
   int sftpSide = 1;
   int sftpView = 0;
   bool sftpBusy = false;
+  float sftpScrollL = 0.0f;
+  float sftpScrollR = 0.0f;
+  int sftpPathHost = -1;
   std::wstring query;
   std::wstring statusHost;
   std::wstring statusAddr;
@@ -162,6 +171,7 @@ struct AppState {
   std::vector<FormField> form;
   int formFocus = 0;
   int formTarget = -1;
+  bool formFpReset = false;
   int formHost = -1;
   int formTunnel = -1;
   std::wstring formError;
@@ -173,6 +183,11 @@ struct AppState {
   int confirmHost = -1;
   int confirmTunnel = -1;
   std::wstring promptValue;
+  int promptKind = 0;
+  std::wstring promptTarget;
+  int confirmKind = 0;
+  std::wstring detailText;
+  bool confirmTrayQuit = false;
   int dateField = -1;
   ModalKind dateReturn = ModalKind::HostForm;
   int dpYear = 0;

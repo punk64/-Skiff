@@ -10,6 +10,7 @@
 #include "core/SshService.h"
 #include "ui/Sessions.h"
 #include "app/Config.h"
+#include "app/KeyGen.h"
 #include "app/Lang.h"
 #include "app/Version.h"
 #include "compat/Log.h"
@@ -22,6 +23,121 @@ constexpr float kHalf = 0.5f;
 float MidY(const Rect& rc) { return rc.t + rc.H() * kHalf; }
 
 std::wstring Num(int v) { return std::to_wstring(v); }
+
+std::wstring JoinRemotePath(const std::wstring& base, const std::wstring& name) {  if (base.empty() || base == L"/") return std::wstring(L"/") + name;
+  if (base.back() == L'/') return base + name;
+  return base + L"/" + name;
+}
+
+std::vector<std::wstring> PickUploadFiles(HWND owner) {
+  std::vector<std::wstring> out;
+  std::vector<wchar_t> buf(64 * 1024, 0);
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = owner;
+  ofn.lpstrFile = buf.data();
+  ofn.nMaxFile = (DWORD)buf.size();
+  ofn.lpstrTitle = Tr(L"选择要上传的文件");
+  ofn.lpstrFilter = L"所有文件\0*.*\0";
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+              OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+  if (!GetOpenFileNameW(&ofn)) return out;
+  const wchar_t* p = buf.data();
+  std::wstring first = p;
+  p += first.size() + 1;
+  if (*p == 0) {
+    out.push_back(first);
+    return out;
+  }
+  std::wstring dir = first;
+  while (*p != 0) {
+    std::wstring name = p;
+    out.push_back(dir + L"\\" + name);
+    p += name.size() + 1;
+  }
+  return out;
+}
+
+std::string W2U8(const std::wstring& w) {
+  if (w.empty()) return std::string();
+  int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+  std::string s((size_t)n, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), &s[0], n, nullptr, nullptr);
+  return s;
+}
+
+std::wstring NewKeyFile(const std::wstring& name) {
+  std::wstring dir = KeyDirectory();
+  if (dir.empty()) return std::wstring(Tr(L"无法定位 keys 目录"));
+  CreateDirectoryW(dir.c_str(), nullptr);
+  std::wstring base = name;
+  for (size_t i = 0; i < base.size(); ++i) {
+    wchar_t c = base[i];
+    if (c == L'\\' || c == L'/' || c == L':' || c == L'*' || c == L'?' || c == L'"' ||
+        c == L'<' || c == L'>' || c == L'|') {
+      base[i] = L'_';
+    }
+  }
+  if (base.empty()) base = L"id_ed25519";
+  std::string stem = W2U8(base);
+  auto toW = [](const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
+    std::wstring w((size_t)n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), &w[0], n);
+    return w;
+  };
+  KeyPair kp = Generate(KeyKind::Ed25519, stem);
+  if (!kp.ok) return toW(kp.error);
+  std::string err;
+  if (!SaveTo(kp, dir, stem, err)) return toW(err);
+  return std::wstring();
+}
+
+std::wstring LogFolder() {
+  wchar_t path[MAX_PATH] = { 0 };
+  GetModuleFileNameW(nullptr, path, MAX_PATH);
+  wchar_t* slash = wcsrchr(path, L'\\');
+  if (slash == nullptr) return std::wstring();
+  slash[1] = 0;
+  std::wstring dir = std::wstring(path) + L"logs";
+  CreateDirectoryW(dir.c_str(), nullptr);
+  return dir;
+}
+
+int CleanLogs() {
+  std::wstring dir = LogFolder();
+  if (dir.empty()) return 0;
+  std::wstring pat = dir + L"\\*.log";
+  WIN32_FIND_DATAW fd{};
+  HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+  int n = 0;
+  if (h != INVALID_HANDLE_VALUE) {
+    do {
+      if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
+      std::wstring full = dir + L"\\" + fd.cFileName;
+      if (DeleteFileW(full.c_str())) ++n;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+  }
+  return n;
+}
+
+std::wstring ModeOctal(unsigned int mode) {
+  wchar_t buf[8];
+  swprintf_s(buf, L"%04o", mode & 07777u);
+  return std::wstring(buf);
+}
+
+std::wstring ModeText(unsigned int mode) {
+  static const wchar_t* kRwx[8] = { L"---", L"--x", L"-w-", L"-wx",
+                                    L"r--", L"r-x", L"rw-", L"rwx" };
+  std::wstring s = (mode & 0040000u) ? L"d" : L"-";
+  s += kRwx[(mode >> 6) & 7u];
+  s += kRwx[(mode >> 3) & 7u];
+  s += kRwx[mode & 7u];
+  return s;
+}
 
 std::wstring U8ToW(const std::string& s) {
   if (s.empty()) return std::wstring();
@@ -444,12 +560,27 @@ Rect FtpQueueRect(const AppState& st, const Rect& c) {
   return Rect{ c.r - st.S(14) - w, cy - h * kHalf, c.r - st.S(14), cy + h * kHalf };
 }
 
+float FtpActionW(const AppState& st, const Rect& c) {
+  Rect q = FtpQueueRect(st, c);
+  float gap = st.S(6);
+  float avail = q.l - st.S(10) - (c.l + st.S(46));
+  float need = st.S(62) * 6.0f + gap * 5.0f;
+  if (avail >= need) return st.S(62);
+  float w = (avail - gap * 5.0f) / 6.0f;
+  return w < st.S(40) ? st.S(40) : w;
+}
+
 Rect FtpActionRect(const AppState& st, const Rect& c, int slot) {
   Rect q = FtpQueueRect(st, c);
-  float w = st.S(30);
-  float h = st.S(28);
-  float right = q.l - st.S(10) - (float)slot * (w + st.S(6));
+  float w = FtpActionW(st, c);
+  int idx = 5 - slot;
+  float right = q.l - st.S(10) - (float)idx * (w + st.S(6));
   return Rect{ right - w, q.t, right, q.b };
+}
+
+Rect FtpUpDirRectLocal(const AppState& st, const Rect& c) {
+  float cy = c.b - st.S(24);
+  return Rect{ c.l + st.S(12), cy - st.S(14), c.l + st.S(40), cy + st.S(14) };
 }
 
 Rect TunNewRect(const AppState& st, const Rect& c) {
@@ -1025,6 +1156,8 @@ float ModalRowHAt(const AppState& st, int i) {  if (IsFormModal(st)) {
 float ModalRowH(const AppState& st) { return ModalRowHAt(st, 0); }
 
 float ModalBodyH(const AppState& st) {
+  if (st.modal == ModalKind::Detail) return st.S(198.0f);
+  if (st.modal == ModalKind::Help) return st.S(272.0f);
   int n = ModalRowCount(st);
   if (n <= 0) return 0.0f;
   if (!IsFormModal(st)) {
@@ -1218,10 +1351,21 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
         continue;
       }
       if (f.kind == FieldKind::Info) {
-        r.PushClip(D2D1::RectF(valLeft, row.t, valRight, row.b));
-        r.TextVertCenter(f.value.c_str(), D2D1::RectF(valLeft, row.t, valRight, row.b), p.text3,
+        bool hasReset = f.key == L"hostKey";
+        float textRight = hasReset ? valRight - st.S(74.0f) : valRight;
+        r.PushClip(D2D1::RectF(valLeft, row.t, textRight, row.b));
+        r.TextVertCenter(f.value.c_str(), D2D1::RectF(valLeft, row.t, textRight, row.b), p.text3,
                          FontId::MonoSm);
         r.PopClip();
+        if (hasReset) {
+          Rect btn{ valRight - st.S(64.0f), row.t + st.S(13.0f), valRight, row.b - st.S(13.0f) };
+          bool hot = st.hoverId == HitFormBrowseBase + i;
+          r.FillRound(btn.D2D(), st.S(L::RBtn), hot ? Alpha(p.accent, 0.18f) : p.surface2);
+          r.StrokeRound(btn.Inset(st.S(0.5f)).D2D(), st.S(L::RBtn), hot ? p.accent : p.line,
+                        st.S(1.0f));
+          r.TextVertCenter(Tr(L"重置"), btn.D2D(), hot ? p.accent : p.text2, FontId::Small,
+                           Align::Center);
+        }
         continue;
       }
       bool browse = f.kind == FieldKind::File;
@@ -1386,9 +1530,18 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     r.FillRound(box.D2D(), st.S(L::RCtrl), p.surface2);
     r.StrokeRound(box.Inset(st.S(0.5f)).D2D(), st.S(L::RCtrl), p.accent, st.S(1.5f));
     std::wstring shown = st.promptValue.empty() ? Tr(L"输入名称") : st.promptValue;
-    r.TextVertCenter(shown.c_str(),
-                     D2D1::RectF(box.l + st.S(10.0f), box.t, box.r - st.S(8.0f), box.b),
+    float tx = box.l + st.S(10.0f);
+    r.TextVertCenter(shown.c_str(), D2D1::RectF(tx, box.t, box.r - st.S(8.0f), box.b),
                      st.promptValue.empty() ? p.text3 : p.text, FontId::Body);
+    if (((GetTickCount64() / 520) & 1) == 0) {
+      float cx = tx;
+      if (!st.promptValue.empty()) {
+        cx += r.Measure(st.promptValue.c_str(), FontId::Body) + st.S(1.0f);
+      }
+      float maxX = box.r - st.S(10.0f);
+      if (cx > maxX) cx = maxX;
+      r.Line(cx, box.t + st.S(10.0f), cx, box.b - st.S(10.0f), p.accent, st.S(1.6f));
+    }
   } else if (st.modal == ModalKind::Channel) {
     Rect body = ModalBodyRect(st, panel);
     Rect box{ body.l + st.S(10.0f), body.t + st.S(14.0f), body.r - st.S(10.0f),
@@ -1465,6 +1618,41 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
                        i >= 5 ? FontId::MonoSm : FontId::Body);
       r.PopClip();
     }
+  } else if (st.modal == ModalKind::Help) {
+    Rect body = ModalBodyRect(st, panel);
+    const wchar_t* keys[10] = { L"Ctrl+0", L"Ctrl+1", L"Ctrl+2", L"Ctrl+3", L"Ctrl+4",
+                                L"Ctrl+K", L"Ctrl+W", L"F11", L"Ctrl+滚轮", L"Ctrl+A ~ Z" };
+    const wchar_t* texts[10] = { L"仪表盘", L"终端", L"文件", L"端口转发", L"设置",
+                                 L"搜索主机", L"关闭当前会话", L"全屏切换", L"终端字号",
+                                 L"终端发送控制字符" };
+    float y = body.t + st.S(2.0f);
+    float lh = st.S(26.0f);
+    for (int i = 0; i < 10; ++i) {
+      r.TextVertCenter(keys[i],
+                       D2D1::RectF(body.l + st.S(10.0f), y, body.l + st.S(150.0f), y + lh),
+                       p.accent, FontId::MonoSm);
+      r.TextVertCenter(Tr(texts[i]),
+                       D2D1::RectF(body.l + st.S(160.0f), y, body.r - st.S(10.0f), y + lh),
+                       p.text2, FontId::Body);
+      y += lh;
+    }
+  } else if (st.modal == ModalKind::Detail) {
+    Rect body = ModalBodyRect(st, panel);
+    float y = body.t + st.S(4.0f);
+    float lh = st.S(26.0f);
+    size_t start = 0;
+    while (start <= st.detailText.size() && y + lh <= body.b) {
+      size_t pos = st.detailText.find(L'\n', start);
+      std::wstring line = st.detailText.substr(
+          start, pos == std::wstring::npos ? std::wstring::npos : pos - start);
+      r.PushClip(D2D1::RectF(body.l, y, body.r, y + lh));
+      r.TextVertCenter(line.c_str(), D2D1::RectF(body.l, y, body.r, y + lh), p.text2,
+                       FontId::MonoSm);
+      r.PopClip();
+      if (pos == std::wstring::npos) break;
+      start = pos + 1;
+      y += lh;
+    }
   } else if (st.modal == ModalKind::Queue) {
     if (st.sftpQueue.empty()) {
       Rect row = ModalFieldRect(st, panel, 0);
@@ -1473,14 +1661,23 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
       for (int i = 0; i < rowN; ++i) {
         Rect row = ModalFieldRect(st, panel, i);
         float cy = MidY(row);
+        bool waiting = i < (int)st.sftpQueueState.size() && st.sftpQueueState[(size_t)i] == 0;
+        float textRight = waiting ? row.r - st.S(64.0f) : row.r;
         Rect ib{ row.l + st.S(2.0f), cy - st.S(5.0f), row.l + st.S(14.0f), cy + st.S(5.0f) };
         r.FillRound(ib.D2D(), st.S(3.0f), p.accentSoft);
         r.Circle(ib.l + st.S(6.0f), cy, st.S(2.0f), p.accent);
-        r.PushClip(D2D1::RectF(ib.r + st.S(10.0f), row.t, row.r, row.b));
+        r.PushClip(D2D1::RectF(ib.r + st.S(10.0f), row.t, textRight, row.b));
         r.TextVertCenter(st.sftpQueue[static_cast<size_t>(i)].c_str(),
-                         D2D1::RectF(ib.r + st.S(10.0f), row.t, row.r, row.b), p.text2,
+                         D2D1::RectF(ib.r + st.S(10.0f), row.t, textRight, row.b), p.text2,
                          FontId::MonoSm);
         r.PopClip();
+        if (waiting) {
+          Rect cb{ row.r - st.S(54.0f), cy - st.S(11.0f), row.r - st.S(4.0f), cy + st.S(11.0f) };
+          bool hot = st.hoverId == HitQueueRowBase + i;
+          r.StrokeRound(cb.D2D(), st.S(L::RBtn), hot ? p.accent : p.lineStrong, st.S(1.0f));
+          r.TextVertCenter(Tr(L"取消"), cb.D2D(), hot ? p.accent : p.text2, FontId::Micro,
+                           Align::Center);
+        }
       }
     }
   }
@@ -1500,12 +1697,40 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
   } else if (st.modal == ModalKind::Confirm) {
     Rect ok = ModalOkRect(st, panel);
     Rect cancel = ModalCancelRect(st, panel);
-    bool danger = st.confirmHost >= 0 || st.confirmTunnel >= 0;
+    bool danger = st.confirmHost >= 0 || st.confirmTunnel >= 0 || st.confirmKind != 0;
     r.FillRound(ok.D2D(), st.S(L::RBtn), danger ? p.danger : p.accent);
     r.TextVertCenter(danger ? Tr(L"删除") : Tr(L"确定"), ok.D2D(),
                      danger ? Rgb(0xFFFFFF) : p.accentFg, FontId::Body, Align::Center);
     r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
     r.TextVertCenter(Tr(L"取消"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
+  } else if (st.modal == ModalKind::Prompt) {
+    Rect ok = ModalOkRect(st, panel);
+    Rect cancel = ModalCancelRect(st, panel);
+    r.FillRound(ok.D2D(), st.S(L::RBtn), p.accent);
+    const wchar_t* okText = st.promptKind == 1 ? Tr(L"重命名")
+                            : (st.promptKind == 2 ? Tr(L"应用")
+                                                  : (st.promptKind == 3 ? Tr(L"生成")
+                                                                        : Tr(L"创建")));
+    r.TextVertCenter(okText, ok.D2D(), p.accentFg, FontId::Body, Align::Center);
+    r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(Tr(L"取消"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
+  } else if (st.modal == ModalKind::Detail) {
+    Rect ok = ModalOkRect(st, panel);
+    r.FillRound(ok.D2D(), st.S(L::RBtn), p.surface2);
+    r.TextVertCenter(Tr(L"关闭"), ok.D2D(), p.text2, FontId::Body, Align::Center);
+  } else if (st.modal == ModalKind::Help) {
+    Rect ok = ModalOkRect(st, panel);
+    r.FillRound(ok.D2D(), st.S(L::RBtn), p.surface2);
+    r.TextVertCenter(Tr(L"关闭"), ok.D2D(), p.text2, FontId::Body, Align::Center);
+  } else if (st.modal == ModalKind::KeyStore) {
+    Rect ok = ModalOkRect(st, panel);
+    r.FillRound(ok.D2D(), st.S(L::RBtn), p.surface2);
+    r.TextVertCenter(Tr(L"关闭"), ok.D2D(), p.text2, FontId::Body, Align::Center);
+    Rect gen{ panel.l + st.S(22.0f), ok.t, panel.l + st.S(22.0f) + st.S(104.0f), ok.b };
+    bool hot = st.hoverId == HitKeyGen;
+    r.StrokeRound(gen.D2D(), st.S(L::RBtn), hot ? p.accent : p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(Tr(L"生成密钥"), gen.D2D(), hot ? p.accent : p.text2, FontId::Body,
+                     Align::Center);
   } else if (st.modal == ModalKind::Channel) {
     Rect ok = ModalOkRect(st, panel);
     Rect cancel = ModalCancelRect(st, panel);
@@ -1520,7 +1745,7 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
     r.TextVertCenter(Tr(L"确定"), ok.D2D(), p.accentFg, FontId::Body, Align::Center);
     r.StrokeRound(cancel.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
     r.TextVertCenter(Tr(L"取消"), cancel.D2D(), p.text2, FontId::Body, Align::Center);
-  } else {
+  } else if (st.modal != ModalKind::DatePicker) {
     Rect ok = ModalOkRect(st, panel);
     r.FillRound(ok.D2D(), st.S(L::RBtn), p.surface2);
     r.TextVertCenter(Tr(L"关闭"), ok.D2D(), p.text2, FontId::Body, Align::Center);
@@ -1561,10 +1786,12 @@ void AppState::Seed() {
   tabs.push_back(home);
   activeTab = 0;
 
-  sftpPath = L"/";
+  sftpPath.clear();
   sftpStatus = Tr(L"未连接");
   sftpSelRemote = -1;
   sftpSelLocal = -1;
+  sftpScrollL = 0.0f;
+  sftpScrollR = 0.0f;
   sftpQueue.clear();
   sftpLocal.clear();
   sftpRemote.clear();
@@ -1789,6 +2016,7 @@ void AppState::ClearDateField() {
 void AppState::OpenHostForm(int index) {
   form.clear();
   formTarget = index;
+  formFpReset = false;
   formError.clear();
   formScroll = 0.0f;
   bool edit = index >= 0 && index < (int)hosts.size();
@@ -1923,6 +2151,10 @@ bool AppState::CommitForm() {
     if (edit) {
       int hi = formTarget;
       if (hosts[(size_t)hi].host != h.host || hosts[(size_t)hi].port != h.port) {
+        h.hostKey.clear();
+        h.hostKeyType.clear();
+      }
+      if (formFpReset) {
         h.hostKey.clear();
         h.hostKeyType.clear();
       }
@@ -2235,6 +2467,26 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
       }
       return HitNone;
     }
+    if (st.modal == ModalKind::Queue) {
+      for (int i = 0; i < (int)st.sftpQueue.size() && i < 12; ++i) {
+        bool waiting = i < (int)st.sftpQueueState.size() && st.sftpQueueState[(size_t)i] == 0;
+        if (!waiting) continue;
+        Rect row = ModalFieldRect(st, panel, i);
+        float cy = MidY(row);
+        Rect cb{ row.r - st.S(54.0f), cy - st.S(11.0f), row.r - st.S(4.0f), cy + st.S(11.0f) };
+        if (cb.Hit(x, y)) return HitQueueRowBase + i;
+      }
+      return HitNone;
+    }
+    if (st.modal == ModalKind::KeyStore) {
+      Rect ok = ModalOkRect(st, panel);
+      Rect gen{ panel.l + st.S(22.0f), ok.t, panel.l + st.S(22.0f) + st.S(104.0f), ok.b };
+      if (gen.Hit(x, y)) return HitKeyGen;
+      for (int i = 0; i < (int)st.keyStore.size(); ++i) {
+        if (ModalFieldRect(st, panel, i).Hit(x, y)) return HitKeyRowBase + i;
+      }
+      return HitNone;
+    }
     if (ModalIsForm(st)) {
       if (ModalCancelRect(st, panel).Hit(x, y)) return HitModalCancel;
       if (st.modal == ModalKind::HostForm) {
@@ -2260,6 +2512,10 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
         if (f.kind == FieldKind::File || f.kind == FieldKind::Date) {
           Rect br{ row.r - st.S(64.0f), row.t + st.S(9.0f), row.r, row.b - st.S(9.0f) };
           if (br.Hit(x, y)) return HitFormBrowseBase + i;
+        }
+        if (f.kind == FieldKind::Info && f.key == L"hostKey") {
+          Rect fr{ row.r - st.S(64.0f), row.t + st.S(13.0f), row.r, row.b - st.S(13.0f) };
+          if (fr.Hit(x, y)) return HitFormBrowseBase + i;
         }
         return HitFormFieldBase + i;
       }
@@ -2360,13 +2616,24 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
       if (page == 2) {
         if (FtpToolRect(st, inner, 0).Hit(x, y)) return HitFtpNew;
         if (FtpToolRect(st, inner, 1).Hit(x, y)) return HitFtpRefresh;
+        if (FtpToolRect(st, inner, 2).Hit(x, y)) return HitFtpHome;
         if (FtpQueueRect(st, inner).Hit(x, y)) return HitFtpQueue;
-        if (FtpActionRect(st, inner, 0).Hit(x, y)) return HitFtpDown;
-        if (FtpActionRect(st, inner, 1).Hit(x, y)) return HitFtpUp;
+        if (FtpUpDirRectLocal(st, inner).Hit(x, y)) return HitFtpParent;
+        if (FtpActionRect(st, inner, 0).Hit(x, y)) return HitFtpUp;
+        if (FtpActionRect(st, inner, 1).Hit(x, y)) return HitFtpDown;
+        if (FtpActionRect(st, inner, 2).Hit(x, y)) return HitFtpRename;
+        if (FtpActionRect(st, inner, 3).Hit(x, y)) return HitFtpDelete;
+        if (FtpActionRect(st, inner, 4).Hit(x, y)) return HitFtpDetail;
+        if (FtpActionRect(st, inner, 5).Hit(x, y)) return HitFtpChmod;
         for (int side = 0; side < 2; ++side) {
+          Rect panel = SftpPanelRect(st, inner, side);
+          Rect listRc{ panel.l, panel.t + st.S(32.0f), panel.r, panel.b };
+          if (!listRc.Hit(x, y)) continue;
           const std::vector<SftpEntry>& list = side == 0 ? st.sftpLocal : st.sftpRemote;
-          for (int r = 0; r < (int)list.size() && r < 40; ++r) {
-            if (SftpRowRectOf(st, inner, side, r).Hit(x, y)) return HitFtpRowBase + side * 40 + r;
+          for (int r = 0; r < (int)list.size() && r < kFtpRowCap; ++r) {
+            if (SftpRowRectOf(st, inner, side, r).Hit(x, y)) {
+              return HitFtpRowBase + side * kFtpRowCap + r;
+            }
           }
         }
       } else if (page == 1) {
@@ -2490,10 +2757,41 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       st.dirty = true;
       return;
     }
+    if (id >= HitQueueRowBase && id < HitQueueRowBase + 12) {
+      int i = id - HitQueueRowBase;
+      if (hwnd != nullptr && i >= 0 && i < (int)st.sftpQueueIdx.size()) {
+        PostMessageW(hwnd, WM_APP + 43, (WPARAM)st.sftpQueueIdx[(size_t)i], 0);
+      }
+      return;
+    }
     if (id == HitModalOk) {
       if (st.modal == ModalKind::Prompt) {
+        int kind = st.promptKind;
+        bool hasText = false;
+        for (size_t i = 0; i < st.promptValue.size(); ++i) {
+          if (st.promptValue[i] != L' ') hasText = true;
+        }
         st.modal = ModalKind::None;
-        st.pendingSftp = 7;
+        if (!hasText && kind == 3) {
+          st.promptKind = 0;
+          st.promptTarget.clear();
+          return;
+        }
+        if (kind == 3) {
+          std::wstring err = NewKeyFile(st.promptValue);
+          st.promptKind = 0;
+          st.RefreshKeyStore();
+          st.modal = ModalKind::KeyStore;
+          st.modalTitle = Tr(L"密钥库");
+          st.modalNote = err.empty() ? std::wstring(Tr(L"已生成私钥与公钥文件")) : err;
+          st.dirty = true;
+          return;
+        }
+        st.pendingSftp = kind == 1 ? 9 : (kind == 2 ? 10 : 7);
+        return;
+      }
+      if (st.modal == ModalKind::Detail) {
+        st.modal = ModalKind::None;
         return;
       }
       if (st.modal == ModalKind::Backup) {
@@ -2511,10 +2809,19 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         int hIndex = st.confirmHost;
         int tunId = st.confirmTunnel;
         int hostIndex = st.formHost;
+        int sftpKind = st.confirmKind;
+        st.confirmKind = 0;
         st.modal = ModalKind::None;
         st.confirmHost = -1;
         st.confirmTunnel = -1;
-        if (hIndex >= 0) {
+        if (sftpKind == 1) {
+          st.pendingSftp = 8;
+        } else if (sftpKind == 2) {
+          int n = CleanLogs();
+          st.toast = std::wstring(Tr(L"已清理 ")) + std::to_wstring(n) + Tr(L" 个日志文件");
+          st.toastAt = (long long)GetTickCount64();
+          st.toastKind = 0;
+        } else if (hIndex >= 0) {
           st.RemoveHost(hIndex);
         } else if (tunId >= 0 && hostIndex >= 0 && hostIndex < (int)st.hosts.size()) {
           std::vector<Tunnel>& list = st.hosts[(size_t)hostIndex].tunnels;
@@ -2538,6 +2845,15 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       int keep = st.formTarget;
       st.OpenKeyStore();
       st.formTarget = keep;
+      return;
+    }
+    if (id == HitKeyGen) {
+      st.modal = ModalKind::Prompt;
+      st.modalTitle = Tr(L"新建密钥");
+      st.modalNote = KeyDirectory();
+      st.promptValue = L"id_ed25519";
+      st.promptKind = 3;
+      st.promptTarget.clear();
       return;
     }
     if (id >= HitKeyRowBase && id < HitSessSegBase) {
@@ -2584,6 +2900,14 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       int i = id - HitFormBrowseBase;
       if (i < 0 || i >= (int)st.form.size()) return;
       st.formFocus = i;
+      if (st.form[i].kind == FieldKind::Info && st.form[i].key == L"hostKey") {
+        st.form[i].value.clear();
+        st.formFpReset = true;
+        st.toast = Tr(L"指纹已清除，保存后下次连接重新记录");
+        st.toastAt = (long long)GetTickCount64();
+        st.toastKind = 0;
+        return;
+      }
       if (st.form[i].kind == FieldKind::Date) {
         st.OpenDatePicker(i);
         return;
@@ -2658,7 +2982,9 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       } else if (slot == 1) {
         st.OpenHostForm(idx);
       } else if (slot == 2) {
-        if (h.state == HostState::Live) {
+        bool liveNow = h.state == HostState::Live && h.sessionId >= 0 &&
+                       SshService::Instance().IsConnected(h.sessionId);
+        if (liveNow) {
           st.pendingDisconnect = idx;
         } else {
           st.pendingConnect = idx;
@@ -2666,6 +2992,16 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         }
       } else if (slot >= 3 && slot <= 5) {
         bool live = h.sessionId >= 0 && SshService::Instance().IsConnected(h.sessionId);
+        if (!live && h.state == HostState::Live) {
+          st.hosts[(size_t)idx].state = HostState::Off;
+          st.hosts[(size_t)idx].latency = -1;
+          st.pendingConnect = idx;
+          st.pendingConnectTerm = false;
+          st.toast = Tr(L"会话已断开，正在重连…");
+          st.toastAt = (long long)GetTickCount64();
+          st.dirty = true;
+          return;
+        }
         if (!live) {
           st.toast = Tr(L"该主机未连接，请先点「连接」");
           st.toastAt = (long long)GetTickCount64();
@@ -2738,7 +3074,9 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     int index = id - HitDashToggleBase;
     if (index >= 0 && index < (int)st.hosts.size()) {
       const Host& h = st.hosts[(size_t)index];
-      if (h.state == HostState::Live) {
+      bool liveNow = h.state == HostState::Live && h.sessionId >= 0 &&
+                     SshService::Instance().IsConnected(h.sessionId);
+      if (liveNow) {
         st.pendingDisconnect = index;
       } else {
         st.pendingConnect = index;
@@ -2758,7 +3096,15 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         st.pendingConnect = index;
         st.pendingConnectTerm = true;
       }
-      if (slot == 2) st.pendingSftp = 1;
+      if (slot == 2) {
+        bool live = st.hosts[(size_t)index].state == HostState::Live;
+        if (live) {
+          st.pendingSftp = 1;
+        } else {
+          st.pendingConnect = index;
+          st.pendingConnectTerm = false;
+        }
+      }
     }
     return;
   }
@@ -2934,6 +3280,83 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     st.modalTitle = Tr(L"新建文件夹");
     st.modalNote = st.sftpPath;
     st.promptValue.clear();
+    st.promptKind = 0;
+    st.promptTarget.clear();
+    return;
+  }
+
+  if (id == HitFtpParent) {
+    st.pendingSftp = 12;
+    return;
+  }
+
+  if (id == HitFtpHome) {
+    st.sftpPath.clear();
+    st.sftpScrollR = 0.0f;
+    st.pendingSftp = 1;
+    return;
+  }
+
+  if (id == HitFtpRename || id == HitFtpDelete || id == HitFtpDetail || id == HitFtpChmod) {
+    if (st.sftpSide != 1) {
+      st.sftpStatus = Tr(L"左侧为本机文件，请在资源管理器操作");
+      return;
+    }
+    if (st.sftpSelRemote < 0 || st.sftpSelRemote >= (int)st.sftpRemote.size()) {
+      st.sftpStatus = Tr(L"先选中一个远程项目");
+      return;
+    }
+    const SftpEntry& e = st.sftpRemote[(size_t)st.sftpSelRemote];
+    if (e.name == L"..") {
+      st.sftpStatus = Tr(L"请选中一个远程项目");
+      return;
+    }
+    std::wstring remote = JoinRemotePath(st.sftpPath, e.name);
+    if (id == HitFtpRename) {
+      st.modal = ModalKind::Prompt;
+      st.modalTitle = Tr(L"重命名");
+      st.modalNote = remote;
+      st.promptValue = e.name;
+      st.promptKind = 1;
+      st.promptTarget = e.name;
+      return;
+    }
+    if (id == HitFtpChmod) {
+      st.modal = ModalKind::Prompt;
+      st.modalTitle = Tr(L"修改权限");
+      st.modalNote = remote + L"  " + ModeText(e.mode);
+      st.promptValue = ModeOctal(e.mode);
+      st.promptKind = 2;
+      st.promptTarget = e.name;
+      return;
+    }
+    if (id == HitFtpDelete) {
+      st.modal = ModalKind::Confirm;
+      st.modalTitle = e.dir ? Tr(L"删除目录") : Tr(L"删除文件");
+      st.modalNote = remote;
+      st.confirmNote = e.dir ? Tr(L"目录及其全部内容将一并删除，不可撤销")
+                             : Tr(L"删除后不可恢复");
+      st.confirmHost = -1;
+      st.confirmTunnel = -1;
+      st.confirmKind = 1;
+      st.promptTarget = e.name;
+      return;
+    }
+    st.modal = ModalKind::Detail;
+    st.modalTitle = Tr(L"文件详情");
+    st.modalNote.clear();
+    st.detailText.clear();
+    st.detailText += std::wstring(Tr(L"名称")) + L"    " + e.name + L"\n";
+    st.detailText += std::wstring(Tr(L"类型")) + L"    " +
+                     (e.dir ? std::wstring(Tr(L"目录")) : std::wstring(Tr(L"文件"))) + L"\n";
+    st.detailText += std::wstring(Tr(L"大小")) + L"    " +
+                     (e.dir ? std::wstring(L"—") : e.size + L"  (" +
+                                                    std::to_wstring(e.rawSize) + L" B)") +
+                     L"\n";
+    st.detailText += std::wstring(Tr(L"修改时间")) + L"  " + e.time + L"\n";
+    st.detailText += std::wstring(Tr(L"权限")) + L"    " + ModeOctal(e.mode) + L"  " +
+                     ModeText(e.mode) + L"\n";
+    st.detailText += std::wstring(Tr(L"路径")) + L"    " + remote;
     return;
   }
 
@@ -2944,7 +3367,13 @@ void OnHit(AppState& st, int id, HWND hwnd) {
   }
 
   if (id == HitFtpUp) {
-    st.pendingSftp = 3;
+    if (hwnd != nullptr) {
+      std::vector<std::wstring> files = PickUploadFiles(hwnd);
+      if (!files.empty()) {
+        st.pendingFiles = files;
+        st.pendingSftp = 13;
+      }
+    }
     return;
   }
 
@@ -2960,15 +3389,15 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     return;
   }
 
-  if (id >= HitFtpRowBase && id < HitFtpRowBase + 40) {
+  if (id >= HitFtpRowBase && id < HitFtpRowBase + kFtpRowCap) {
     st.sftpSide = 0;
     st.sftpSelLocal = id - HitFtpRowBase;
     return;
   }
 
-  if (id >= HitFtpRowBase + 40 && id < HitTunNew) {
+  if (id >= HitFtpRowBase + kFtpRowCap && id < HitFtpRowBase + 2 * kFtpRowCap) {
     st.sftpSide = 1;
-    st.sftpSelRemote = id - HitFtpRowBase - 40;
+    st.sftpSelRemote = id - HitFtpRowBase - kFtpRowCap;
     return;
   }
 
@@ -2993,6 +3422,27 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       return;
     }
     if (kind == SetAction) {
+      if (st.setNav == 4) {
+        if (row == 2) {
+          std::wstring dir = LogFolder();
+          if (!dir.empty()) ShellExecuteW(hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (row == 3) {
+          st.modal = ModalKind::Confirm;
+          st.modalTitle = Tr(L"清理日志");
+          st.modalNote = LogFolder();
+          st.confirmNote = Tr(L"logs 目录下的全部日志文件将被删除，不可撤销");
+          st.confirmHost = -1;
+          st.confirmTunnel = -1;
+          st.confirmKind = 2;
+        }
+        return;
+      }
+      if (st.setNav == 5 && row == 3) {
+        st.modal = ModalKind::Help;
+        st.modalTitle = Tr(L"快捷键");
+        st.modalNote.clear();
+        return;
+      }
       st.backupKind = row == 0 ? 1 : 2;
       st.backupFocus = 0;
       st.backupPlain = false;
@@ -3046,12 +3496,29 @@ Rect SftpPanelRect(const AppState& st, const Rect& c, int side) {
 
 Rect SftpRowRectOf(const AppState& st, const Rect& c, int side, int row) {
   Rect panel = SftpPanelRect(st, c, side);
-  float top = panel.t + st.S(32.0f) + st.S(36.0f) * (float)row;
+  float scroll = side == 0 ? st.sftpScrollL : st.sftpScrollR;
+  float top = panel.t + st.S(32.0f) + st.S(36.0f) * (float)row - scroll;
   return Rect{ panel.l, top, panel.r, top + st.S(36.0f) };
+}
+
+float SftpScrollMax(const AppState& st, const Rect& c, int side) {
+  Rect panel = SftpPanelRect(st, c, side);
+  size_t n = side == 0 ? st.sftpLocal.size() : st.sftpRemote.size();
+  float total = st.S(36.0f) * (float)n;
+  float view = panel.b - (panel.t + st.S(32.0f));
+  return total > view ? total - view : 0.0f;
 }
 
 Rect FtpActionRectOf(const AppState& st, const Rect& c, int slot) {
   return FtpActionRect(st, c, slot);
+}
+
+Rect FtpToolRectOf(const AppState& st, const Rect& c, int slot) {
+  return FtpToolRect(st, c, slot);
+}
+
+Rect FtpUpDirRect(const AppState& st, const Rect& c) {
+  return FtpUpDirRectLocal(st, c);
 }
 
 Rect DashStatCardRect(const AppState& st, const Rect& c, int index) {
@@ -3137,7 +3604,6 @@ void ModalChar(AppState& st, wchar_t ch) {
     } else if (ch >= 32 && ch != 127 && st.promptValue.size() < 120) {
       st.promptValue.push_back(ch);
     }
-    st.dirty = true;
     return;
   }
   if (st.modal == ModalKind::Backup) {
@@ -3181,11 +3647,37 @@ void ModalKey(AppState& st, int vk) {
   }
   if (st.modal == ModalKind::Prompt) {
     if (vk == VK_RETURN) {
+      int kind = st.promptKind;
+      bool hasText = false;
+      for (size_t i = 0; i < st.promptValue.size(); ++i) {
+        if (st.promptValue[i] != L' ') hasText = true;
+      }
       st.modal = ModalKind::None;
-      st.pendingSftp = 7;
+      if (kind == 3) {
+        if (!hasText) return;
+        std::wstring err = NewKeyFile(st.promptValue);
+        st.promptKind = 0;
+        st.RefreshKeyStore();
+        st.modal = ModalKind::KeyStore;
+        st.modalTitle = Tr(L"密钥库");
+        st.modalNote = err.empty() ? std::wstring(Tr(L"已生成私钥与公钥文件")) : err;
+        st.dirty = true;
+      } else {
+        st.pendingSftp = kind == 1 ? 9 : (kind == 2 ? 10 : 7);
+      }
     } else if (vk == VK_ESCAPE) {
       st.modal = ModalKind::None;
+      st.promptKind = 0;
+      st.promptTarget.clear();
     }
+    return;
+  }
+  if (st.modal == ModalKind::Detail) {
+    if (vk == VK_ESCAPE || vk == VK_RETURN) st.modal = ModalKind::None;
+    return;
+  }
+  if (st.modal == ModalKind::Help) {
+    if (vk == VK_ESCAPE || vk == VK_RETURN) st.modal = ModalKind::None;
     return;
   }
   if (st.modal == ModalKind::Backup) {

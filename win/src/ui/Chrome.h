@@ -25,7 +25,9 @@ enum HitId {
   HitHostBase = 200,
   HitDashCardBase = 300, HitDashNewHost = 320, HitDashEditBase = 330,
   HitFtpNew = 400, HitFtpRefresh, HitFtpUp, HitFtpDown, HitFtpQueue,
-  HitFtpRowBase = 420,
+  HitFtpRename, HitFtpDelete, HitFtpDetail, HitFtpChmod, HitFtpMkFile,
+  HitFtpParent = 410, HitFtpHome = 411,
+  HitFtpRowBase = 1700,
   HitTunNew = 500, HitTunSwitchBase = 520,
   HitTunRefreshBase = 540, HitTunEditBase = 560, HitTunDelBase = 580,
   HitSetNavBase = 600,
@@ -36,6 +38,7 @@ enum HitId {
   HitFormFieldBase = 1000, HitFormSegBase = 1020, HitFormBrowseBase = 1100,
   HitModalKeyStore = 1120, HitKeyRowBase = 1130,
   HitBackupPlain = 1150,
+  HitKeyGen = 1151,
   HitSessSegBase = 1160,
   HitDashToggleBase = 1170, HitDashQuickBase = 1190, HitDashStatBase = 1300,
   HitTunRowBase = 1400,
@@ -43,6 +46,7 @@ enum HitId {
   HitDpPrev = 1520, HitDpNext, HitDpToday, HitDpClear, HitDpHour, HitDpMinute, HitDpSecond,
   HitDpDayBase = 1540, HitDpCellBase = 1600,
   HitTunBrowseBase = 1670,
+  HitQueueRowBase = 1200,
   HitSideCardBase = 2000, HitRecentBase = 2400,
   HitSortKey = 2500, HitSortDir = 2501, HitSideSearch = 2510,
   HitSideSettings = 2511, HitSideCollapse = 2512, HitSideExpand = 2513
@@ -54,6 +58,7 @@ enum SetKindId {
 };
 
 constexpr float kSideCollapsedW = 52.0f;
+constexpr int kFtpRowCap = 120;
 constexpr int kSideCardSlots = 8;
 constexpr int kSideCardCap = 50;
 constexpr int kRecentCap = 3;
@@ -87,7 +92,10 @@ void LayoutMetrics(const AppState& st, const Rect& client, Rect& sidebar, Rect& 
 Rect TunOpRectOf(const AppState& st, const Rect& c, int index, int slot);
 Rect SftpPanelRect(const AppState& st, const Rect& c, int side);
 Rect SftpRowRectOf(const AppState& st, const Rect& c, int side, int row);
+float SftpScrollMax(const AppState& st, const Rect& c, int side);
 Rect FtpActionRectOf(const AppState& st, const Rect& c, int slot);
+Rect FtpToolRectOf(const AppState& st, const Rect& c, int slot);
+Rect FtpUpDirRect(const AppState& st, const Rect& c);
 Rect DashEditRectOf(const AppState& st, const Rect& c, int index);
 Rect DashToggleRectOf(const AppState& st, const Rect& c, int index);
 Rect DashQuickRectOf(const AppState& st, const Rect& c, int index, int slot);

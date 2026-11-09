@@ -13,8 +13,10 @@ struct SshParams {
     std::string password;
     bool useKey = false;
     std::string keyPath;
+    std::wstring keyPathW;
     std::string keyPass;
     std::string expectedHostKey;
+    std::string expectedHostKeyType;
     int keepAlive = 60;
     int timeout = 10;
 };
@@ -52,6 +54,7 @@ public:
     bool IsConnected(int id) const;
     std::string LastError(int id) const;
     std::string HostKey(int id) const;
+    std::string HostKeyType(int id) const;
     std::string ActiveHost(int id) const;
     std::string CipherName(int id) const;
     std::string MacName(int id) const;
@@ -62,14 +65,20 @@ public:
 
     bool Exec(int id, const std::string& command, std::string& out);
 
-    bool SftpList(int id, const std::string& path, std::vector<RemoteEntry>& out);
+    bool SftpList(int id, const std::string& path, std::vector<RemoteEntry>& out,
+                  std::string* err = nullptr);
     bool SftpUpload(int id, const std::wstring& localPath, const std::string& remotePath,
                     std::string& err, ProgressFn prog = nullptr);
     bool SftpDownload(int id, const std::string& remotePath, const std::wstring& localPath,
                       std::string& err, ProgressFn prog = nullptr);
-    bool SftpDelete(int id, const std::string& path, bool dir);
-    bool SftpMkdir(int id, const std::string& path);
-    bool SftpRename(int id, const std::string& from, const std::string& to);
+    bool SftpDelete(int id, const std::string& path, bool dir, std::string* err = nullptr);
+    bool SftpMkdir(int id, const std::string& path, std::string* err = nullptr);
+    bool SftpHome(int id, std::string& out);
+    bool SftpRename(int id, const std::string& from, const std::string& to,
+                    std::string* err = nullptr);
+    bool SftpStat(int id, const std::string& path, RemoteEntry& out, std::string* err = nullptr);
+    bool SftpChmod(int id, const std::string& path, unsigned int mode,
+                   std::string* err = nullptr);
 
     bool ForwardStartLocal(int id, int localPort, const std::string& targetHost, int targetPort);
     bool ForwardStopLocal(int id, int localPort);

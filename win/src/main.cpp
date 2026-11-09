@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <exception>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -54,25 +55,43 @@ void LogWrite(const char* level, const char* fmt, ...) {
   snprintf(line, sizeof(line), "[%s] %s\n", level, buf);
   OutputDebugStringA(line);
   static FILE* fp = nullptr;
-  static bool opened = false;
-  if (!opened) {
-    opened = true;
-    char dir[MAX_PATH] = {0};
+  static long long bytes = 0;
+  static int seg = 1;
+  static int segDay = -1;
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  if (fp != nullptr && (st.wDay != segDay || bytes > 32LL * 1024 * 1024)) {
+    fclose(fp);
+    fp = nullptr;
+    if (st.wDay == segDay) ++seg;
+  }
+  if (fp == nullptr) {
+    segDay = st.wDay;
+    char dir[MAX_PATH] = { 0 };
     GetModuleFileNameA(nullptr, dir, MAX_PATH);
     char* slash = strrchr(dir, '\\');
     if (slash) slash[1] = 0;
     std::string logs = std::string(dir) + "logs";
     CreateDirectoryA(logs.c_str(), nullptr);
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    char path[MAX_PATH] = {0};
-    snprintf(path, sizeof(path), "%s\\app-%04d%02d%02d.log", logs.c_str(),
-             st.wYear, st.wMonth, st.wDay);
+    char path[MAX_PATH] = { 0 };
+    if (seg <= 1) {
+      snprintf(path, sizeof(path), "%s\\app-%04d%02d%02d.log", logs.c_str(),
+               st.wYear, st.wMonth, st.wDay);
+    } else {
+      snprintf(path, sizeof(path), "%s\\app-%04d%02d%02d-%d.log", logs.c_str(),
+               st.wYear, st.wMonth, st.wDay, seg);
+    }
     fp = fopen(path, "ab");
+    bytes = 0;
+    if (fp != nullptr) {
+      _fseeki64(fp, 0, SEEK_END);
+      bytes = (long long)_ftelli64(fp);
+    }
   }
   if (fp) {
     fputs(line, fp);
     fflush(fp);
+    bytes += (long long)strlen(line);
   }
 }
 }
@@ -118,10 +137,53 @@ std::wstring U82W(const std::string& s) {
   return w;
 }
 
+std::string LogDirA() {
+  char dir[MAX_PATH] = { 0 };
+  GetModuleFileNameA(nullptr, dir, MAX_PATH);
+  char* slash = strrchr(dir, '\\');
+  if (slash != nullptr) slash[1] = 0;
+  std::string logs = std::string(dir) + "logs";
+  CreateDirectoryA(logs.c_str(), nullptr);
+  return logs;
+}
+
+void CrashWrite(const char* what, EXCEPTION_POINTERS* ep) {
+  std::string logs = LogDirA();
+  SYSTEMTIME st;
+  GetLocalTime(&st);
+  char path[MAX_PATH] = { 0 };
+  snprintf(path, sizeof(path), "%s\\crash-%04d%02d%02d-%02d%02d%02d.log", logs.c_str(),
+           st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+  FILE* fp = fopen(path, "wb");
+  if (fp == nullptr) return;
+  fprintf(fp, "what=%s\n", what);
+  if (ep != nullptr) {
+    fprintf(fp, "code=0x%08lX\n", (unsigned long)ep->ExceptionRecord->ExceptionCode);
+    fprintf(fp, "address=%p\n", ep->ExceptionRecord->ExceptionAddress);
+    fprintf(fp, "module_base=%p\n", (void*)GetModuleHandleW(nullptr));
+    DWORD n = ep->ExceptionRecord->NumberParameters;
+    for (DWORD i = 0; i < n && i < 15; ++i) {
+      fprintf(fp, "param%lu=0x%p\n", (unsigned long)i,
+              (void*)ep->ExceptionRecord->ExceptionInformation[i]);
+    }
+  }
+  fclose(fp);
+  std::wstring msg = L"轻舟遇到错误需要关闭。\n\n崩溃日志：\n";
+  msg += U82W(path);
+  MessageBoxW(nullptr, msg.c_str(), L"轻舟 Skiff", MB_ICONERROR | MB_OK);
+}
+
+LONG WINAPI SkiffCrashFilter(EXCEPTION_POINTERS* ep) {
+  CrashWrite("seh", ep);
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
 std::wstring ErrText(const std::string& code) {
   if (code.empty()) return sk::Tr(L"无法建立连接，详见 logs 目录");
   if (code == "TCP_CONNECT_FAILED") return sk::Tr(L"无法连接目标端口，请检查地址、端口与网络");
   if (code == "HANDSHAKE_TIMEOUT") return sk::Tr(L"SSH 握手超时，对方可能不是 SSH 服务");
+  if (code.compare(0, 16, "HANDSHAKE_FAILED") == 0) return sk::Tr(L"SSH 算法协商失败，服务器不支持本客户端可用的加密算法");
+  if (code == "CHANNEL_OPEN_FAILED") return sk::Tr(L"服务器拒绝打开终端会话");
   if (code == "AUTH_FAILED") return sk::Tr(L"认证被拒绝，请检查用户名、密码或私钥");
   if (code == "AUTH_TIMEOUT") return sk::Tr(L"认证超时");
   if (code == "AUTH_METHOD_UNSUPPORTED") return sk::Tr(L"服务器不支持所选认证方式");
@@ -194,8 +256,13 @@ void StartConnect(int idx, int sid, const std::string& password, const std::wstr
   p.password = password;
   p.useKey = !keyPath.empty();
   p.keyPath = W2U8(ResolveKeyPath(keyPath));
+  p.keyPathW = ResolveKeyPath(keyPath);
   p.keyPass = W2U8(h.keyPass);
   p.expectedHostKey = g_state.fpCheck ? W2U8(h.hostKey) : std::string();
+  p.expectedHostKeyType = g_state.fpCheck ? W2U8(h.hostKeyType) : std::string();
+  if (g_state.fpCheck && p.expectedHostKeyType.empty() && !p.expectedHostKey.empty()) {
+    p.expectedHostKeyType = "ssh-rsa";
+  }
   static const int kKeepAlive[4] = { 30, 60, 120, -1 };
   int ki = g_state.keepAliveIdx < 0 ? 1 : (g_state.keepAliveIdx > 3 ? 3 : g_state.keepAliveIdx);
   p.keepAlive = kKeepAlive[ki];
@@ -299,20 +366,8 @@ void PumpBootQueue() {
 
 void RestoreLastView() {
   if (!g_state.restoreLast) return;
-  int v = g_state.lastView;
-  if (v <= 0 || v > 4) return;
-  if (v == (int)sk::View::Term) {
-    int idx = -1;
-    for (int i = 0; i < (int)g_state.hosts.size(); ++i) {
-      if (g_state.hosts[(size_t)i].id == g_state.lastHost) {
-        idx = i;
-        break;
-      }
-    }
-    if (idx >= 0) g_state.OpenHostView(idx, 0);
-    return;
-  }
-  g_state.OpenPage((sk::View)v);
+  if (g_state.lastView != (int)sk::View::Tun) return;
+  g_state.OpenPage(sk::View::Tun);
 }
 
 void OnSshNotify(void* ctx, int id) {
@@ -480,6 +535,29 @@ std::wstring FmtFileTime(unsigned long long mtimeSec) {
   wchar_t buf[32];
   swprintf_s(buf, L"%02d-%02d %02d:%02d", st.wMonth, st.wDay, st.wHour, st.wMinute);
   return std::wstring(buf);
+}
+
+void SyncHostStates() {
+  sk::SshService& svc = sk::SshService::Instance();
+  bool ch = false;
+  for (size_t i = 0; i < g_state.hosts.size(); ++i) {
+    sk::Host& h = g_state.hosts[i];
+    if (h.state != sk::HostState::Live) continue;
+    if (h.sessionId >= 0 && svc.IsConnected(h.sessionId)) continue;
+    h.state = sk::HostState::Off;
+    h.latency = -1;
+    h.cpu = 0;
+    h.ram = 0;
+    h.netp = 0;
+    h.net.clear();
+    int t = g_state.FindTabByHost((int)i);
+    if (t >= 0) g_state.tabs[(size_t)t].live = false;
+    ch = true;
+  }
+  if (ch) {
+    g_state.dirty = true;
+    if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
+  }
 }
 
 void CollectStats(int idx) {
@@ -1117,12 +1195,111 @@ void SftpLoadLocal() {
   g_state.sftpSelLocal = -1;
 }
 
+void SftpNotify(const std::wstring& msg, bool err) {
+  g_state.sftpStatus = msg;
+  g_state.toast = msg;
+  g_state.toastAt = (long long)GetTickCount64();
+  g_state.toastKind = err ? 1 : 0;
+}
+
+std::wstring WithReason(const std::wstring& head, const std::string& err) {
+  if (err.empty()) return head;
+  return head + L" · " + U82W(err);
+}
+
 bool XferBusy();
+
+struct ListJob {
+  int gen = 0;
+  int sid = -1;
+  std::wstring path;
+};
+
+struct ListResult {
+  int gen = 0;
+  int sid = -1;
+  std::wstring path;
+  bool ok = false;
+  std::string err;
+  std::vector<sk::RemoteEntry> list;
+};
+
+std::mutex g_lsMtx;
+std::condition_variable g_lsCv;
+std::deque<ListJob> g_lsJobs;
+std::thread g_lsWorker;
+bool g_lsStop = false;
+std::mutex g_lsDoneMtx;
+std::deque<ListResult> g_lsDone;
+int g_lsGen = 0;
+
+void ListWorker() {
+  sk::SshService& svc = sk::SshService::Instance();
+  for (;;) {
+    ListJob job;
+    {
+      std::unique_lock<std::mutex> lk(g_lsMtx);
+      g_lsCv.wait(lk, [] { return g_lsStop || !g_lsJobs.empty(); });
+      if (g_lsStop) return;
+      job = g_lsJobs.front();
+      g_lsJobs.pop_front();
+    }
+    std::string home;
+    std::wstring path = job.path;
+    if (path.empty()) {
+      if (!svc.SftpHome(job.sid, home) || home.empty() || home == "/") {
+        std::string out;
+        if (svc.Exec(job.sid, "cd ~ && pwd", out)) {
+          std::string t = TrimAscii(out);
+          if (!t.empty()) home = t;
+        }
+      }
+      path = home.empty() ? std::wstring(L"/") : U82W(home);
+    }
+    ListResult res;
+    res.gen = job.gen;
+    res.sid = job.sid;
+    res.path = path;
+    std::string err;
+    res.ok = svc.SftpList(job.sid, W2U8(path), res.list, &err);
+    res.err = err;
+    {
+      std::lock_guard<std::mutex> lk(g_lsDoneMtx);
+      while (g_lsDone.size() >= 4) g_lsDone.pop_front();
+      g_lsDone.push_back(std::move(res));
+    }
+    if (g_hwnd != nullptr) PostMessageW(g_hwnd, WM_APP + 44, 0, 0);
+    if (g_lsStop) return;
+  }
+}
+
+void ListStop() {
+  {
+    std::lock_guard<std::mutex> lk(g_lsMtx);
+    g_lsStop = true;
+    g_lsJobs.clear();
+  }
+  g_lsCv.notify_all();
+  if (!g_lsWorker.joinable()) return;
+  HANDLE h = (HANDLE)g_lsWorker.native_handle();
+  if (WaitForSingleObject(h, 1500) == WAIT_OBJECT_0) {
+    g_lsWorker.join();
+  } else {
+    g_lsWorker.detach();
+  }
+}
 
 void SftpLoadRemote() {
   int sid = g_state.CurrentSessionId();
+  int curHost = g_state.CurrentHostId();
+  if (curHost != g_state.sftpPathHost) {
+    g_state.sftpPathHost = curHost;
+    g_state.sftpPath.clear();
+    g_state.sftpScrollL = 0.0f;
+    g_state.sftpScrollR = 0.0f;
+  }
   if (XferBusy()) {
-    g_state.sftpStatus = sk::Tr(L"传输中，稍后刷新");
+    SftpNotify(sk::Tr(L"传输中，稍后刷新"), true);
     return;
   }
   if (sid < 0) {
@@ -1136,30 +1313,69 @@ void SftpLoadRemote() {
     g_state.sftpRemote.clear();
     return;
   }
-  std::vector<sk::RemoteEntry> list;
-  std::string path = W2U8(g_state.sftpPath);
-  if (!svc.SftpList(sid, path, list)) {
-    g_state.sftpStatus = sk::Tr(L"远程目录读取失败");
+  if (!g_lsWorker.joinable()) g_lsWorker = std::thread(ListWorker);
+  ListJob job;
+  job.gen = ++g_lsGen;
+  job.sid = sid;
+  job.path = g_state.sftpPath;
+  {
+    std::lock_guard<std::mutex> lk(g_lsMtx);
+    g_lsJobs.clear();
+    g_lsJobs.push_back(job);
+  }
+  g_lsCv.notify_all();
+  g_state.sftpStatus = sk::Tr(L"读取中…");
+  g_state.refreshAt = (long long)GetTickCount64();
+}
+
+void PumpSftpList() {
+  std::deque<ListResult> done;
+  {
+    std::lock_guard<std::mutex> lk(g_lsDoneMtx);
+    done.swap(g_lsDone);
+  }
+  bool ch = false;
+  for (size_t k = 0; k < done.size(); ++k) {
+    ListResult& res = done[k];
+    if (res.gen != g_lsGen) continue;
+    if (g_state.CurrentSessionId() != res.sid) continue;
+    ch = true;
+    bool moved = (g_state.sftpPath != res.path);
+    g_state.sftpPath = res.path;
+    if (moved) {
+      g_state.sftpScrollR = 0.0f;
+      g_state.sftpSelRemote = -1;
+    }
+    if (!res.ok) {
+      g_state.sftpStatus = res.err.empty() ? std::wstring(sk::Tr(L"远程目录读取失败"))
+                                           : std::wstring(sk::Tr(L"读取失败 ")) + U82W(res.err);
+      g_state.sftpRemote.clear();
+      continue;
+    }
     g_state.sftpRemote.clear();
-    return;
+    g_state.sftpRemote.push_back({ L"..", L"—", L"—", true, 0, 0 });
+    std::vector<sk::SftpEntry> dirs;
+    std::vector<sk::SftpEntry> files;
+    for (size_t i = 0; i < res.list.size(); ++i) {
+      sk::SftpEntry e;
+      e.name = U82W(res.list[i].name);
+      e.dir = res.list[i].dir;
+      e.size = res.list[i].dir ? std::wstring(L"—") : FmtBytes(res.list[i].size);
+      e.time = FmtFileTime(res.list[i].mtime);
+      e.mode = res.list[i].mode;
+      e.rawSize = res.list[i].size;
+      if (res.list[i].dir) {
+        dirs.push_back(e);
+      } else {
+        files.push_back(e);
+      }
+    }
+    for (size_t i = 0; i < dirs.size(); ++i) g_state.sftpRemote.push_back(dirs[i]);
+    for (size_t i = 0; i < files.size(); ++i) g_state.sftpRemote.push_back(files[i]);
+    g_state.sftpSelRemote = -1;
+    g_state.sftpStatus = sk::Tr(L"已读取 ") + std::to_wstring(res.list.size()) + sk::Tr(L" 项");
   }
-  g_state.sftpRemote.clear();
-  g_state.sftpRemote.push_back({ L"..", L"—", L"—", true });
-  std::vector<sk::SftpEntry> dirs;
-  std::vector<sk::SftpEntry> files;
-  for (size_t i = 0; i < list.size(); ++i) {
-    sk::SftpEntry e;
-    e.name = U82W(list[i].name);
-    e.dir = list[i].dir;
-    e.size = list[i].dir ? std::wstring(L"—") : FmtBytes(list[i].size);
-    e.time = FmtFileTime(list[i].mtime);
-    if (list[i].dir) dirs.push_back(e);
-    else files.push_back(e);
-  }
-  for (size_t i = 0; i < dirs.size(); ++i) g_state.sftpRemote.push_back(dirs[i]);
-  for (size_t i = 0; i < files.size(); ++i) g_state.sftpRemote.push_back(files[i]);
-  g_state.sftpSelRemote = -1;
-  g_state.sftpStatus = sk::Tr(L"已读取 ") + std::to_wstring(list.size()) + sk::Tr(L" 项");
+  if (ch && g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
 struct XferRow {
@@ -1268,6 +1484,8 @@ bool XferBusy() {
 
 void XferRebuild() {
   g_state.sftpQueue.clear();
+  g_state.sftpQueueIdx.clear();
+  g_state.sftpQueueState.clear();
   size_t n = g_xfRows.size();
   size_t start = n > 8 ? n - 8 : 0;
   for (size_t i = start; i < n; ++i) {
@@ -1287,7 +1505,29 @@ void XferRebuild() {
       if (!r.err.empty()) line += L" " + r.err;
     }
     g_state.sftpQueue.push_back(line);
+    g_state.sftpQueueIdx.push_back((int)i);
+    g_state.sftpQueueState.push_back(r.state);
   }
+}
+
+void XferCancelJob(int idx) {
+  bool removed = false;
+  {
+    std::lock_guard<std::mutex> lk(g_xfMtx);
+    for (std::deque<XferJob>::iterator it = g_xfJobs.begin(); it != g_xfJobs.end(); ++it) {
+      if (it->idx != idx) continue;
+      g_xfJobs.erase(it);
+      removed = true;
+      break;
+    }
+  }
+  if (idx >= 0 && idx < (int)g_xfRows.size() && g_xfRows[(size_t)idx].state == 0) {
+    g_xfRows[(size_t)idx].state = 3;
+    g_xfRows[(size_t)idx].err = sk::Tr(L"已取消");
+    g_state.sftpStatus = sk::Tr(L"已取消 ") + g_xfRows[(size_t)idx].name;
+    removed = true;
+  }
+  if (removed) XferRebuild();
 }
 
 void XferQueue(int kind, int sid, const std::wstring& name, const std::wstring& localPath,
@@ -1470,6 +1710,7 @@ void RunSftp(int cmd) {
     } else {
       g_state.sftpPath = JoinRemote(g_state.sftpPath, e.name);
     }
+    g_state.sftpScrollR = 0.0f;
     SftpLoadRemote();
     return;
   }
@@ -1478,22 +1719,153 @@ void RunSftp(int cmd) {
     while (!name.empty() && (name.front() == L' ' || name.front() == L'/')) name.erase(name.begin());
     while (!name.empty() && name.back() == L' ') name.pop_back();
     if (name.empty()) {
-      g_state.sftpStatus = sk::Tr(L"名称不能为空");
+      SftpNotify(sk::Tr(L"名称不能为空"), true);
       return;
     }
+    if (sid < 0 || !svc.IsConnected(sid)) {
+      SftpNotify(sk::Tr(L"会话未连接"), true);
+      return;
+    }
+    std::wstring remote = JoinRemote(g_state.sftpPath, name);
+    std::string err;
+    if (svc.SftpMkdir(sid, W2U8(remote), &err)) {
+      SftpNotify(sk::Tr(L"已创建 ") + name, false);
+      SftpLoadRemote();
+    } else {
+      sk::LogWrite("E", "mkdir %s failed: %s", W2U8(remote).c_str(), err.c_str());
+      if (err.find("SFTP Code: 3") != std::string::npos) {
+        SftpNotify(sk::Tr(L"当前目录不可写：") + g_state.sftpPath +
+                       sk::Tr(L" · 点工具栏「主目录」回到登录目录后重试"),
+                   true);
+      } else {
+        SftpNotify(WithReason(sk::Tr(L"创建失败 ") + remote, err), true);
+      }
+    }
+    return;
+  }
+  if (cmd == 8) {
+    std::wstring target = g_state.promptTarget;
+    g_state.promptTarget.clear();
+    g_state.promptKind = 0;
+    if (target.empty()) return;
     if (sid < 0 || !svc.IsConnected(sid)) {
       g_state.sftpStatus = sk::Tr(L"会话未连接");
       return;
     }
-    std::wstring remote = JoinRemote(g_state.sftpPath, name);
-    if (svc.SftpMkdir(sid, W2U8(remote))) {
-      g_state.sftpStatus = sk::Tr(L"已创建 ") + name;
+    bool dir = false;
+    for (size_t i = 0; i < g_state.sftpRemote.size(); ++i) {
+      if (g_state.sftpRemote[i].name != target) continue;
+      dir = g_state.sftpRemote[i].dir;
+      break;
+    }
+    std::wstring remote = JoinRemote(g_state.sftpPath, target);
+    std::string err;
+    if (svc.SftpDelete(sid, W2U8(remote), dir, &err)) {
+      SftpNotify(sk::Tr(L"已删除 ") + target, false);
+      for (size_t i = 0; i < g_state.sftpRemote.size(); ++i) {
+        if (g_state.sftpRemote[i].name != target) continue;
+        g_state.sftpRemote.erase(g_state.sftpRemote.begin() + (long)i);
+        break;
+      }
+      g_state.sftpSelRemote = -1;
       SftpLoadRemote();
     } else {
-      g_state.sftpStatus = sk::Tr(L"创建失败 ") + name;
+      SftpNotify(WithReason(sk::Tr(L"删除失败 ") + target, err), true);
     }
     return;
   }
+  if (cmd == 9) {
+    std::wstring target = g_state.promptTarget;
+    g_state.promptTarget.clear();
+    g_state.promptKind = 0;
+    std::wstring name = g_state.promptValue;
+    while (!name.empty() && (name.front() == L' ' || name.front() == L'/')) name.erase(name.begin());
+    while (!name.empty() && name.back() == L' ') name.pop_back();
+    if (target.empty() || name.empty() || name == target) return;
+    if (sid < 0 || !svc.IsConnected(sid)) {
+      g_state.sftpStatus = sk::Tr(L"会话未连接");
+      return;
+    }
+    std::wstring from = JoinRemote(g_state.sftpPath, target);
+    std::wstring to = JoinRemote(g_state.sftpPath, name);
+    std::string err;
+    if (svc.SftpRename(sid, W2U8(from), W2U8(to), &err)) {
+      SftpNotify(sk::Tr(L"已重命名为 ") + name, false);
+      SftpLoadRemote();
+    } else {
+      SftpNotify(WithReason(sk::Tr(L"重命名失败 ") + target, err), true);
+    }
+    return;
+  }
+  if (cmd == 10) {
+    std::wstring target = g_state.promptTarget;
+    g_state.promptTarget.clear();
+    g_state.promptKind = 0;
+    if (target.empty()) return;
+    if (sid < 0 || !svc.IsConnected(sid)) {
+      g_state.sftpStatus = sk::Tr(L"会话未连接");
+      return;
+    }
+    unsigned int mode = 0;
+    int digits = 0;
+    bool bad = false;
+    for (size_t i = 0; i < g_state.promptValue.size(); ++i) {
+      wchar_t c = g_state.promptValue[i];
+      if (c == L' ') continue;
+      if (c < L'0' || c > L'7' || digits >= 4) {
+        bad = true;
+        break;
+      }
+      mode = mode * 8u + (unsigned int)(c - L'0');
+      ++digits;
+    }
+    if (bad || digits == 0) {
+      SftpNotify(sk::Tr(L"权限需为 3 到 4 位八进制，如 644 或 0755"), true);
+      return;
+    }
+    std::wstring remote = JoinRemote(g_state.sftpPath, target);
+    std::string err;
+    if (svc.SftpChmod(sid, W2U8(remote), mode, &err)) {
+      SftpNotify(sk::Tr(L"权限已修改 ") + target, false);
+      SftpLoadRemote();
+    } else {
+      SftpNotify(WithReason(sk::Tr(L"权限修改失败 ") + target, err), true);
+    }
+    return;
+  }
+  if (cmd == 12) {
+    g_state.sftpPath = RemoteParent(g_state.sftpPath);
+    g_state.sftpScrollR = 0.0f;
+    SftpLoadRemote();
+    return;
+  }
+  if (cmd == 13) {
+    std::vector<std::wstring> files = g_state.pendingFiles;
+    g_state.pendingFiles.clear();
+    if (files.empty()) return;
+    if (sid < 0 || !svc.IsConnected(sid)) {
+      g_state.sftpStatus = sk::Tr(L"会话未连接");
+      return;
+    }
+    int n = 0;
+    for (size_t i = 0; i < files.size(); ++i) {
+      const std::wstring& f = files[i];
+      size_t sep = f.find_last_of(L"\\/");
+      std::wstring name = sep == std::wstring::npos ? f : f.substr(sep + 1);
+      if (name.empty()) continue;
+      XferQueue(0, sid, name, f, W2U8(JoinRemote(g_state.sftpPath, name)));
+      ++n;
+    }
+    g_state.sftpStatus = sk::Tr(L"已加入队列 ") + std::to_wstring(n) + sk::Tr(L" 个文件");
+    return;
+  }
+}
+
+void PumpPendingSftp() {
+  if (g_state.pendingSftp == 0) return;
+  int cmd = g_state.pendingSftp;
+  g_state.pendingSftp = 0;
+  RunSftp(cmd);
 }
 
 bool ClipboardOpen(bool write) {
@@ -1795,7 +2167,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       return 1;
     case WM_TIMER: {
       if (wParam == 2) {
-        bool need = g_state.view == sk::View::Term;
+        bool need = g_state.view == sk::View::Term ||
+                    g_state.modal == sk::ModalKind::Prompt;
         if (need) ApplyTermGrid();
         if (!need && g_state.refreshAt > 0 &&
             (long long)GetTickCount64() - g_state.refreshAt < 1400) {
@@ -1805,6 +2178,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
       }
       if (wParam != 1) return 0;
+      SyncHostStates();
+      PumpSftpList();
       if (!g_state.toast.empty() &&
           (long long)GetTickCount64() > g_state.toastAt + 2600) {
         g_state.toast.clear();
@@ -1815,9 +2190,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_state.dirty = false;
       }
       if (g_state.pendingSftp != 0) {
-        int cmd = g_state.pendingSftp;
-        g_state.pendingSftp = 0;
-        RunSftp(cmd);
+        PumpPendingSftp();
         InvalidateRect(hwnd, nullptr, FALSE);
       }
       if (g_state.pendingBackup != 0) {
@@ -1862,6 +2235,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_APP + 42:
       PumpProbe();
       return 0;
+    case WM_APP + 43:
+      XferCancelJob((int)wParam);
+      InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+    case WM_APP + 44:
+      PumpSftpList();
+      return 0;
+    case WM_DROPFILES: {
+      HDROP drop = (HDROP)wParam;
+      UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      std::vector<std::wstring> files;
+      for (UINT i = 0; i < n; ++i) {
+        wchar_t f[MAX_PATH * 2] = { 0 };
+        if (DragQueryFileW(drop, i, f, MAX_PATH * 2) == 0) continue;
+        DWORD attr = GetFileAttributesW(f);
+        if (attr == INVALID_FILE_ATTRIBUTES) continue;
+        if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) continue;
+        files.push_back(f);
+      }
+      DragFinish(drop);
+      if (!files.empty()) {
+        g_state.pendingFiles = files;
+        g_state.pendingSftp = 13;
+        g_state.view = sk::View::Sftp;
+        InvalidateRect(hwnd, nullptr, FALSE);
+      }
+      return 0;
+    }
     case WM_PAINT: {
       PAINTSTRUCT ps;
       BeginPaint(hwnd, &ps);
@@ -1920,6 +2321,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (g_state.modal == sk::ModalKind::None) RequestConnect(idx, asTerm);
       }
       if (g_state.modal == sk::ModalKind::None) SyncTheme();
+      PumpPendingSftp();
       SyncRender();
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
@@ -1952,8 +2354,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         int id = sk::HitTest(g_state, g_client, x, y);
         if (id == sk::HitSideCollapse || id == sk::HitSideExpand ||
             id == sk::HitSideSettings || id == sk::HitTabsRightBase ||
-            id == sk::HitFtpRefresh ||
+            id == sk::HitFtpRefresh || id == sk::HitFtpNew ||
+            id == sk::HitKeyGen ||
+            (id >= sk::HitFtpUp && id <= sk::HitFtpParent) ||
+            (id >= sk::HitQueueRowBase && id < sk::HitQueueRowBase + 12) ||
             (id >= sk::HitTunRefreshBase && id < sk::HitSetNavBase) ||
+            (id >= sk::HitFormBrowseBase && id < sk::HitModalKeyStore) ||
             (id >= sk::HitTunBrowseBase && id < sk::HitTunBrowseBase + 20)) {
           hoverId = id;
         }
@@ -2099,17 +2505,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
       }
-      if (id >= sk::HitFtpRowBase && id < sk::HitFtpRowBase + 40) {
+      if (id >= sk::HitFtpRowBase && id < sk::HitFtpRowBase + sk::kFtpRowCap) {
         g_state.sftpSide = 0;
         g_state.sftpSelLocal = id - sk::HitFtpRowBase;
         g_state.pendingSftp = 5;
-      } else if (id >= sk::HitFtpRowBase + 40 && id < sk::HitTunNew) {
+      } else if (id >= sk::HitFtpRowBase + sk::kFtpRowCap &&
+                 id < sk::HitFtpRowBase + 2 * sk::kFtpRowCap) {
         g_state.sftpSide = 1;
-        g_state.sftpSelRemote = id - sk::HitFtpRowBase - 40;
+        g_state.sftpSelRemote = id - sk::HitFtpRowBase - sk::kFtpRowCap;
         g_state.pendingSftp = 6;
       } else {
         sk::OnHit(g_state, id, hwnd);
       }
+      PumpPendingSftp();
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
@@ -2142,6 +2550,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
       }
+      bool sftpPage = g_state.view == sk::View::Sftp ||
+                      (g_state.view == sk::View::Term && g_state.sessTab == 2 &&
+                       g_state.CurrentHostId() >= 0);
+      if (sftpPage) {
+        sk::Rect inner = g_state.view == sk::View::Term ? sk::SessInnerRect(g_state, contentRc)
+                                                        : contentRc;
+        for (int side = 0; side < 2; ++side) {
+          sk::Rect panel = sk::SftpPanelRect(g_state, inner, side);
+          if (!panel.Hit((float)pt.x, (float)pt.y)) continue;
+          float maxScroll = sk::SftpScrollMax(g_state, inner, side);
+          float& cur = side == 0 ? g_state.sftpScrollL : g_state.sftpScrollR;
+          cur += (-g_state.S(108.0f)) * ((float)delta / 120.0f);
+          if (cur < 0.0f) cur = 0.0f;
+          if (cur > maxScroll) cur = maxScroll;
+          InvalidateRect(hwnd, nullptr, FALSE);
+          return 0;
+        }
+      }
       if (g_state.view == sk::View::Term) {
         sk::Terminal* term = TermOf(g_state.CurrentSessionId());
         if (term) term->ScrollToBottom();
@@ -2172,6 +2598,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (hid >= 0 && hid < (int)g_state.hosts.size()) {
           g_state.hosts[(size_t)hid].state = sk::HostState::Live;
           g_state.hosts[(size_t)hid].hostKey = U82W(svc.HostKey(sid));
+          g_state.hosts[(size_t)hid].hostKeyType = U82W(svc.HostKeyType(sid));
           g_state.hosts[(size_t)hid].lastConnected = sk::NowStamp();
           g_state.hosts[(size_t)hid].retryN = 0;
           g_state.hosts[(size_t)hid].retryAt = 0;
@@ -2181,6 +2608,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (tabIdx >= 0) g_state.tabs[(size_t)tabIdx].live = true;
         g_state.statsNextAt = 0;
         g_state.tunNextAt = 0;
+        if (g_state.view == sk::View::Term && g_state.sessTab == 2 &&
+            g_state.CurrentHostId() == hid) {
+          g_state.pendingSftp = 1;
+        }
         if (term != nullptr) term->SetFocused(true);
         ApplyTermGrid();
       } else if (st == sk::SshState::Failed) {
@@ -2346,6 +2777,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
       sk::SaveStore(g_state);
       XferStop();
+      ListStop();
       ProbeStop();
       sk::SshService::Instance().DisconnectAll();
       sk::SessionHub::Instance().Clear();
@@ -2360,6 +2792,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
+  HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\Skiff-Single-8f2b4c1e");
+  if (single != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
+    HWND prev = FindWindowW(kClassName, nullptr);
+    if (prev != nullptr) {
+      ShowWindow(prev, SW_RESTORE);
+      SetForegroundWindow(prev);
+    }
+    return 0;
+  }
+  SetUnhandledExceptionFilter(SkiffCrashFilter);
+  std::set_terminate([]() {
+    CrashWrite("terminate", nullptr);
+    ExitProcess(3);
+  });
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
   WNDCLASSEXW wc{};
@@ -2390,6 +2836,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     nullptr, nullptr, hInstance, nullptr);
   if (!hwnd) return 2;
 
+  DragAcceptFiles(hwnd, TRUE);
   ShowWindow(hwnd, nCmdShow);
   UpdateWindow(hwnd);
 

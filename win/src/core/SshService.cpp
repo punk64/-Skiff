@@ -9,6 +9,7 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <exception>
 #include <vector>
 
 #include "protocol/ssh/SshSession.h"
@@ -40,6 +41,19 @@ std::string EscapeJson(const std::string& s) {
     return o;
 }
 
+template <typename Fn>
+bool GuardSftp(std::string* err, Fn&& fn) {
+    try {
+        return fn();
+    } catch (const std::exception& e) {
+        if (err != nullptr) *err = e.what();
+        return false;
+    } catch (...) {
+        if (err != nullptr) *err = "SFTP_OP_FAILED";
+        return false;
+    }
+}
+
 std::string BuildJson(const SshParams& p, int keyFd) {
     std::string j = "{\"Session\":{";
     j += "\"connectionType\":\"SSH\",";
@@ -55,6 +69,9 @@ std::string BuildJson(const SshParams& p, int keyFd) {
     }
     if (!p.expectedHostKey.empty()) {
         j += ",\"expectedHostKey\":\"" + EscapeJson(p.expectedHostKey) + "\"";
+    }
+    if (!p.expectedHostKeyType.empty()) {
+        j += ",\"expectedHostKeyType\":\"" + EscapeJson(p.expectedHostKeyType) + "\"";
     }
     j += "},\"Connection\":{";
     j += "\"keepalive\":" + std::to_string(p.keepAlive) + ",";
@@ -73,6 +90,7 @@ struct SshService::Impl {
         std::string pending;
         std::string lastError;
         std::string hostKey;
+        std::string hostKeyType;
         std::string activeHost;
         std::atomic<int> state{0};
         std::atomic<bool> busy{false};
@@ -122,8 +140,8 @@ struct SshService::Impl {
 
     void RunConnect(std::shared_ptr<Item> item, SshParams p, int id) {
         int keyFd = -1;
-        if (p.useKey && !p.keyPath.empty()) {
-            keyFd = _open(p.keyPath.c_str(), _O_RDONLY | _O_BINARY);
+        if (p.useKey && !p.keyPathW.empty()) {
+            keyFd = _wopen(p.keyPathW.c_str(), _O_RDONLY | _O_BINARY);
         }
 
         std::unique_ptr<SshSession> s = std::make_unique<SshSession>();
@@ -161,6 +179,7 @@ struct SshService::Impl {
         {
             std::lock_guard<std::mutex> lk(mtx);
             item->hostKey = s->getHostKeyFingerprint();
+            item->hostKeyType = s->getHostKeyType();
             item->activeHost = p.host;
             item->lastError.clear();
             item->session = std::move(s);
@@ -288,6 +307,13 @@ std::string SshService::HostKey(int id) const {
     return pos->second->hostKey;
 }
 
+std::string SshService::HostKeyType(int id) const {
+    std::lock_guard<std::mutex> lk(d_->mtx);
+    auto pos = d_->items.find(id);
+    if (pos == d_->items.end()) return std::string();
+    return pos->second->hostKeyType;
+}
+
 std::string SshService::ActiveHost(int id) const {
     std::lock_guard<std::mutex> lk(d_->mtx);
     auto pos = d_->items.find(id);
@@ -391,7 +417,8 @@ bool SshService::Exec(int id, const std::string& command, std::string& out) {
     return true;
 }
 
-bool SshService::SftpList(int id, const std::string& path, std::vector<RemoteEntry>& out) {
+bool SshService::SftpList(int id, const std::string& path, std::vector<RemoteEntry>& out,
+                          std::string* err) {
     out.clear();
     std::shared_ptr<Impl::Item> item = d_->Find(id);
     if (!item) return false;
@@ -402,15 +429,17 @@ bool SshService::SftpList(int id, const std::string& path, std::vector<RemoteEnt
         if (!ssh->initSftp()) return false;
         item->sftpReady = true;
     }
-    return ssh->listDirectory(path, [&out](const FileInfo& fi) {
-        RemoteEntry e;
-        e.name = fi.name;
-        e.fullPath = fi.fullPath;
-        e.dir = fi.isDirectory;
-        e.size = fi.size;
-        e.mode = fi.permissions;
-        e.mtime = fi.mtime;
-        out.push_back(e);
+    return GuardSftp(err, [&]() {
+        return ssh->listDirectory(path, [&out](const FileInfo& fi) {
+            RemoteEntry e;
+            e.name = fi.name;
+            e.fullPath = fi.fullPath;
+            e.dir = fi.isDirectory;
+            e.size = fi.size;
+            e.mode = fi.permissions;
+            e.mtime = fi.mtime;
+            out.push_back(e);
+        });
     });
 }
 
@@ -444,9 +473,10 @@ bool SshService::SftpUpload(int id, const std::wstring& localPath, const std::st
             prog(static_cast<unsigned long long>(pct), 100ULL);
         };
     }
-    bool ok = item->sftpReady && ssh->uploadFile(fd, remotePath, up);
+    bool ok = item->sftpReady &&
+              GuardSftp(&err, [&]() { return ssh->uploadFile(fd, remotePath, up); });
     _close(fd);
-    if (!ok) err = "SFTP_UPLOAD_FAILED";
+    if (!ok && err.empty()) err = "SFTP_UPLOAD_FAILED";
     return ok;
 }
 
@@ -475,20 +505,22 @@ bool SshService::SftpDownload(int id, const std::string& remotePath, const std::
     }
     unsigned long long total = 0;
     FileInfo fi;
-    if (ssh->getFileInfo(remotePath, fi)) total = fi.size;
+    GuardSftp(&err, [&]() { return ssh->getFileInfo(remotePath, fi); });
+    if (fi.size > 0) total = fi.size;
     std::function<void(off_t)> dn;
     if (prog) {
         dn = [prog, total](off_t done) {
             prog(done < 0 ? 0ULL : static_cast<unsigned long long>(done), total);
         };
     }
-    bool ok = item->sftpReady && ssh->downloadFile(remotePath, fd, dn);
+    bool ok = item->sftpReady &&
+              GuardSftp(&err, [&]() { return ssh->downloadFile(remotePath, fd, dn); });
     _close(fd);
-    if (!ok) err = "SFTP_DOWNLOAD_FAILED";
+    if (!ok && err.empty()) err = "SFTP_DOWNLOAD_FAILED";
     return ok;
 }
 
-bool SshService::SftpDelete(int id, const std::string& path, bool dir) {
+bool SshService::SftpDelete(int id, const std::string& path, bool dir, std::string* err) {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
     if (!item) return false;
     std::lock_guard<std::mutex> lk(item->ioMtx);
@@ -498,10 +530,12 @@ bool SshService::SftpDelete(int id, const std::string& path, bool dir) {
         if (!ssh->initSftp()) return false;
         item->sftpReady = true;
     }
-    return dir ? ssh->deleteDirectory(path) : ssh->deleteFile(path);
+    return GuardSftp(err, [&]() {
+        return dir ? ssh->deleteDirectory(path) : ssh->deleteFile(path);
+    });
 }
 
-bool SshService::SftpMkdir(int id, const std::string& path) {
+bool SshService::SftpMkdir(int id, const std::string& path, std::string* err) {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
     if (!item) return false;
     std::lock_guard<std::mutex> lk(item->ioMtx);
@@ -511,10 +545,10 @@ bool SshService::SftpMkdir(int id, const std::string& path) {
         if (!ssh->initSftp()) return false;
         item->sftpReady = true;
     }
-    return ssh->createDirectory(path);
+    return GuardSftp(err, [&]() { return ssh->createDirectory(path); });
 }
 
-bool SshService::SftpRename(int id, const std::string& from, const std::string& to) {
+bool SshService::SftpHome(int id, std::string& out) {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
     if (!item) return false;
     std::lock_guard<std::mutex> lk(item->ioMtx);
@@ -524,7 +558,58 @@ bool SshService::SftpRename(int id, const std::string& from, const std::string& 
         if (!ssh->initSftp()) return false;
         item->sftpReady = true;
     }
-    return ssh->rename(from, to);
+    return GuardSftp(nullptr, [&]() { return ssh->realPath(".", out); });
+}
+
+bool SshService::SftpRename(int id, const std::string& from, const std::string& to,
+                            std::string* err) {
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return false;
+    std::lock_guard<std::mutex> lk(item->ioMtx);
+    if (!item->session || !item->session->isConnected()) return false;
+    SshSession* ssh = item->session.get();
+    if (!item->sftpReady) {
+        if (!ssh->initSftp()) return false;
+        item->sftpReady = true;
+    }
+    return GuardSftp(err, [&]() { return ssh->rename(from, to); });
+}
+
+bool SshService::SftpStat(int id, const std::string& path, RemoteEntry& out,
+                          std::string* err) {
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return false;
+    std::lock_guard<std::mutex> lk(item->ioMtx);
+    if (!item->session || !item->session->isConnected()) return false;
+    SshSession* ssh = item->session.get();
+    if (!item->sftpReady) {
+        if (!ssh->initSftp()) return false;
+        item->sftpReady = true;
+    }
+    FileInfo fi;
+    bool ok = GuardSftp(err, [&]() { return ssh->getFileInfo(path, fi); });
+    if (!ok) return false;
+    out.name = fi.name;
+    out.fullPath = fi.fullPath.empty() ? path : fi.fullPath;
+    out.dir = fi.isDirectory;
+    out.size = fi.size;
+    out.mode = fi.permissions;
+    out.mtime = fi.mtime;
+    return true;
+}
+
+bool SshService::SftpChmod(int id, const std::string& path, unsigned int mode,
+                           std::string* err) {
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return false;
+    std::lock_guard<std::mutex> lk(item->ioMtx);
+    if (!item->session || !item->session->isConnected()) return false;
+    SshSession* ssh = item->session.get();
+    if (!item->sftpReady) {
+        if (!ssh->initSftp()) return false;
+        item->sftpReady = true;
+    }
+    return GuardSftp(err, [&]() { return ssh->setPermissions(path, mode); });
 }
 
 bool SshService::ForwardStartLocal(int id, int localPort, const std::string& targetHost,

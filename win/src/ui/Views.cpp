@@ -38,6 +38,25 @@ void BtnOutline(Render& r, const AppState& st, const Rect& rc, const Palette& p,
   r.TextVertCenter(label, rc.D2D(), fg, FontId::Small, Align::Center);
 }
 
+std::wstring FitText(Render& r, const std::wstring& s, FontId f, float maxW) {
+  if (s.empty() || maxW <= 0.0f) return std::wstring();
+  if (r.Measure(s.c_str(), f) <= maxW) return s;
+  std::wstring dots = L"…";
+  size_t lo = 0;
+  size_t hi = s.size();
+  while (lo < hi) {
+    size_t mid = (lo + hi + 1) / 2;
+    std::wstring cand = s.substr(0, mid) + dots;
+    if (r.Measure(cand.c_str(), f) <= maxW) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (lo == 0) return std::wstring();
+  return s.substr(0, lo) + dots;
+}
+
 void BtnSolid(Render& r, const AppState& st, const Rect& rc, const Palette& p,
               const wchar_t* label) {
   r.FillRound(rc.D2D(), st.S(L::RCtrl), p.accent);
@@ -203,7 +222,7 @@ void NavIcon(Render& r, const AppState& st, int i, const Rect& rc, D2D1_COLOR_F 
 
 void FilePanel(Render& r, const AppState& st, const Palette& p, const Rect& panel,
                const wchar_t* title, const wchar_t* path, bool remote,
-               const std::vector<SftpEntry>& rows, int highlight) {
+               const std::vector<SftpEntry>& rows, int highlight, float scroll) {
   Rect head{ panel.l, panel.t, panel.r, panel.t + st.S(32.0f) };
   r.Fill(head.D2D(), p.surface);
   r.Fill(D2D1::RectF(head.l, head.b - st.S(1.0f), head.r, head.b), p.line);
@@ -223,11 +242,17 @@ void FilePanel(Render& r, const AppState& st, const Palette& p, const Rect& pane
   r.TextVertCenter(path, D2D1::RectF(pathLeft, head.t, head.r - st.S(12.0f), head.b),
                    p.text3, FontId::MonoSm);
 
+  Rect listRc{ panel.l, head.b, panel.r, panel.b };
+  float rowH = st.S(36.0f);
+  float listH = listRc.H();
   int n = (int)rows.size();
-  for (int i = 0; i < n; ++i) {
-    Rect row{ panel.l, head.b + st.S(36.0f) * (float)i, panel.r,
-              head.b + st.S(36.0f) * (float)(i + 1) };
-    if (row.t >= panel.b) break;
+  r.PushClip(listRc.D2D());
+  int first = rowH > 0.0f ? (int)(scroll / rowH) : 0;
+  if (first < 0) first = 0;
+  for (int i = first; i < n; ++i) {
+    float top = listRc.t + rowH * (float)i - scroll;
+    if (top >= listRc.b) break;
+    Rect row{ panel.l, top, panel.r, top + rowH };
     if (i == highlight) {
       Rect hl{ row.l + st.S(6.0f), row.t + st.S(2.0f), row.r - st.S(6.0f), row.b - st.S(2.0f) };
       r.FillRound(hl.D2D(), st.S(L::RCtrl), p.accentSoft);
@@ -259,6 +284,21 @@ void FilePanel(Render& r, const AppState& st, const Palette& p, const Rect& pane
                      p.text3, FontId::MonoSm, Align::Right);
     r.TextVertCenter(rows[i].time.c_str(), D2D1::RectF(timeLeft, row.t, timeRight, row.b),
                      p.text3, FontId::MonoSm, Align::Right);
+  }
+  r.PopClip();
+
+  float total = rowH * (float)n;
+  if (total > listH + 0.5f) {
+    float trackTop = listRc.t + st.S(4.0f);
+    float trackH = listH - st.S(8.0f);
+    float thumbH = trackH * (listH / total);
+    if (thumbH < st.S(28.0f)) thumbH = st.S(28.0f);
+    float pos = scroll / (total - listH);
+    if (pos < 0.0f) pos = 0.0f;
+    if (pos > 1.0f) pos = 1.0f;
+    float thumbTop = trackTop + (trackH - thumbH) * pos;
+    Rect thumb{ panel.r - st.S(6.0f), thumbTop, panel.r - st.S(2.0f), thumbTop + thumbH };
+    r.FillRound(thumb.D2D(), st.S(2.0f), Alpha(p.text3, 0.45f));
   }
 }
 
@@ -301,11 +341,11 @@ struct SetRowDef {
   int kind;
 };
 
-const SetRowDef kSetRows[7][4] = {
+const SetRowDef kSetRows[7][5] = {
   { { L"界面语言", L"切换后立即生效", SetSeg },
     { L"断线自动重连", L"连接意外中断后自动恢复会话", SetSwitch },
     { L"启动时自动连接", L"打开程序时连接上次使用的主机", SetSwitch },
-    { L"启动时恢复上次界面", L"回到退出前所在的页面", SetSwitch } },
+    { L"启动时恢复转发页", L"回到退出前所在的端口转发页", SetSwitch } },
   { { L"主题", L"跟随系统外观或手动指定", SetSeg },
     { L"强调色", L"用于按钮、状态与高亮的强调色", SetSwatch },
     { L"界面缩放", L"按比例放大全部界面元素", SetDrop } },
@@ -316,16 +356,18 @@ const SetRowDef kSetRows[7][4] = {
     { L"连接超时", L"建立连接的最长等待时间", SetDrop } },
   { { L"日志级别", L"记录到日志文件的详细程度", SetDrop },
     { L"保留天数", L"超过期限的日志自动清理", SetDrop },
-    { L"日志目录", L"程序同目录 logs 文件夹", SetPlain } },
+    { L"打开日志目录", L"在文件管理器中查看 logs 文件夹", SetAction },
+    { L"清理日志", L"删除 logs 目录下的全部日志文件", SetAction } },
   { { L"版本", L"轻舟 Skiff Windows 便携版", SetPlain },
     { L"内核", L"SSH 协议实现与加密后端", SetPlain },
     { L"许可", L"仅供个人使用", SetPlain },
+    { L"快捷键", L"查看当前版本支持的键盘操作", SetAction },
     { L"项目地址", L"源码、更新记录与问题反馈，点击用系统浏览器打开", SetLink } },
   { { L"导出备份", L"打包主机、隧道、私钥与设置，可加密保存", SetAction },
     { L"导入备份", L"读取备份文件后合并追加，不覆盖现有配置", SetAction } }
 };
 
-const int kSetRowN[7] = { 4, 3, 3, 2, 3, 4, 2 };
+const int kSetRowN[7] = { 4, 3, 3, 2, 4, 5, 2 };
 
 const wchar_t** SetOptions(int nav, int row, int* n) {
   static const wchar_t* b[4];
@@ -624,17 +666,17 @@ void DrawSftp(Render& r, const AppState& st, const Rect& rc) {
   Rect link{ tb.l + st.S(16.0f), tby - st.S(6.0f), tb.l + st.S(28.0f), tby + st.S(6.0f) };
   IconLink(r, st, link, p.text3);
 
-  float bw = st.S(74.0f);
-  float bh = st.S(28.0f);
-  Rect b1{ rc.r - st.S(14.0f) - bw, tby - bh * kH, rc.r - st.S(14.0f), tby + bh * kH };
-  Rect b0{ b1.l - st.S(8.0f) - bw, b1.t, b1.l - st.S(8.0f), b1.b };
-  BtnOutline(r, st, b1, p, Tr(L"新建"), p.text2);
+  Rect b1 = FtpToolRectOf(st, rc, 0);
+  Rect b0 = FtpToolRectOf(st, rc, 1);
+  Rect b2 = FtpToolRectOf(st, rc, 2);
+  BtnOutline(r, st, b1, p, Tr(L"新建"), st.hoverId == HitFtpNew ? p.accent : p.text2);
   bool sftpBusy = st.refreshAt > 0 && (long long)GetTickCount64() - st.refreshAt < 1200;
   BtnOutline(r, st, b0, p, sftpBusy ? Tr(L"刷新中…") : Tr(L"刷新"),
              (sftpBusy || st.hoverId == HitFtpRefresh) ? p.accent : p.text2);
+  BtnOutline(r, st, b2, p, Tr(L"主目录"), st.hoverId == HitFtpHome ? p.accent : p.text2);
 
   float bx = link.r + st.S(10.0f);
-  float bxLimit = b0.l - st.S(10.0f);
+  float bxLimit = b2.l - st.S(10.0f);
   r.PushClip(D2D1::RectF(bx, tb.t, bxLimit, tb.b));
   int hid = st.CurrentHostId() >= 0 ? st.CurrentHostId() : st.ActiveHostIndex();
   std::wstring crumbHost = (hid >= 0 && hid < (int)st.hosts.size())
@@ -664,15 +706,17 @@ void DrawSftp(Render& r, const AppState& st, const Rect& rc) {
   r.Fill(split.D2D(), p.line);
 
   FilePanel(r, st, p, lp, Tr(L"本地"), st.sftpLocalPath.empty() ? L"—" : st.sftpLocalPath.c_str(),
-            false, st.sftpLocal, st.sftpSelLocal);
-  FilePanel(r, st, p, rp, Tr(L"远程"), st.sftpPath.c_str(), true, st.sftpRemote, st.sftpSelRemote);
+            false, st.sftpLocal, st.sftpSelLocal, st.sftpScrollL);
+  FilePanel(r, st, p, rp, Tr(L"远程"), st.sftpPath.empty() ? L"—" : st.sftpPath.c_str(), true,
+            st.sftpRemote, st.sftpSelRemote, st.sftpScrollR);
 
   r.Fill(bar.D2D(), p.surface);
   r.Fill(D2D1::RectF(bar.l, bar.t, bar.r, bar.t + st.S(1.0f)), p.line);
 
   float by = MidY(bar);
-  Rect up{ bar.l + st.S(18.0f), by - st.S(6.0f), bar.l + st.S(30.0f), by + st.S(6.0f) };
-  IconUp(r, st, up, p.accent);
+  Rect up = FtpUpDirRect(st, rc);
+  bool upHot = st.hoverId == HitFtpParent;
+  IconUp(r, st, up.Inset(st.S(7.0f)), upHot ? p.accent : p.text2);
 
   std::wstring xfer = st.sftpStatus;
   if (xfer.empty()) {
@@ -680,30 +724,26 @@ void DrawSftp(Render& r, const AppState& st, const Rect& rc) {
                                 : Num((int)st.sftpQueue.size()) + Tr(L" 项待传输");
   }
   float tx = up.r + st.S(9.0f);
-  r.PushClip(D2D1::RectF(tx, bar.t, bar.r - st.S(160.0f), bar.b));
-  r.TextVertCenter(xfer.c_str(), D2D1::RectF(tx, bar.t, bar.r - st.S(160.0f), bar.b), p.text2,
+  float textRight = FtpActionRectOf(st, rc, 0).l - st.S(10.0f);
+  if (textRight < tx + st.S(40.0f)) textRight = tx + st.S(40.0f);
+  std::wstring shown = FitText(r, xfer, FontId::Caption, textRight - tx);
+  r.PushClip(D2D1::RectF(tx, bar.t, textRight, bar.b));
+  r.TextVertCenter(shown.c_str(), D2D1::RectF(tx, bar.t, textRight, bar.b), p.text2,
                    FontId::Caption);
   r.PopClip();
 
   Rect q{ bar.r - st.S(14.0f) - st.S(58.0f), by - st.S(14.0f), bar.r - st.S(14.0f), by + st.S(14.0f) };
   BtnOutline(r, st, q, p, Tr(L"队列"), p.text2);
 
-  for (int k = 0; k < 2; ++k) {
+  const wchar_t* acts[6] = { Tr(L"上传"), Tr(L"下载"), Tr(L"重命名"),
+                             Tr(L"删除"), Tr(L"详情"), Tr(L"权限") };
+  const int actIds[6] = { HitFtpUp, HitFtpDown, HitFtpRename,
+                          HitFtpDelete, HitFtpDetail, HitFtpChmod };
+  for (int k = 0; k < 6; ++k) {
     Rect ab = FtpActionRectOf(st, rc, k);
-    r.StrokeRound(ab.D2D(), st.S(L::RBtn), p.lineStrong, st.S(1.0f));
-    float acx = ab.l + ab.W() * kH;
-    float amy = MidY(ab);
-    float ah = st.S(4.5f);
-    float aw = st.S(3.2f);
-    if (k == 1) {
-      r.Line(acx, amy + ah, acx, amy - ah, p.text2, st.S(1.4f));
-      r.Line(acx - aw, amy - ah * 0.15f, acx, amy - ah, p.text2, st.S(1.4f));
-      r.Line(acx + aw, amy - ah * 0.15f, acx, amy - ah, p.text2, st.S(1.4f));
-    } else {
-      r.Line(acx, amy - ah, acx, amy + ah, p.text2, st.S(1.4f));
-      r.Line(acx - aw, amy + ah * 0.15f, acx, amy + ah, p.text2, st.S(1.4f));
-      r.Line(acx + aw, amy + ah * 0.15f, acx, amy + ah, p.text2, st.S(1.4f));
-    }
+    bool hot = st.hoverId == actIds[k];
+    bool dim = k >= 2 && st.sftpSide != 1;
+    BtnOutline(r, st, ab, p, acts[k], hot ? p.accent : (dim ? p.text3 : p.text2));
   }
 
   r.PopClip();
