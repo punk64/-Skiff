@@ -97,6 +97,18 @@ private:
     std::atomic<int> m_activeChannels{0};
     std::atomic<int> m_forwardFailures{0};
     std::atomic<int> m_forwardAccepts{0};
+
+    std::thread m_pfHeartbeat;
+    std::atomic<bool> m_pfHbStop{false};
+    std::atomic<int> m_pfMisses{0};
+    LIBSSH2_CHANNEL* m_pfNightChannel{nullptr};
+    std::atomic<int> m_pfPumpReads{0};
+    std::atomic<int> m_pfNightBackoff{0};
+    void startPfHeartbeat();
+    void stopPfHeartbeat();
+    void pfHeartbeatThread();
+    int pumpPfSession();
+    void closePfNightChannel();
     // ---------------------------------------
 
     // 工具函数

@@ -21,6 +21,11 @@
 #define MSG_NOSIGNAL 0
 #endif
 
+static const int PF_HEARTBEAT_SEC = 15;
+static const int PF_PUMP_INTERVAL_MS = 1000;
+static const int PF_PUMP_MAX_MISS = 3;
+static const int PF_PUMP_STAT_SEC = 60;
+
 namespace {
 struct ActiveChannelGuard {
     std::atomic<int>& counter;
@@ -111,6 +116,17 @@ bool SshPortForward::connectSession() {
     const int handshakeTimeout = 15; // Declare and init handshakeTimeout here
     const int authTimeout = 15;      // Declare and init authTimeout here
     // -----------------------------------------------------
+
+    stopPfHeartbeat();
+    closePfNightChannel();
+    if (!m_pfConnected.load()) {
+        if (m_pfSock && *m_pfSock != LIBSSH2_INVALID_SOCKET) {
+            shutdown(*m_pfSock, SHUT_RDWR);
+            close(*m_pfSock);
+            *m_pfSock = LIBSSH2_INVALID_SOCKET;
+        }
+        m_pfSession.reset();
+    }
 
     if (!m_config.proxy.enabled) {
     // --- Address Resolution (Copied & Adapted from SftpSession::connect) ---
@@ -384,18 +400,22 @@ bool SshPortForward::connectSession() {
     // Note: SshPortForwardConfig doesn't have keepAliveInterval, maybe add it or use a default/main session value?
     // Using a default of 60 seconds for now if needed, or disable if not critical for PF.
     // int keepAliveIntervalPF = 60; // Example default
-    if (m_config.keepAliveInterval > 0 && m_pfSession) { // Use m_config.keepAliveInterval
-       OH_LOG_INFO(LOG_APP, "PF connectSession: Configuring libssh2 Keepalive (Interval: %{public}d)", m_config.keepAliveInterval);
-       libssh2_keepalive_config(m_pfSession.get(), 1, m_config.keepAliveInterval);
-    } else {
-       OH_LOG_INFO(LOG_APP, "PF connectSession: libssh2 Keepalive disabled (interval <= 0).");
+    if (m_pfSession) {
+       int hbInterval = m_config.keepAliveInterval;
+       if (hbInterval <= 0 || hbInterval > PF_HEARTBEAT_SEC) {
+           hbInterval = PF_HEARTBEAT_SEC;
+       }
+       OH_LOG_INFO(LOG_APP, "PF connectSession: Configuring libssh2 Keepalive (Interval: %{public}d)", hbInterval);
+       libssh2_keepalive_config(m_pfSession.get(), 1, hbInterval);
     }
     // --- Keepalive End --- //
 
     // --- Success --- //
     m_pfConnected.store(true);
+    m_pfMisses.store(0);
     // Ensure session remains non-blocking for forwarding operations
     libssh2_session_set_blocking(m_pfSession.get(), 0);
+    startPfHeartbeat();
     OH_LOG_INFO(LOG_APP, "SshPortForward::connectSession() successful. PF session connected and authenticated.");
     return true;
 
@@ -410,8 +430,169 @@ cleanup_error:
     return false;
 }
 
+void SshPortForward::startPfHeartbeat() {
+    m_pfHbStop.store(false);
+    if (m_pfHeartbeat.joinable()) {
+        if (m_pfHeartbeat.get_id() == std::this_thread::get_id()) {
+            return;
+        }
+        try {
+            m_pfHeartbeat.join();
+        } catch (const std::system_error& e) {
+            OH_LOG_ERROR(LOG_APP, "PF heartbeat thread join failed: %{public}s", e.what());
+        }
+        m_pfHbStop.store(false);
+    }
+    m_pfMisses.store(0);
+    m_pfPumpReads.store(0);
+    try {
+        m_pfHeartbeat = std::thread(&SshPortForward::pfHeartbeatThread, this);
+    } catch (const std::system_error& e) {
+        OH_LOG_ERROR(LOG_APP, "PF heartbeat thread start failed: %{public}s", e.what());
+    }
+}
+
+void SshPortForward::stopPfHeartbeat() {
+    m_pfHbStop.store(true);
+    if (!m_pfHeartbeat.joinable()) {
+        return;
+    }
+    if (m_pfHeartbeat.get_id() == std::this_thread::get_id()) {
+        m_pfHeartbeat.detach();
+        return;
+    }
+    try {
+        m_pfHeartbeat.join();
+    } catch (const std::system_error& e) {
+        OH_LOG_ERROR(LOG_APP, "PF heartbeat thread join failed: %{public}s", e.what());
+    }
+}
+
+void SshPortForward::pfHeartbeatThread() {
+    OH_LOG_INFO(LOG_APP, "PF heartbeat thread started, pump %{public}d ms, keepalive %{public}d s.", PF_PUMP_INTERVAL_MS, PF_HEARTBEAT_SEC);
+    int sendElapsed = 0;
+    int statElapsed = 0;
+    while (!m_pfHbStop.load()) {
+        for (int i = 0; i < PF_PUMP_INTERVAL_MS / 100 && !m_pfHbStop.load(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (m_pfHbStop.load()) {
+            break;
+        }
+        if (!m_pfConnected.load()) {
+            sendElapsed = 0;
+            statElapsed = 0;
+            continue;
+        }
+        int rc = pumpPfSession();
+        if (rc != 0) {
+            int miss = m_pfMisses.fetch_add(1) + 1;
+            OH_LOG_WARN(LOG_APP, "PF pump failed rc=%{public}d, miss %{public}d", rc, miss);
+            if (miss < PF_PUMP_MAX_MISS) {
+                continue;
+            }
+            OH_LOG_ERROR(LOG_APP, "PF session dead after %{public}d pump failures (rc=%{public}d), marking disconnected.", miss, rc);
+            m_pfMisses.store(0);
+            m_pfConnected.store(false);
+            std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
+            if (m_pfSock && *m_pfSock != LIBSSH2_INVALID_SOCKET) {
+                shutdown(*m_pfSock, SHUT_RDWR);
+            }
+            break;
+        }
+        m_pfMisses.store(0);
+        sendElapsed += PF_PUMP_INTERVAL_MS;
+        statElapsed += PF_PUMP_INTERVAL_MS;
+        if (sendElapsed >= PF_HEARTBEAT_SEC * 1000) {
+            sendElapsed = 0;
+            std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
+            if (m_pfSession) {
+                int nextTime = PF_HEARTBEAT_SEC;
+                int sendRc = libssh2_keepalive_send(m_pfSession.get(), &nextTime);
+                if (sendRc != 0) {
+                    OH_LOG_WARN(LOG_APP, "PF keepalive send rc=%{public}d", sendRc);
+                }
+            }
+        }
+        if (statElapsed >= PF_PUMP_STAT_SEC * 1000) {
+            statElapsed = 0;
+            OH_LOG_INFO(LOG_APP, "PF session alive: pump rounds %{public}d, channels %{public}d", m_pfPumpReads.load(), m_activeChannels.load());
+        }
+    }
+    closePfNightChannel();
+    OH_LOG_INFO(LOG_APP, "PF heartbeat thread stopped.");
+}
+
+int SshPortForward::pumpPfSession() {
+    std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
+    if (!m_pfSession) {
+        return 0;
+    }
+    if (!m_pfNightChannel) {
+        int backoff = m_pfNightBackoff.load();
+        if (backoff > 0) {
+            m_pfNightBackoff.store(backoff - 1);
+            return 0;
+        }
+        m_pfNightChannel = libssh2_channel_open_session(m_pfSession.get());
+        if (!m_pfNightChannel) {
+            char* errmsg = nullptr;
+            int errmsgLen = 0;
+            int code = libssh2_session_last_error(m_pfSession.get(), &errmsg, &errmsgLen, 1);
+            if (code != LIBSSH2_ERROR_EAGAIN) {
+                OH_LOG_WARN(LOG_APP, "PF night channel open failed: %{public}d %{public}s", code, errmsg != nullptr ? errmsg : "N/A");
+                m_pfNightBackoff.store(60);
+            }
+            return 0;
+        }
+        m_pfNightBackoff.store(0);
+        libssh2_channel_set_blocking(m_pfNightChannel, 0);
+        OH_LOG_INFO(LOG_APP, "PF night channel opened.");
+    }
+    char buf[256];
+    ssize_t nread = libssh2_channel_read(m_pfNightChannel, buf, sizeof(buf));
+    if (nread > 0) {
+        m_pfPumpReads.fetch_add(1);
+        return 0;
+    }
+    if (nread == 0) {
+        OH_LOG_WARN(LOG_APP, "PF night channel eof, reopening.");
+        libssh2_channel_free(m_pfNightChannel);
+        m_pfNightChannel = nullptr;
+        return 0;
+    }
+    char* errmsg = nullptr;
+    int errmsgLen = 0;
+    int code = libssh2_session_last_error(m_pfSession.get(), &errmsg, &errmsgLen, 1);
+    if (code == LIBSSH2_ERROR_EAGAIN) {
+        m_pfPumpReads.fetch_add(1);
+        return 0;
+    }
+    if (code == LIBSSH2_ERROR_CHANNEL_CLOSED || code == LIBSSH2_ERROR_CHANNEL_FAILURE ||
+        code == LIBSSH2_ERROR_CHANNEL_REQUEST_DENIED || code == LIBSSH2_ERROR_CHANNEL_EOF_SENT) {
+        OH_LOG_WARN(LOG_APP, "PF night channel dropped (%{public}d), reopening.", code);
+        libssh2_channel_free(m_pfNightChannel);
+        m_pfNightChannel = nullptr;
+        return 0;
+    }
+    return code != 0 ? code : LIBSSH2_ERROR_SOCKET_DISCONNECT;
+}
+
+void SshPortForward::closePfNightChannel() {
+    std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
+    if (!m_pfNightChannel) {
+        return;
+    }
+    if (m_pfSession) {
+        libssh2_channel_free(m_pfNightChannel);
+    }
+    m_pfNightChannel = nullptr;
+}
+
 void SshPortForward::disconnectSession() {
     OH_LOG_INFO(LOG_APP, "SshPortForward::disconnectSession() started.");
+    stopPfHeartbeat();
+    closePfNightChannel();
     std::lock_guard<std::recursive_mutex> lock(m_pfMutex); // Lock PF resources
 
     {
@@ -445,7 +626,7 @@ void SshPortForward::disconnectSession() {
         }
     }
 
-    if (!m_pfConnected.load()) {
+    if (!m_pfConnected.load() && !m_pfSession && (!m_pfSock || *m_pfSock == LIBSSH2_INVALID_SOCKET)) {
         OH_LOG_INFO(LOG_APP, "disconnectSession: Already disconnected or never connected.");
         return;
     }
