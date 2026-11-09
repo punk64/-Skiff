@@ -610,10 +610,141 @@ void SplitHostPort(const std::wstring& dest, std::string& host, int& port) {
   port = atoi(s.c_str() + c + 1);
 }
 
+bool ProbeLocal(int port, int timeoutMs = 350);
+
+struct ProbeJob {
+  int hostId = 0;
+  int tunId = 0;
+  int sid = -1;
+  int port = 0;
+};
+
+struct ProbeResult {
+  int hostId = 0;
+  int tunId = 0;
+  int ok = 0;
+  int sid = -1;
+  int port = 0;
+};
+
+std::mutex g_probeMtx;
+std::condition_variable g_probeCv;
+std::deque<ProbeJob> g_probeJobs;
+std::thread g_probeWorker;
+bool g_probeStop = false;
+
+std::mutex g_probeDoneMtx;
+std::deque<ProbeResult> g_probeDone;
+
+void ProbeWorker() {
+  sk::SshService& svc = sk::SshService::Instance();
+  for (;;) {
+    ProbeJob job;
+    {
+      std::unique_lock<std::mutex> lk(g_probeMtx);
+      g_probeCv.wait(lk, [] { return g_probeStop || !g_probeJobs.empty(); });
+      if (g_probeStop) return;
+      job = g_probeJobs.front();
+      g_probeJobs.pop_front();
+    }
+    int baseAcc = svc.ForwardAccepts(job.sid);
+    int baseFail = svc.ForwardFailures(job.sid);
+    int ok = 0;
+    if (ProbeLocal(job.port, 160)) {
+      ok = 1;
+      for (int i = 0; i < 10; ++i) {
+        Sleep(30);
+        if (svc.ForwardFailures(job.sid) > baseFail) {
+          ok = 0;
+          break;
+        }
+        if (svc.ForwardAccepts(job.sid) > baseAcc) {
+          ok = 1;
+          break;
+        }
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lk(g_probeDoneMtx);
+      g_probeDone.push_back(ProbeResult{ job.hostId, job.tunId, ok, job.sid, job.port });
+    }
+    if (g_hwnd != nullptr) PostMessageW(g_hwnd, WM_APP + 42, 0, 0);
+  }
+}
+
+void ProbeStop() {
+  {
+    std::lock_guard<std::mutex> lk(g_probeMtx);
+    g_probeStop = true;
+    g_probeJobs.clear();
+  }
+  g_probeCv.notify_all();
+  if (!g_probeWorker.joinable()) return;
+  HANDLE h = (HANDLE)g_probeWorker.native_handle();
+  if (WaitForSingleObject(h, 1500) == WAIT_OBJECT_0) {
+    g_probeWorker.join();
+  } else {
+    g_probeWorker.detach();
+  }
+}
+
+void QueueProbe(int hostId, int tunId, int sid, int port) {
+  {
+    std::lock_guard<std::mutex> lk(g_probeMtx);
+    for (size_t i = 0; i < g_probeJobs.size(); ++i) {
+      if (g_probeJobs[i].tunId == tunId) return;
+    }
+    g_probeJobs.push_back(ProbeJob{ hostId, tunId, sid, port });
+  }
+  if (!g_probeWorker.joinable()) g_probeWorker = std::thread(ProbeWorker);
+  g_probeCv.notify_one();
+}
+
+void PumpProbe() {
+  std::deque<ProbeResult> done;
+  {
+    std::lock_guard<std::mutex> lk(g_probeDoneMtx);
+    if (g_probeDone.empty()) return;
+    done.swap(g_probeDone);
+  }
+  bool changed = false;
+  long long now = (long long)GetTickCount64();
+  for (size_t i = 0; i < done.size(); ++i) {
+    const ProbeResult& d = done[i];
+    for (size_t hi = 0; hi < g_state.hosts.size(); ++hi) {
+      if (g_state.hosts[hi].id != d.hostId) continue;
+      std::vector<sk::Tunnel>& list = g_state.hosts[hi].tunnels;
+      for (size_t k = 0; k < list.size(); ++k) {
+        sk::Tunnel& tn = list[k];
+        if (tn.id != d.tunId) continue;
+        if (d.ok) {
+          tn.state = sk::TunState::Up;
+          tn.probed = 2;
+          tn.fails = 0;
+          tn.retryIn = 0;
+          tn.nextAt = now + 3000;
+        } else {
+          tn.state = sk::TunState::Retry;
+          tn.probed = 0;
+          ++tn.fails;
+          int wait = tn.fails <= 1 ? 5 : (tn.fails == 2 ? 10 : 15);
+          tn.retryIn = wait;
+          tn.nextAt = now + (long long)wait * 1000;
+          if (d.sid >= 0 && d.port > 0) sk::SshService::Instance().ForwardStopLocal(d.sid, d.port);
+        }
+        changed = true;
+        break;
+      }
+      break;
+    }
+  }
+  if (changed && g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
 void PatrolTunnels() {
   ULONGLONG now = GetTickCount64();
   if (now < (ULONGLONG)g_state.tunNextAt) return;
-  g_state.tunNextAt = (long long)(now + 10000);
+  g_state.tunNextAt = (long long)(now + 3000);
   sk::SshService& svc = sk::SshService::Instance();
   bool changed = false;
   for (size_t hi = 0; hi < g_state.hosts.size(); ++hi) {
@@ -643,6 +774,10 @@ void PatrolTunnels() {
           svc.ForwardStopLocal(sid, port);
           tn.state = sk::TunState::Down;
           tn.retryIn = 0;
+          tn.probed = 0;
+          tn.fails = 0;
+          tn.lastAcc = 0;
+          tn.lastFails = 0;
           changed = true;
         }
         continue;
@@ -651,6 +786,9 @@ void PatrolTunnels() {
         if (tn.state != sk::TunState::Retry || tn.retryIn != -1) {
           tn.state = sk::TunState::Retry;
           tn.retryIn = -1;
+          tn.probed = 0;
+          tn.lastAcc = 0;
+          tn.lastFails = 0;
           changed = true;
         }
         continue;
@@ -662,9 +800,8 @@ void PatrolTunnels() {
         }
         continue;
       }
-      if ((long long)now < tn.nextAt) continue;
-      bool active = svc.ForwardActive(sid, port);
-      if (!active) {
+      if (!svc.ForwardActive(sid, port)) {
+        if ((long long)now < tn.nextAt) continue;
         std::string th;
         int tp = 0;
         SplitHostPort(tn.dest, th, tp);
@@ -672,25 +809,54 @@ void PatrolTunnels() {
           tn.state = sk::TunState::Listen;
           tn.fails = 0;
           tn.retryIn = 0;
-          tn.nextAt = (long long)(now + 2000);
+          tn.probed = 0;
+          tn.lastAcc = svc.ForwardAccepts(sid);
+          tn.lastFails = svc.ForwardFailures(sid);
+          tn.nextAt = (long long)(now + 600);
           changed = true;
         } else {
           ++tn.fails;
-          int wait = tn.fails <= 1 ? 10 : (tn.fails == 2 ? 20 : (tn.fails == 3 ? 40 : 60));
+          int wait = tn.fails <= 1 ? 5 : (tn.fails == 2 ? 10 : 15);
           tn.state = sk::TunState::Retry;
           tn.retryIn = wait;
+          tn.probed = 0;
           tn.nextAt = (long long)(now + (ULONGLONG)wait * 1000ULL);
           changed = true;
         }
         continue;
       }
       int acc = svc.ForwardAccepts(sid);
-      sk::TunState ns = acc > 0 ? sk::TunState::Up : sk::TunState::Listen;
-      if (tn.state != ns) {
-        tn.state = ns;
-        tn.retryIn = 0;
+      int fl = svc.ForwardFailures(sid);
+      if (fl > tn.lastFails) {
+        tn.lastFails = fl;
+        tn.lastAcc = acc;
+        ++tn.fails;
+        int wait = tn.fails <= 1 ? 5 : (tn.fails == 2 ? 10 : 15);
+        tn.state = sk::TunState::Retry;
+        tn.retryIn = wait;
+        tn.probed = 0;
+        tn.nextAt = (long long)(now + (ULONGLONG)wait * 1000ULL);
+        svc.ForwardStopLocal(sid, port);
         changed = true;
+        continue;
       }
+      if (acc > tn.lastAcc) {
+        tn.lastAcc = acc;
+        tn.probed = 2;
+        tn.fails = 0;
+        tn.retryIn = 0;
+        tn.nextAt = (long long)(now + 3000);
+        if (tn.state != sk::TunState::Up) {
+          tn.state = sk::TunState::Up;
+          changed = true;
+        }
+        continue;
+      }
+      if (tn.state == sk::TunState::Up) continue;
+      tn.probed = 1;
+      tn.nextAt = (long long)now + 4000;
+      QueueProbe(h.id, tn.id, sid, port);
+      changed = true;
     }
   }
   if (changed && g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
@@ -698,7 +864,7 @@ void PatrolTunnels() {
 
 void ClipboardSet(const std::wstring& text);
 
-bool ProbeLocal(int port) {
+bool ProbeLocal(int port, int timeoutMs) {
   SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (s == INVALID_SOCKET) return false;
   sockaddr_in a{};
@@ -717,9 +883,9 @@ bool ProbeLocal(int port) {
     FD_ZERO(&ef);
     FD_SET(s, &wf);
     FD_SET(s, &ef);
-    timeval tv{};
-    tv.tv_sec = 0;
-    tv.tv_usec = 350000;
+  timeval tv{};
+  tv.tv_sec = 0;
+  tv.tv_usec = (long)timeoutMs * 1000;
     int r = ::select(0, nullptr, &wf, &ef, &tv);
     if (r > 0 && FD_ISSET(s, &wf) && !FD_ISSET(s, &ef)) {
       int err = 0;
@@ -770,6 +936,9 @@ void BrowseTunnel(int index) {
       tn.state = sk::TunState::Listen;
       tn.nextAt = now + 300;
       tn.retryIn = 0;
+      tn.probed = 0;
+      tn.lastAcc = svc.ForwardAccepts(sid);
+      tn.lastFails = svc.ForwardFailures(sid);
       if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
       Sleep(300);
     }
@@ -778,7 +947,10 @@ void BrowseTunnel(int index) {
   tn.state = up ? sk::TunState::Up : sk::TunState::Retry;
   tn.retryIn = 0;
   tn.fails = 0;
-  tn.nextAt = up ? 0 : (now + 10000);
+  tn.probed = up ? 2 : 0;
+  tn.lastAcc = svc.ForwardAccepts(sid);
+  tn.lastFails = svc.ForwardFailures(sid);
+  tn.nextAt = now + 3000;
   g_state.refreshAt = now;
   g_state.dirty = true;
   if (!up) {
@@ -1669,6 +1841,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       }
       ApplyTermGrid();
       PatrolTunnels();
+      PumpProbe();
       PumpBootQueue();
       PumpReconnect();
       XferPoll();
@@ -1685,6 +1858,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_APP + 41:
       XferPoll();
       InvalidateRect(hwnd, nullptr, FALSE);
+      return 0;
+    case WM_APP + 42:
+      PumpProbe();
       return 0;
     case WM_PAINT: {
       PAINTSTRUCT ps;
@@ -2170,6 +2346,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
       sk::SaveStore(g_state);
       XferStop();
+      ProbeStop();
       sk::SshService::Instance().DisconnectAll();
       sk::SessionHub::Instance().Clear();
       g_render.Shutdown();

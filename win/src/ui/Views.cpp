@@ -100,28 +100,16 @@ void IconGlobe(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
   r.StrokeRound(inner.D2D(), rad * 0.45f, c, w);
 }
 
-void IconRefresh(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
-  float w = st.S(1.2f);
-  float rad = rc.W() * 0.30f;
-  float cx = rc.l + rc.W() * kH;
-  float cy = MidY(rc);
-  r.StrokeRound(D2D1::RectF(cx - rad, cy - rad, cx + rad, cy + rad), rad, c, w);
-  r.Line(cx + rad * 0.15f, cy - rad, cx + rad * 1.05f, cy - rad * 0.55f, c, w);
-  r.Line(cx + rad * 1.05f, cy - rad * 0.55f, cx + rad * 0.25f, cy - rad * 0.70f, c, w);
-}
-
 void IconPencil(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
-  float w = st.S(1.2f);
-  float x0 = rc.l + rc.W() * 0.22f;
+  float bw = rc.W() * 0.22f;
+  float x0 = rc.l + rc.W() * 0.18f;
   float y0 = rc.b - rc.H() * 0.18f;
-  float x1 = rc.r - rc.W() * 0.22f;
+  float x1 = rc.r - rc.W() * 0.18f;
   float y1 = rc.t + rc.H() * 0.18f;
-  float dx = rc.W() * 0.11f;
-  float dy = rc.H() * 0.11f;
-  r.Line(x0, y0, x1, y1, c, w);
-  r.Line(x0 + dx, y0 - dy, x1 + dx, y1 - dy, c, w);
-  r.Line(x0, y0, x0 + dx, y0 - dy, c, w);
-  r.Line(x1, y1, x1 + dx, y1 - dy, c, w);
+  float ux = bw * 0.55f;
+  r.Line(x0, y0, x1, y1, c, bw);
+  r.Line(x0 - ux * 0.62f, y0 - ux * 0.62f, x0 + ux * 0.62f, y0 + ux * 0.62f, c, st.S(1.3f));
+  r.Line(x1 - ux * 0.45f, y1 - ux * 0.45f, x1 + ux * 0.45f, y1 + ux * 0.45f, c, st.S(1.3f));
 }
 
 void IconTrash(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
@@ -139,18 +127,6 @@ void IconTrash(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
   float inR = right - rc.W() * 0.16f;
   r.Line(inL, lid + rc.H() * 0.14f, inL, body.b - rc.H() * 0.12f, c, w);
   r.Line(inR, lid + rc.H() * 0.14f, inR, body.b - rc.H() * 0.12f, c, w);
-}
-
-void IconExternal(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
-  float w = st.S(1.2f);
-  float pad = rc.W() * 0.16f;
-  Rect box{ rc.l + pad, rc.t + rc.H() * 0.38f, rc.r - rc.W() * 0.38f, rc.b - pad };
-  r.StrokeRound(box.D2D(), st.S(2.0f), c, w);
-  float ax = rc.r - pad;
-  float ay = rc.t + pad;
-  r.Line(rc.l + rc.W() * 0.48f, rc.t + rc.H() * 0.52f, ax, ay, c, w);
-  r.Line(ax - rc.W() * 0.26f, ay, ax, ay, c, w);
-  r.Line(ax, ay, ax, ay + rc.H() * 0.26f, c, w);
 }
 
 void IconUp(Render& r, const AppState& st, const Rect& rc, D2D1_COLOR_F c) {
@@ -768,16 +744,20 @@ void DrawTun(Render& r, const AppState& st, const Rect& rc) {
   r.Fill(D2D1::RectF(head.l, head.t + st.S(12.0f), head.r, head.b), p.surface2);
 
   float inner = table.W() - st.S(28.0f);
-  float fixedW = st.S(108.0f) + st.S(72.0f) + st.S(84.0f) + st.S(62.0f) + st.S(110.0f);
+  float fixedW = st.S(108.0f) + st.S(72.0f) + st.S(70.0f) + st.S(62.0f) + st.S(168.0f);
   float unit = (inner - fixedW) / 2.6f;
   if (unit < st.S(36.0f)) unit = st.S(36.0f);
   float cw[7] = { st.S(108.0f), st.S(72.0f), unit * 1.1f, unit * 1.5f,
-                  st.S(84.0f), st.S(62.0f), st.S(110.0f) };
+                  st.S(70.0f), st.S(62.0f), st.S(168.0f) };
   float totalW = 0.0f;
   for (int i = 0; i < 7; ++i) totalW += cw[i];
   if (totalW > inner) {
-    float fit = inner / totalW;
-    for (int i = 0; i < 7; ++i) cw[i] *= fit;
+    float room = inner - cw[6];
+    float head = totalW - cw[6];
+    if (head > room && head > 0.0f) {
+      float fit = room / head;
+      for (int i = 0; i < 6; ++i) cw[i] *= fit;
+    }
   }
   float xs[8];
   xs[0] = table.l + st.S(14.0f);
@@ -856,21 +836,38 @@ void DrawTun(Render& r, const AppState& st, const Rect& rc) {
                         : (k == 1 ? HitTunEditBase
                                   : (k == 2 ? HitTunDelBase : HitTunBrowseBase))) + i;
       bool hot = st.hoverId == hid;
-      bool busy = k == 0 && st.refreshAt > 0 &&
-                  (long long)GetTickCount64() - st.refreshAt < 1200;
-      D2D1_COLOR_F fg = (hot || busy) ? p.accent : p.text3;
-      if (hot) {
-        r.FillRound(cell.Inset(st.S(1.0f)).D2D(), st.S(6.0f), Alpha(p.accent, 0.14f));
-      }
-      Rect ic = cell.Inset(st.S(5.0f));
       if (k == 0) {
-        IconRefresh(r, st, ic, fg);
-      } else if (k == 1) {
+        bool busy = st.refreshAt > 0 && (long long)GetTickCount64() - st.refreshAt < 1200;
+        D2D1_COLOR_F bg = (hot || busy) ? Alpha(p.accent, 0.14f) : p.surface2;
+        D2D1_COLOR_F bd = (hot || busy) ? Alpha(p.accent, 0.55f) : p.lineStrong;
+        D2D1_COLOR_F fg = (hot || busy) ? p.accent : p.text2;
+        r.FillRound(cell.D2D(), st.S(6.0f), bg);
+        r.StrokeRound(cell.D2D(), st.S(6.0f), bd, st.S(1.0f));
+        r.TextVertCenter(Tr(L"刷新"), cell.D2D(), fg, FontId::Caption, Align::Center);
+        continue;
+      }
+      if (k == 3) {
+        bool allow = tn.on;
+        bool over = hot && allow;
+        D2D1_COLOR_F bg = over ? p.accent : (allow ? Alpha(p.accent, 0.10f) : p.surface2);
+        D2D1_COLOR_F bd = allow ? Alpha(p.accent, 0.72f) : p.line;
+        D2D1_COLOR_F fg = over ? p.accentFg : (allow ? p.accent : p.text3);
+        r.FillRound(cell.D2D(), st.S(6.0f), bg);
+        r.StrokeRound(cell.D2D(), st.S(6.0f), bd, st.S(1.0f));
+        r.TextVertCenter(Tr(L"打开"), cell.D2D(), fg, FontId::Caption, Align::Center);
+        continue;
+      }
+      D2D1_COLOR_F fg = p.text3;
+      if (hot) fg = k == 2 ? p.danger : p.accent;
+      if (hot) {
+        D2D1_COLOR_F hb = k == 2 ? Alpha(p.danger, 0.12f) : Alpha(p.accent, 0.12f);
+        r.FillRound(cell.Inset(st.S(1.0f)).D2D(), st.S(6.0f), hb);
+      }
+      Rect ic = cell.Inset(st.S(4.0f));
+      if (k == 1) {
         IconPencil(r, st, ic, fg);
-      } else if (k == 2) {
-        IconTrash(r, st, ic, fg);
       } else {
-        IconExternal(r, st, ic, fg);
+        IconTrash(r, st, ic, fg);
       }
     }
   }

@@ -13,7 +13,7 @@ interface RunState {
   nextAt: number
 }
 
-const FWD_BACKOFF: number[] = [10, 20, 40, 60]
+const FWD_BACKOFF: number[] = [3, 6, 10, 15]
 
 @Component
 export struct TunnelsPage {
@@ -258,9 +258,6 @@ export struct TunnelsPage {
       return
     }
     const rs: RunState = this.runOf(t)
-    if (!force && rs.nextAt > Date.now()) {
-      return
-    }
     let active: boolean = true
     try {
       active = await isPortForwardingActive(sid, port, t.type === 'R')
@@ -269,7 +266,16 @@ export struct TunnelsPage {
     }
     if (active) {
       const st: string = await this.reachOf(t, port, h.id)
-      this.setRun(key, st, 0, 0)
+      if (st !== 'listen') {
+        this.setRun(key, st, 0, 0)
+        return
+      }
+      if (!force && rs.nextAt > Date.now()) {
+        this.setRun(key, 'listen', rs.fails, rs.nextAt)
+        return
+      }
+    }
+    if (!force && rs.nextAt > Date.now()) {
       return
     }
     const fails: number = rs.fails
@@ -332,7 +338,7 @@ export struct TunnelsPage {
     }
     this.recTimer = setInterval(() => {
       this.patrol(false)
-    }, 10000)
+    }, 3000)
   }
 
   askReset(port: number): Promise<boolean> {

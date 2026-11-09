@@ -568,4 +568,14 @@ int SshService::ForwardAccepts(int id) {
     return ssh->getForwardAccepts();
 }
 
+int SshService::ForwardFailures(int id) {
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return 0;
+    std::lock_guard<std::mutex> lk(d_->mtx);
+    if (!item->session) return 0;
+    SshSession* ssh = item->session.get();
+    std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
+    return ssh->getForwardFailures();
+}
+
 }

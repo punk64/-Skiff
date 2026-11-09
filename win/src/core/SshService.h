@@ -75,6 +75,7 @@ public:
     bool ForwardStopLocal(int id, int localPort);
     bool ForwardActive(int id, int localPort);
     int ForwardAccepts(int id);
+    int ForwardFailures(int id);
 
 private:
     SshService();

@@ -49,6 +49,9 @@ struct Tunnel {
   int retryIn = 0;
   int fails = 0;
   long long nextAt = 0;
+  int lastAcc = 0;
+  int lastFails = 0;
+  int probed = 0;
   bool IsRemote() const { return !type.empty() && (type[0] == L'R' || type[0] == L'r'); }
 };
 

@@ -930,16 +930,20 @@ void TunCols(const AppState& st, const Rect& c, float* xs) {
   float left = c.l + st.S(24.0f);
   float right = c.r - st.S(24.0f);
   float inner = (right - left) - st.S(28.0f);
-  float fixedW = st.S(108.0f) + st.S(72.0f) + st.S(84.0f) + st.S(62.0f) + st.S(110.0f);
+  float fixedW = st.S(108.0f) + st.S(72.0f) + st.S(70.0f) + st.S(62.0f) + st.S(168.0f);
   float unit = (inner - fixedW) / 2.6f;
   if (unit < st.S(36.0f)) unit = st.S(36.0f);
   float cw[7] = { st.S(108.0f), st.S(72.0f), unit * 1.1f, unit * 1.5f,
-                  st.S(84.0f), st.S(62.0f), st.S(110.0f) };
+                  st.S(70.0f), st.S(62.0f), st.S(168.0f) };
   float totalW = 0.0f;
   for (int i = 0; i < 7; ++i) totalW += cw[i];
   if (totalW > inner) {
-    float fit = inner / totalW;
-    for (int i = 0; i < 7; ++i) cw[i] *= fit;
+    float room = inner - cw[6];
+    float head = totalW - cw[6];
+    if (head > room && head > 0.0f) {
+      float fit = room / head;
+      for (int i = 0; i < 6; ++i) cw[i] *= fit;
+    }
   }
   xs[0] = left + st.S(14.0f);
   for (int i = 0; i < 7; ++i) xs[i + 1] = xs[i] + cw[i];
@@ -959,12 +963,19 @@ Rect TunOpRect(const AppState& st, const Rect& c, int index, int slot) {
   float xs[8];
   TunCols(st, c, xs);
   Rect row = TunRowRect(st, c, index);
-  float ob = st.S(24.0f);
-  float step = ob + st.S(2.0f);
   float cy = MidY(row);
-  Rect cell{ xs[6] + step * (float)slot, cy - ob * kHalf, xs[6] + step * (float)slot + ob,
-             cy + ob * kHalf };
-  return cell;
+  float hb = st.S(12.0f);
+  float x = xs[6] + st.S(8.0f);
+  float wCap = st.S(46.0f);
+  float wBtn = st.S(26.0f);
+  float gap = st.S(4.0f);
+  if (slot == 0) return Rect{ x, cy - hb, x + wCap, cy + hb };
+  x += wCap + gap;
+  if (slot == 1) return Rect{ x, cy - hb, x + wBtn, cy + hb };
+  x += wBtn + gap;
+  if (slot == 2) return Rect{ x, cy - hb, x + wBtn, cy + hb };
+  x += wBtn + gap;
+  return Rect{ x, cy - hb, x + wCap, cy + hb };
 }
 
 bool IsFormModal(const AppState& st) {
@@ -2820,6 +2831,9 @@ void OnHit(AppState& st, int id, HWND hwnd) {
         tn.fails = 0;
         tn.retryIn = 0;
         tn.nextAt = 0;
+        tn.probed = 0;
+        tn.lastAcc = 0;
+        tn.lastFails = 0;
         if (!tn.on) {
           int sid = st.CurrentSessionId();
           if (sid >= 0) {
@@ -2845,12 +2859,11 @@ void OnHit(AppState& st, int id, HWND hwnd) {
       std::vector<Tunnel>& list = st.hosts[(size_t)hi].tunnels;
       if (index >= 0 && index < (int)list.size()) {
         Tunnel& tn = list[(size_t)index];
-        int sid = st.CurrentSessionId();
-        if (sid >= 0) SshService::Instance().ForwardStopLocal(sid, _wtoi(tn.port.c_str()));
         tn.state = TunState::Retry;
         tn.fails = 0;
         tn.retryIn = 0;
         tn.nextAt = 0;
+        tn.probed = 0;
         st.tunNextAt = 0;
         st.refreshAt = (long long)GetTickCount64();
         st.dirty = true;
@@ -2865,6 +2878,12 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     if (hi >= 0 && hi < (int)st.hosts.size()) {
       std::vector<Tunnel>& list = st.hosts[(size_t)hi].tunnels;
       if (index >= 0 && index < (int)list.size()) {
+        if (!list[(size_t)index].on) {
+          st.toast = Tr(L"先启用该转发规则");
+          st.toastAt = (long long)GetTickCount64();
+          st.toastKind = 1;
+          return;
+        }
         st.pendingTunBrowse = index;
         st.refreshAt = (long long)GetTickCount64();
       }
