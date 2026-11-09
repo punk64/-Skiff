@@ -24,6 +24,7 @@
 static const int PF_HEARTBEAT_SEC = 15;
 static const int PF_PUMP_INTERVAL_MS = 1000;
 static const int PF_PUMP_MAX_MISS = 3;
+static const int PF_DRAIN_TIMEOUT_SEC = 30;
 static const int PF_PUMP_STAT_SEC = 60;
 
 namespace {
@@ -39,7 +40,8 @@ SshPortForward::SshPortForward(SshSession* mainSession, const SshPortForwardConf
       m_config(config),
       m_pfSession(nullptr, &libssh2_session_free),
       m_pfSock(std::make_unique<libssh2_socket_t>(LIBSSH2_INVALID_SOCKET)),
-      m_pfConnected(false)
+      m_pfConnected(false),
+      m_fwdPool(std::make_unique<ThreadPool>(32))
 {
     OH_LOG_INFO(LOG_APP, "SshPortForward initialized for %{public}s@%{public}s:%{public}d.",
                m_config.username.c_str(), m_config.hostname.c_str(), m_config.port);
@@ -85,6 +87,12 @@ SshPortForward::~SshPortForward() {
         } else {
              OH_LOG_INFO(LOG_APP, "Destructor: Forwarder thread for port %{public}d was not joinable.", data->localPort);
         }
+    }
+
+    if (m_fwdPool) {
+        OH_LOG_INFO(LOG_APP, "Destructor: waiting for forward workers to finish.");
+        m_fwdPool.reset();
+        OH_LOG_INFO(LOG_APP, "Destructor: forward workers finished.");
     }
 
     disconnectSession();
@@ -775,7 +783,7 @@ void SshPortForward::closeListenSocket(int socket) {
 }
 
 void SshPortForward::localPortForwardingThread(std::shared_ptr<PortForwardData> data) {
-    if (!data || !m_mainSession || !m_mainSession->getThreadPool()) {
+    if (!data || !m_mainSession || !m_mainSession->getThreadPool() || !m_fwdPool) {
         OH_LOG_ERROR(LOG_APP, "Local/Dynamic Forward Thread: Invalid main session, data, or thread pool.");
         if(data) data->running = false;
         return;
@@ -834,7 +842,7 @@ void SshPortForward::localPortForwardingThread(std::shared_ptr<PortForwardData> 
 
                 try {
                     if (data->isDynamic) {
-                         m_mainSession->getThreadPool()->enqueue([this, clientSocket, data]() {
+                         m_fwdPool->enqueue([this, clientSocket, data]() {
                             if (!m_mainSession || !m_mainSession->isConnected()) {
                                 OH_LOG_ERROR(LOG_APP, "Dynamic Fwd Task: Session invalid or disconnected before handling socket %{public}d.", clientSocket);
                                 close(clientSocket);
@@ -849,7 +857,7 @@ void SshPortForward::localPortForwardingThread(std::shared_ptr<PortForwardData> 
                             handleDynamicForwardConnection(clientSocket, data);
                          });
                     } else {
-                         m_mainSession->getThreadPool()->enqueue([this, clientSocket, data]() {
+                         m_fwdPool->enqueue([this, clientSocket, data]() {
                             if (!m_mainSession || !m_mainSession->isConnected()) {
                                 OH_LOG_ERROR(LOG_APP, "Local Fwd Task: Session invalid or disconnected before handling socket %{public}d.", clientSocket);
                                 close(clientSocket);
@@ -894,7 +902,7 @@ void SshPortForward::localPortForwardingThread(std::shared_ptr<PortForwardData> 
 }
 
 void SshPortForward::remotePortForwardingThread(std::shared_ptr<PortForwardData> data) {
-     if (!data || !m_mainSession || !m_mainSession->getThreadPool() || !m_pfConnected.load()) {
+     if (!data || !m_mainSession || !m_mainSession->getThreadPool() || !m_fwdPool || !m_pfConnected.load()) {
         OH_LOG_ERROR(LOG_APP, "Remote forward setup failed: Invalid main session, data, thread pool or PF session not connected.");
         if(data) data->running = false;
         return;
@@ -998,7 +1006,7 @@ void SshPortForward::remotePortForwardingThread(std::shared_ptr<PortForwardData>
              OH_LOG_INFO(LOG_APP, "Accepted remote forwarded connection for port %d", data->localPort);
 
              try {
-                 m_mainSession->getThreadPool()->enqueue([this, channel, data]() {
+                 m_fwdPool->enqueue([this, channel, data]() {
                      handleRemoteForwardConnection(channel, data);
                  });
                  OH_LOG_INFO(LOG_APP, "Enqueued remote connection handler task for port %d", data->localPort);
@@ -1079,10 +1087,10 @@ LIBSSH2_CHANNEL* SshPortForward::openDirectChannel(int clientSocket, const std::
         char* errmsg = nullptr;
         int errmsgLen = 0;
         int code = libssh2_session_last_error(session, &errmsg, &errmsgLen, 1);
-        OH_LOG_WARN(LOG_APP, "OpenChannel [Socket %{public}d]: open returned NULL, code=%{public}d msg=%{public}s",
-                    clientSocket, code, errmsg != nullptr ? errmsg : "N/A");
 
         if (code != LIBSSH2_ERROR_EAGAIN) {
+            OH_LOG_WARN(LOG_APP, "OpenChannel [Socket %{public}d]: open returned NULL, code=%{public}d msg=%{public}s",
+                        clientSocket, code, errmsg != nullptr ? errmsg : "N/A");
             rcOut = code;
             return nullptr;
         }
@@ -1484,6 +1492,8 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
     libssh2_socket_t ssh_socket = LIBSSH2_INVALID_SOCKET;
     bool socket_eof_received = false;
     bool channel_eof_received = false;
+    bool drain_timed = false;
+    std::chrono::steady_clock::time_point drain_start;
 
     {
          std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
@@ -1548,7 +1558,6 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                      shutdown(socket_fd, SHUT_WR);
                  }
             }
-            continue;
         }
 
         if (!socket_eof_received && FD_ISSET(socket_fd, &read_fds)) {
@@ -1684,7 +1693,9 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                     read_errno = LIBSSH2_ERROR_CHANNEL_CLOSED;
                 }
              }
-             OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_read returned %{public}zd (errno %{public}d)", socket_fd, channel, nread, read_errno);
+             if (nread < 0 && read_errno != LIBSSH2_ERROR_EAGAIN) {
+                 OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_read returned %{public}zd (errno %{public}d)", socket_fd, channel, nread, read_errno);
+             }
 
              if (nread > 0) {
                  char* ptr = buffer;
@@ -1693,7 +1704,9 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                  const int max_write_attempts = 5;
                  while (remaining > 0 && !socket_closed && !data->shouldStop.load() && write_attempts < max_write_attempts) {
                     nwritten = send(socket_fd, ptr, remaining, MSG_NOSIGNAL);
-                    OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: send(%zu bytes) returned %{public}zd (errno %{public}d)", socket_fd, channel, remaining, nwritten, (nwritten<0)?errno:0);
+                    if (nwritten < 0) {
+                        OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: send(%zu bytes) returned %{public}zd (errno %{public}d)", socket_fd, channel, remaining, nwritten, errno);
+                    }
 
                     if (nwritten >= 0) {
                          ptr += nwritten;
@@ -1763,6 +1776,21 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
          if (socket_closed || channel_closed) {
              OH_LOG_INFO(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: One side closed due to error (socket_closed=%d, channel_closed=%d). Exiting loop.", socket_fd, channel, socket_closed, channel_closed);
              break;
+         }
+
+         if (socket_eof_received && !channel_eof_received) {
+             if (!drain_timed) {
+                 drain_timed = true;
+                 drain_start = std::chrono::steady_clock::now();
+             } else {
+                 auto waited = std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::steady_clock::now() - drain_start).count();
+                 if (waited >= PF_DRAIN_TIMEOUT_SEC) {
+                     OH_LOG_WARN(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Remote channel stayed open %{public}llds after local EOF, forcing close.", socket_fd, channel, (long long)waited);
+                     channel_closed = true;
+                     break;
+                 }
+             }
          }
 
     }

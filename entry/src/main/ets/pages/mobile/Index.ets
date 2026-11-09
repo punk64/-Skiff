@@ -707,6 +707,9 @@ struct MobileIndex {
       const fp: string = raw.substring(raw.indexOf('HOSTKEY_ERR:') + 12)
       return this.t(`主机密钥已变更（${fp}），可能被中间人劫持`, `Host key changed (${fp}), possible man-in-the-middle`)
     }
+    if (raw.indexOf('HANDSHAKE_FAILED') >= 0) {
+      return this.t('SSH 算法协商失败，服务器不支持本客户端可用的加密算法', 'SSH algorithm negotiation failed')
+    }
     if (raw.indexOf('CONNECT_ERR') >= 0) {
       return this.t('无法连接到服务器，请检查地址与端口', 'Cannot reach the server, check address and port')
     }

@@ -153,6 +153,7 @@ private:
     std::string lastConnectError; // 最近一次建连失败原因（供 UI 提示）
 
     std::string expectedHostKey;
+    std::string expectedHostKeyType;
     std::string hostKeyFingerprint;
     std::string hostKeyTypeName;
 
@@ -220,6 +221,9 @@ public:
 
     std::string getHostKeyType() const { return hostKeyTypeName; }
 
+    std::string getCipherName();
+    std::string getMacName();
+
     SshSession();
     
     ~SshSession() override;
@@ -248,6 +252,7 @@ public:
     // SFTP相关方法
     bool initSftp();
     bool listDirectory(const std::string& path, std::function<void(const FileInfo&)> callback);
+    bool realPath(const std::string& path, std::string& out);
     bool uploadFile(int localFd, const std::string& remotePath, std::function<void(int)> progressCallback = nullptr);
 
     std::string getLastUploadError() const;

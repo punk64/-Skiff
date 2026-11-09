@@ -1,6 +1,6 @@
 # Skiff
 
-**Version** HarmonyOS 0.3.6 · Windows 0.1.5 · **License** MIT
+**Version** HarmonyOS 0.3.7 · Windows 0.1.14 · **License** MIT
 
 **SSH, tunnels and file transfer — on a HarmonyOS phone and on Windows.** The phone build is rebuilt for portrait use: one-tap forwarding, and a built-in browser that opens the server panel the moment the tunnel is up. The desktop build is a single portable exe: sidebar of hosts, tabbed terminal, two-pane SFTP.
 
