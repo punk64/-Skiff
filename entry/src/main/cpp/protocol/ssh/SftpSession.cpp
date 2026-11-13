@@ -750,7 +750,7 @@ bool SftpSession::listDirectory(const std::string& path, std::function<void(cons
     return result; // 返回操作是否成功（可能部分成功）
 }
 
-bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::function<void(int)> progressCallback) {
+bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::function<void(int64_t)> progressCallback) {
     std::lock_guard<std::mutex> lock(sessionMutex);
     if (!session) { // Check session first
         OH_LOG_ERROR(LOG_APP, "SFTP 上传失败: SSH 会话无效");
@@ -760,14 +760,11 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
     // --- BEGIN Operation Control Flags ---
     currentOperationActiveFlag = std::make_shared<std::atomic<bool>>(true);
     cancelRequested.store(false);
+    pauseRequested.store(false);
     operationTimedOut.store(false); // Use the renamed flag
+    ioProgress.store(0);
     OH_LOG_INFO(LOG_APP, "UploadFile: Reset cancelRequested and operationTimedOut flags.");
     // --- END Operation Control Flags ---
-
-    // 新增：如果有进度回调，立即发送0%进度
-    if (progressCallback) {
-        progressCallback(0);
-    }
 
     bool overallResult = false; // Initialize overall result to failure
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
@@ -791,7 +788,7 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
         }
 
         // 获取文件大小
-        off_t totalSize = lseek(localFd, 0, SEEK_END);
+        int64_t totalSize = lseek(localFd, 0, SEEK_END);
         if (totalSize < 0) {
             OH_LOG_ERROR(LOG_APP, "无法获取文件大小: %d", errno);
             throw std::runtime_error("Failed to get file size");
@@ -801,9 +798,55 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
             throw std::runtime_error("Failed to reset file pointer");
         }
 
-        // 新增：获取文件大小后再次发送0%进度
+        int64_t resumeFrom = 0;
+        {
+            LIBSSH2_SFTP_ATTRIBUTES resumeAttrs = {};
+            int statRc = executeNonBlocking([&]() {
+                if (!sftp) return -1;
+                return libssh2_sftp_stat(sftp, tempRemotePath.c_str(), &resumeAttrs);
+            }, "stat temp file for resume");
+            if (statRc == 0 && (resumeAttrs.flags & LIBSSH2_SFTP_ATTR_SIZE) && resumeAttrs.filesize > 0) {
+                resumeFrom = static_cast<int64_t>(resumeAttrs.filesize);
+                if (resumeFrom > totalSize) resumeFrom = 0;
+            }
+        }
+        bool resuming = resumeFrom > 0;
+        if (resuming) {
+            char remoteHead[8192];
+            char localHead[8192];
+            ssize_t headLen = 0;
+            LIBSSH2_SFTP_HANDLE* headHandle = executeNonBlocking([&]() {
+                if (!sftp) return (LIBSSH2_SFTP_HANDLE*)nullptr;
+                return libssh2_sftp_open(sftp, tempRemotePath.c_str(), LIBSSH2_FXF_READ, 0);
+            }, "open temp file for head check");
+            if (headHandle) {
+                while (headLen < (ssize_t)sizeof(remoteHead)) {
+                    ssize_t n = executeNonBlocking([&]() {
+                        return libssh2_sftp_read(headHandle, remoteHead + headLen, sizeof(remoteHead) - (size_t)headLen);
+                    }, "read temp file head");
+                    if (n <= 0) break;
+                    headLen += n;
+                }
+                executeNonBlocking([&]() { return libssh2_sftp_close(headHandle); }, "close temp head handle");
+            }
+            bool sameHead = false;
+            if (headLen > 0 && lseek(localFd, 0, SEEK_SET) >= 0) {
+                ssize_t localLen = read(localFd, localHead, (size_t)headLen);
+                sameHead = (localLen == headLen) && memcmp(localHead, remoteHead, (size_t)headLen) == 0;
+            }
+            lseek(localFd, 0, SEEK_SET);
+            if (!sameHead) {
+                OH_LOG_WARN(LOG_APP, "残留临时文件 %{public}s 首块与本地文件不一致，放弃续传并重新上传", tempRemotePath.c_str());
+                resumeFrom = 0;
+                resuming = false;
+            } else {
+                OH_LOG_INFO(LOG_APP, "检测到残留临时文件 %{public}s 已有 %{public}.2f MB，从该位置续传",
+                            tempRemotePath.c_str(), resumeFrom / 1024.0 / 1024.0);
+            }
+        }
+
         if (progressCallback) {
-            progressCallback(0);
+            progressCallback(resumeFrom);
         }
 
         // --- 修改: 日志信息使用临时路径 ---
@@ -819,11 +862,10 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
 
         // --- 修改: 打开临时文件进行写入 ---
         handle = executeNonBlocking([&]() {
-            // Check flags inside lambda too
             if (!sftp || operationTimedOut.load() || cancelRequested.load()) return (LIBSSH2_SFTP_HANDLE*)nullptr;
-            // 打开临时文件路径
-            return libssh2_sftp_open(sftp, tempRemotePath.c_str(),
-                LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC, // 对临时文件使用TRUNC
+            unsigned long openFlags = LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT;
+            if (!resuming) openFlags |= LIBSSH2_FXF_TRUNC;
+            return libssh2_sftp_open(sftp, tempRemotePath.c_str(), openFlags,
                 LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR);
         }, "open temp file for write");
 
@@ -848,6 +890,16 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
              throw std::runtime_error(error_msg);
         }
 
+        if (resuming) {
+            executeNonBlocking([&]() {
+                if (handle) libssh2_sftp_seek64(handle, static_cast<libssh2_uint64_t>(resumeFrom));
+                return 0;
+            }, "seek temp file for resume");
+            if (lseek(localFd, resumeFrom, SEEK_SET) < 0) {
+                throw std::runtime_error("Failed to seek local file for resume");
+            }
+        }
+
         // 修改：根据文件大小选择最佳缓冲区大小
         size_t bufferSize;
         if (isHugeFile) {
@@ -862,12 +914,14 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
         
         std::unique_ptr<char[]> buffer(new char[bufferSize]);
         ssize_t rc;
-        ssize_t uploadedSize = 0;
+        ssize_t uploadedSize = static_cast<ssize_t>(resumeFrom);
         int lastProgress = 0;
         int currentProgress = 0;
-        int consecutiveErrors = 0;
-        const int maxConsecutiveErrors = 5;
         auto startTime = std::chrono::steady_clock::now();
+        auto lastWriteProgressAt = startTime;
+        auto lastStallLogAt = startTime;
+        bool paceInit = false;
+        std::chrono::steady_clock::time_point paceNext;
         const size_t progressThreshold = 102400; // 100KB
         size_t bytesSinceLastProgressCall = 0;
         
@@ -877,6 +931,12 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
 
         // Main loop checks cancel and timeout flags
         while (!operationTimedOut.load() && !cancelRequested.load() && (rc = read(localFd, buffer.get(), bufferSize)) > 0) {
+            while (pauseRequested.load() && !cancelRequested.load() && !operationTimedOut.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                lastWriteProgressAt = std::chrono::steady_clock::now();
+            }
+            if (cancelRequested.load()) throw std::runtime_error("Upload cancelled");
+            if (operationTimedOut.load()) throw std::runtime_error("Upload timed out");
             ssize_t total = 0;
             bytesSinceLastSpeedUpdate += rc;
 
@@ -891,6 +951,7 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
             // Inner loop also checks flags
             while (total < rc && !operationTimedOut.load() && !cancelRequested.load()) {
                 size_t batchSize = static_cast<size_t>(rc - total);
+                if (batchSize > SFTP_WRITE_CHUNK) batchSize = SFTP_WRITE_CHUNK;
 
                 ssize_t written = executeNonBlocking([&]() {
                     // Check flags inside lambda
@@ -907,53 +968,86 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
                          throw std::runtime_error("Upload timed out during write");
                     }
 
-                    // --- BEGIN MODIFICATION: Check for EAGAIN before retrying ---
                     int session_write_err = libssh2_session_last_errno(session.get());
-                    unsigned long sftp_write_err_code = libssh2_sftp_last_error(sftp); // Get SFTP error too
+                    unsigned long sftp_write_err_code = libssh2_sftp_last_error(sftp);
 
                     if (session_write_err == LIBSSH2_ERROR_EAGAIN) {
-                        // Only retry on EAGAIN
-                        consecutiveErrors++;
-                        // <<< 更新日志，包含 Session 和 SFTP Code >>>
-                        OH_LOG_WARN(LOG_APP, "写入临时文件 '%{public}s' 返回 EAGAIN，将重试 (尝试次数: %{public}d/%{public}d, SFTP: %{public}lu, Session: %{public}d)",
-                                    tempRemotePath.c_str(), consecutiveErrors, maxConsecutiveErrors, sftp_write_err_code, session_write_err);
-                        if (consecutiveErrors >= maxConsecutiveErrors) {
-                            // Throw error if EAGAIN persists too long
+                        auto nowStall = std::chrono::steady_clock::now();
+                        long long stalledMs = std::chrono::duration_cast<std::chrono::milliseconds>(nowStall - lastWriteProgressAt).count();
+                        if (stalledMs >= SFTP_STALL_TIMEOUT_MS) {
                             char* session_errmsg = nullptr;
                             libssh2_session_last_error(session.get(), &session_errmsg, nullptr, 0);
                             std::string error_details = session_errmsg ? std::string(session_errmsg) : "N/A";
-                            // <<< 更新抛出的异常信息 >>>
-                            std::string error_msg = "Write to temporary remote file '" + tempRemotePath + 
-                                                    "' failed due to persistent EAGAIN (SFTP Code: " + std::to_string(sftp_write_err_code) + 
-                                                    ", Session Code: " + std::to_string(session_write_err) + 
+                            std::string error_msg = "Write to temporary remote file '" + tempRemotePath +
+                                                    "' stalled for " + std::to_string(stalledMs / 1000) + "s (SFTP Code: " + std::to_string(sftp_write_err_code) +
+                                                    ", Session Code: " + std::to_string(session_write_err) +
                                                     ", Msg: " + error_details + ")";
-                            OH_LOG_ERROR(LOG_APP, "UploadFile Error: %{public}s", error_msg.c_str()); // 记录详细错误
+                            OH_LOG_ERROR(LOG_APP, "UploadFile Error: %{public}s", error_msg.c_str());
                             throw std::runtime_error(error_msg);
                         }
-                        // Short sleep might prevent busy-looping if EAGAIN happens extremely quickly.
-                        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Shorter sleep for EAGAIN retry
-                        continue; // Retry the write operation
-                    } else {
-                        // For any error other than EAGAIN, fail immediately
-                        // <<< 更新日志，包含 Session 和 SFTP Code >>>
-                        OH_LOG_ERROR(LOG_APP, "写入临时文件 '%{public}s' 发生不可恢复错误 (SFTP: %{public}lu, Session: %{public}d)",
-                                    tempRemotePath.c_str(), sftp_write_err_code, session_write_err);
-                        char* session_errmsg = nullptr;
-                        libssh2_session_last_error(session.get(), &session_errmsg, nullptr, 0);
-                        std::string error_details = session_errmsg ? std::string(session_errmsg) : "N/A";
-                        // <<< 更新抛出的异常信息 >>>
-                        std::string error_msg = "Write to temporary remote file '" + tempRemotePath + 
-                                                "' failed (SFTP Code: " + std::to_string(sftp_write_err_code) + 
-                                                ", Session Code: " + std::to_string(session_write_err) + 
-                                                ", Msg: " + error_details + ")";
-                        OH_LOG_ERROR(LOG_APP, "UploadFile Error: %{public}s", error_msg.c_str()); // 记录详细错误
-                        throw std::runtime_error(error_msg);
+                        if (std::chrono::duration_cast<std::chrono::milliseconds>(nowStall - lastStallLogAt).count() >= 3000) {
+                            OH_LOG_WARN(LOG_APP, "写入临时文件 '%{public}s' 返回 EAGAIN，继续等待 (已停滞 %{public}d 秒, 已上传 %{public}.2f MB, SFTP: %{public}lu, Session: %{public}d)",
+                                        tempRemotePath.c_str(), static_cast<int>(stalledMs / 1000), uploadedSize / 1024.0 / 1024.0, sftp_write_err_code, session_write_err);
+                            lastStallLogAt = nowStall;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        continue;
                     }
-                    // --- END MODIFICATION ---
+
+                    OH_LOG_ERROR(LOG_APP, "写入临时文件 '%{public}s' 发生不可恢复错误 (SFTP: %{public}lu, Session: %{public}d)",
+                                tempRemotePath.c_str(), sftp_write_err_code, session_write_err);
+                    char* session_errmsg = nullptr;
+                    libssh2_session_last_error(session.get(), &session_errmsg, nullptr, 0);
+                    std::string error_details = session_errmsg ? std::string(session_errmsg) : "N/A";
+                    std::string error_msg = "Write to temporary remote file '" + tempRemotePath +
+                                            "' failed (SFTP Code: " + std::to_string(sftp_write_err_code) +
+                                            ", Session Code: " + std::to_string(session_write_err) +
+                                            ", Msg: " + error_details + ")";
+                    OH_LOG_ERROR(LOG_APP, "UploadFile Error: %{public}s", error_msg.c_str());
+                    throw std::runtime_error(error_msg);
                 }
-                consecutiveErrors = 0;
+                if (written == 0) {
+                    long long stalledMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - lastWriteProgressAt).count();
+                    if (stalledMs >= SFTP_STALL_TIMEOUT_MS) {
+                        throw std::runtime_error("Write to temporary remote file made no progress for " + std::to_string(stalledMs / 1000) + "s");
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    continue;
+                }
                 total += written;
                 uploadedSize += written;
+                ioProgress.fetch_add(static_cast<int64_t>(written));
+                lastWriteProgressAt = std::chrono::steady_clock::now();
+
+                if (progressCallback) {
+                    bytesSinceLastProgressCall += static_cast<size_t>(written);
+                    auto reportNow = std::chrono::steady_clock::now();
+                    auto reportGapMs = std::chrono::duration_cast<std::chrono::milliseconds>(reportNow - lastProgressTime).count();
+                    if (reportGapMs >= 200 || bytesSinceLastProgressCall >= progressThreshold) {
+                        progressCallback(static_cast<int64_t>(uploadedSize));
+                        bytesSinceLastProgressCall = 0;
+                        lastProgressTime = reportNow;
+                    }
+                }
+
+                int64_t paceBps = throttleBps.load();
+                if (paceBps > 0) {
+                    auto paceNow = std::chrono::steady_clock::now();
+                    if (!paceInit) {
+                        paceNext = paceNow;
+                        paceInit = true;
+                    }
+                    paceNext += std::chrono::microseconds(static_cast<long long>(written) * 1000000LL / paceBps);
+                    while (paceNow < paceNext && !cancelRequested.load() && !operationTimedOut.load()) {
+                        long long waitUs = std::chrono::duration_cast<std::chrono::microseconds>(paceNext - paceNow).count();
+                        if (waitUs > 20000) waitUs = 20000;
+                        std::this_thread::sleep_for(std::chrono::microseconds(waitUs));
+                        paceNow = std::chrono::steady_clock::now();
+                    }
+                    if (paceNow - paceNext > std::chrono::milliseconds(400)) paceNext = paceNow;
+                    lastWriteProgressAt = paceNow;
+                }
             }
 
             // Check cancellation after inner loop
@@ -966,8 +1060,6 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
                 OH_LOG_INFO(LOG_APP, "Upload timed out after write loop to temp file.");
                 throw std::runtime_error("Upload timed out");
             }
-
-            bytesSinceLastProgressCall += rc;
 
             // --- EMA Speed Calculation --- (保持不变)
             auto currentTime = std::chrono::steady_clock::now();
@@ -997,41 +1089,15 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
             currentProgress = std::max(0, std::min(100, currentProgress));
 
             // 修改：增加基于时间的进度报告逻辑
-            bool shouldReportProgress = false;
-            auto progressElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                currentTime - lastProgressTime).count();
-            
-            // 时间阈值检查：距离上次报告已超过时间阈值
-            bool timeThresholdMet = (progressElapsedMs >= progressTimeThreshold.count());
-            
-            // 数据量阈值检查：已传输超过数据量阈值
-            bool dataThresholdMet = (bytesSinceLastProgressCall >= progressThreshold);
-            
-            // 进度变化检查：进度百分比有变化
-            bool progressChanged = (currentProgress != lastProgress);
-            
-            // 满足以下任一条件触发进度报告：
-            // 1. 数据量达到阈值
-            // 2. 时间达到阈值且进度有变化
-            // 3. 大文件传输过程中的强制更新（超过1秒未更新）
-            shouldReportProgress = dataThresholdMet || 
-                                  (timeThresholdMet && progressChanged) || 
-                                  (progressElapsedMs >= 1000); // 至少每秒更新一次
+            // 修改：取消失每个缓冲区块才报告一次的回调，改由内层 64KB 分片按 200ms 节流
 
-            if (progressCallback && shouldReportProgress) {
+            if (progressCallback && currentProgress != lastProgress) {
                 OH_LOG_INFO(LOG_APP, "上传中 (临时路径 %{public}s): 已上传 %.2f MB / %.2f MB (%.1f%%)",
                            tempRemotePath.c_str(),
                            uploadedSize / 1024.0 / 1024.0,
                            totalSize / 1024.0 / 1024.0,
                            currentProgress * 1.0);
-                
-                // 调用进度回调
-                progressCallback(currentProgress);
-                
-                // 更新状态
                 lastProgress = currentProgress;
-                bytesSinceLastProgressCall = 0;
-                lastProgressTime = currentTime;
             }
         } // End of main upload loop (while read > 0)
 
@@ -1053,7 +1119,7 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
 
         // 确保发送最终进度 100%
         if (progressCallback && lastProgress < 100) {
-            progressCallback(100);
+            progressCallback(static_cast<int64_t>(totalSize));
         }
 
         auto endTime = std::chrono::steady_clock::now();
@@ -1204,12 +1270,17 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
     if (activeFlagForCleanup) {
         activeFlagForCleanup->store(false);
     }
+    cancelRequested.store(false);
+    operationTimedOut.store(false);
     OH_LOG_DEBUG(LOG_APP, "UploadFile finished or exited, marking operation inactive.");
 
-    if (!overallResult) {
-        // 上传未成功（失败、取消、超时、删除目标失败或重命名失败），删除临时文件
-        OH_LOG_WARN(LOG_APP, "上传操作未最终成功 (原因: %{public}s)，尝试删除临时文件: %{public}s",
+    bool cancelledByUser = errorMessage.find("cancelled") != std::string::npos;
+    if (!overallResult && !cancelledByUser) {
+        OH_LOG_WARN(LOG_APP, "上传操作未最终成功 (原因: %{public}s)，保留临时文件以便下次续传: %{public}s",
                     errorMessage.empty() ? "Unknown error during upload or cleanup steps" : errorMessage.c_str(), tempRemotePath.c_str());
+    } else if (!overallResult) {
+        OH_LOG_WARN(LOG_APP, "上传操作被取消 (原因: %{public}s)，删除临时文件: %{public}s",
+                    errorMessage.empty() ? "Cancelled" : errorMessage.c_str(), tempRemotePath.c_str());
 
         // --- BEGIN MODIFICATION: Add more logging for final unlink ---
         OH_LOG_INFO(LOG_APP, "准备执行最终的 unlink 操作以删除临时文件: %{public}s", tempRemotePath.c_str());
@@ -1247,7 +1318,7 @@ bool SftpSession::uploadFile(int localFd, const std::string& remotePath, std::fu
     return overallResult; 
 }
 
-bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::function<void(off_t)> progressCallback) {
+bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::function<void(int64_t)> progressCallback) {
      std::lock_guard<std::mutex> lock(sessionMutex);
      if (!session) { // Check session first
         OH_LOG_ERROR(LOG_APP, "SFTP 下载失败: SSH 会话无效");
@@ -1258,6 +1329,7 @@ bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::
      currentOperationActiveFlag = std::make_shared<std::atomic<bool>>(true);
      cancelRequested.store(false);
      operationTimedOut.store(false);
+     ioProgress.store(0);
      OH_LOG_INFO(LOG_APP, "DownloadFile: Reset cancelRequested and operationTimedOut flags.");
      // --- END Operation Control Flags ---
 
@@ -1296,7 +1368,7 @@ bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::
             throw std::runtime_error("Failed to get remote file attributes (SFTP: " + 
                                      std::to_string(sftp_stat_err) + ", Session: " + std::to_string(session_stat_err) + ")");
         }
-        off_t totalSize = attrs.filesize;
+        int64_t totalSize = attrs.filesize;
         bool isLargeFile = (totalSize > LARGE_FILE_THRESHOLD);
         int downloadTimeout = isLargeFile ? LARGE_FILE_OPERATION_TIMEOUT_S : globalOperationTimeout;
         OH_LOG_INFO(LOG_APP, "文件大小: %{public}lld 字节. 超时设置为: %d 秒", (long long)totalSize, downloadTimeout);
@@ -1338,8 +1410,7 @@ bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::
         ssize_t rc;
         ssize_t downloadedSize = 0;
         int lastProgress = 0;
-        int consecutiveEagain = 0;
-        const int maxConsecutiveEagain = 100; // 允许的最大连续EAGAIN错误次数
+        auto lastReadProgressAt = std::chrono::steady_clock::now();
         
         // 速度计算相关变量
         auto startTime = std::chrono::steady_clock::now();
@@ -1351,20 +1422,25 @@ bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::
         }
 
         // Variables for progress report thresholding
-        static const off_t progress_report_threshold = 262144; // Report approx every 256KB
-        off_t last_reported_size = 0;
+        static const int64_t progress_report_threshold = 262144; // Report approx every 256KB
+        int64_t last_reported_size = 0;
 
         // Main loop checks cancel and timeout
         while (!operationTimedOut.load() && !cancelRequested.load()) {
+            while (pauseRequested.load() && !cancelRequested.load() && !operationTimedOut.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            if (cancelRequested.load()) throw std::runtime_error("Download cancelled");
+            if (operationTimedOut.load()) throw std::runtime_error("Download timed out");
             rc = executeNonBlocking([&]() {
                  // 内部 lambda 也快速检查一下
                 if (!sftp || !handle || operationTimedOut.load() || cancelRequested.load()) return (ssize_t)-1;
                 // --- Use the raw pointer 'buffer' here --- 
-                return libssh2_sftp_read(handle, buffer, LARGE_BUFFER_SIZE);
+                return libssh2_sftp_read(handle, buffer, SFTP_READ_CHUNK);
             }, "read");
 
             if (rc > 0) {
-                consecutiveEagain = 0; // Reset counter
+                lastReadProgressAt = std::chrono::steady_clock::now();
 
                 ssize_t totalWrittenThisChunk = 0;
                 // Inner loop also checks flags
@@ -1386,8 +1462,18 @@ bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::
                                      localFd, rc, totalWrittenThisChunk, write_errno, strerror(write_errno));
                         throw std::runtime_error("Write to local file failed");
                     }
+                    if (written == 0) {
+                        long long stalledMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - lastReadProgressAt).count();
+                        if (stalledMs >= SFTP_STALL_TIMEOUT_MS) {
+                            throw std::runtime_error("Write to local file made no progress");
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        continue;
+                    }
                     totalWrittenThisChunk += written;
                     downloadedSize += written; // Update total downloaded size *after* potential yield
+                    ioProgress.fetch_add(static_cast<int64_t>(written));
                     bytesDownloadedSinceLastSpeedUpdate += written; // Accumulate for speed calc
                 }
 
@@ -1432,13 +1518,14 @@ bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::
                 // 检查是否是EAGAIN错误
                 int lastError = libssh2_session_last_errno(session.get());
                 if (lastError == LIBSSH2_ERROR_EAGAIN) {
-                    consecutiveEagain++;
-                    if (consecutiveEagain > maxConsecutiveEagain) {
-                        OH_LOG_ERROR(LOG_APP, "读取操作连续返回EAGAIN错误次数过多，可能陷入死循环");
-                        throw std::runtime_error("Too many consecutive EAGAIN errors");
+                    long long stalledMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - lastReadProgressAt).count();
+                    if (stalledMs >= SFTP_STALL_TIMEOUT_MS) {
+                        OH_LOG_ERROR(LOG_APP, "读取远程文件 '%{public}s' 停滞 %{public}lld ms 无数据，放弃读取",
+                                     remotePath.c_str(), stalledMs);
+                        throw std::runtime_error("Remote read stalled without progress");
                     }
-                    // 短暂等待后继续尝试
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
                     continue;
                 } else {
                     char* errmsg;
@@ -1520,6 +1607,8 @@ bool SftpSession::downloadFile(const std::string& remotePath, int localFd, std::
      if (activeFlagForCleanup) {
          activeFlagForCleanup->store(false);
      }
+     cancelRequested.store(false);
+     operationTimedOut.store(false);
      OH_LOG_DEBUG(LOG_APP, "DownloadFile finished or exited, marking operation inactive.");
      // --- END Final Cleanup ---
 
@@ -1934,46 +2023,41 @@ cleanup:
 }
 
 void SftpSession::setOperationTimeout(std::atomic<bool>& timedOutFlag, std::shared_ptr<std::atomic<bool>> activeFlag, int seconds) {
-    // Reset the timedOutFlag for this specific operation timeout instance
     timedOutFlag.store(false);
+    auto capturedActiveFlag = activeFlag;
 
-    // Capture necessary flags by value/shared_ptr for the thread
-    auto capturedActiveFlag = activeFlag; // Copy shared_ptr
-
-    std::thread timeoutThread([capturedActiveFlag, seconds, this]() { // Capture 'this'
+    std::thread timeoutThread([capturedActiveFlag, seconds, this]() {
         const int checkInterval = 100;
-        const int maxChecks = (seconds > 0) ? (seconds * 1000 / checkInterval) : -1; // Handle seconds <= 0 as infinite
-        int totalChecks = 0;
+        const int maxChecks = (seconds > 0) ? (seconds * 1000 / checkInterval) : -1;
+        int64_t lastProgress = this->ioProgress.load();
+        int stalledChecks = 0;
 
-        // Loop while the operation is active, hasn't timed out yet, and timeout duration hasn't been reached
-        // Access member operationTimedOut via 'this'
-        while (capturedActiveFlag->load() && !this->operationTimedOut.load() && (maxChecks == -1 || totalChecks < maxChecks)) {
+        while (capturedActiveFlag->load() && !this->operationTimedOut.load() && (maxChecks == -1 || stalledChecks < maxChecks)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(checkInterval));
-            totalChecks++;
-
-            // Debug log
-            if (maxChecks != -1 && totalChecks % 10 == 0) {
-                 OH_LOG_DEBUG(LOG_APP, "操作超时检查: %{public}d/%{public}d 秒", totalChecks / 10, seconds);
-            } else if (maxChecks == -1 && totalChecks % 600 == 0) { // Log every minute if infinite
-                 OH_LOG_DEBUG(LOG_APP, "操作超时检查: 无限超时运行中 (%d分钟)", totalChecks / 600);
+            if (this->pauseRequested.load()) {
+                lastProgress = this->ioProgress.load();
+                stalledChecks = 0;
+                continue;
             }
-
-            // Check active flag again after sleep
+            int64_t currentProgress = this->ioProgress.load();
+            if (currentProgress != lastProgress) {
+                lastProgress = currentProgress;
+                stalledChecks = 0;
+            } else {
+                stalledChecks++;
+            }
+            if (maxChecks != -1 && stalledChecks > 0 && stalledChecks % 100 == 0) {
+                OH_LOG_WARN(LOG_APP, "SFTP操作已停滞 %{public}d 秒 (阈值 %{public}d 秒)，继续等待", stalledChecks / 10, seconds);
+            }
             if (!capturedActiveFlag->load()) {
-                OH_LOG_DEBUG(LOG_APP, "操作超时检查: 操作已标记为非活动，超时线程退出.");
-                return; // Exit if operation became inactive
+                return;
             }
         }
 
-        // Check why the loop exited
-        // Access member operationTimedOut via 'this'
-        if (capturedActiveFlag->load() && !this->operationTimedOut.load() && maxChecks != -1 && totalChecks >= maxChecks) {
-            // Only trigger timeout if the operation is still marked active when the timer expires
-            OH_LOG_ERROR(LOG_APP, "SFTP操作已超时(%{public}d秒)，强制终止", seconds);
-            this->operationTimedOut.store(true); // Mark that timeout occurred
-            this->cancelRequested.store(true);   // Request cancellation
-        } else {
-             OH_LOG_DEBUG(LOG_APP, "操作超时检查: 循环正常退出 (操作结束、已超时或无限等待)，超时线程结束.");
+        if (capturedActiveFlag->load() && !this->operationTimedOut.load() && maxChecks != -1 && stalledChecks >= maxChecks) {
+            OH_LOG_ERROR(LOG_APP, "SFTP操作已停滞 %{public}d 秒无进展，强制终止", seconds);
+            this->operationTimedOut.store(true);
+            this->cancelRequested.store(true);
         }
     });
 
@@ -1995,6 +2079,11 @@ void SftpSession::requestCancel() {
     }
 }
 // --------------------------------
+
+void SftpSession::pauseTransfer(bool on) {
+    OH_LOG_INFO(LOG_APP, "SFTP Pause request: %{public}d", on ? 1 : 0);
+    pauseRequested.store(on);
+}
 
 // --- 新增：keepAliveThread方法实现 ---
 void SftpSession::stopKeepAlive() {

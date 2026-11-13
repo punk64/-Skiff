@@ -35,6 +35,12 @@
       overflow: hidden;
     }
 
+    #terminal-container .xterm-viewport {
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior: contain;
+    }
+
   </style>
 </head>
 
@@ -93,6 +99,7 @@
     // 初始化终端
     const term = new Terminal({
       rendererType: "canvas",
+      scrollback: 5000,
       wordWrap: false,
       cursorBlink: true,
       convertEol: false,

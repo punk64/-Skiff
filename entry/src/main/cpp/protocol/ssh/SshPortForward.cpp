@@ -23,8 +23,9 @@
 
 static const int PF_HEARTBEAT_SEC = 15;
 static const int PF_PUMP_INTERVAL_MS = 1000;
-static const int PF_PUMP_MAX_MISS = 3;
+static const int PF_PUMP_MAX_MISS = 10;
 static const int PF_DRAIN_TIMEOUT_SEC = 30;
+static const int PF_WRITE_STALL_MS = 60000;
 static const int PF_PUMP_STAT_SEC = 60;
 
 namespace {
@@ -540,8 +541,14 @@ int SshPortForward::pumpPfSession() {
         int backoff = m_pfNightBackoff.load();
         if (backoff > 0) {
             m_pfNightBackoff.store(backoff - 1);
+            m_pfPumpReads.fetch_add(1);
             return 0;
         }
+        std::unique_lock<std::mutex> openSeq(m_openMutex, std::try_to_lock);
+        if (!openSeq.owns_lock()) {
+            return 0;
+        }
+        libssh2_session_set_last_error(m_pfSession.get(), 0, nullptr);
         m_pfNightChannel = libssh2_channel_open_session(m_pfSession.get());
         if (!m_pfNightChannel) {
             char* errmsg = nullptr;
@@ -549,7 +556,7 @@ int SshPortForward::pumpPfSession() {
             int code = libssh2_session_last_error(m_pfSession.get(), &errmsg, &errmsgLen, 1);
             if (code != LIBSSH2_ERROR_EAGAIN) {
                 OH_LOG_WARN(LOG_APP, "PF night channel open failed: %{public}d %{public}s", code, errmsg != nullptr ? errmsg : "N/A");
-                m_pfNightBackoff.store(60);
+                m_pfNightBackoff.store(5);
             }
             return 0;
         }
@@ -597,11 +604,57 @@ void SshPortForward::closePfNightChannel() {
     m_pfNightChannel = nullptr;
 }
 
+void SshPortForward::dropPfSessionOnly() {
+    OH_LOG_INFO(LOG_APP, "dropPfSessionOnly: rebuilding PF session, local listeners kept alive.");
+    stopPfHeartbeat();
+    closePfNightChannel();
+    std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
+    m_pfConnected.store(false);
+    m_pfMisses.store(0);
+    if (m_pfSession) {
+        try {
+            int attempts = 0;
+            while (attempts < 3 &&
+                   libssh2_session_disconnect(m_pfSession.get(), "PF session rebuild") == LIBSSH2_ERROR_EAGAIN) {
+                if (m_pfSock && *m_pfSock != LIBSSH2_INVALID_SOCKET) {
+                    waitSocket(m_pfSession.get(), *m_pfSock.get());
+                } else {
+                    break;
+                }
+                attempts++;
+            }
+        } catch (const std::exception& e) {
+            OH_LOG_ERROR(LOG_APP, "dropPfSessionOnly: disconnect exception: %{public}s", e.what());
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP, "dropPfSessionOnly: disconnect unknown exception.");
+        }
+        m_pfSession.reset();
+    }
+    if (m_pfSock && *m_pfSock != LIBSSH2_INVALID_SOCKET) {
+        shutdown(*m_pfSock, SHUT_RDWR);
+        close(*m_pfSock);
+        *m_pfSock = LIBSSH2_INVALID_SOCKET;
+    }
+    OH_LOG_INFO(LOG_APP, "dropPfSessionOnly: PF session dropped.");
+}
+
 void SshPortForward::disconnectSession() {
     OH_LOG_INFO(LOG_APP, "SshPortForward::disconnectSession() started.");
     stopPfHeartbeat();
     closePfNightChannel();
-    std::lock_guard<std::recursive_mutex> lock(m_pfMutex); // Lock PF resources
+    std::unique_lock<std::recursive_mutex> lock(m_pfMutex); // Lock PF resources
+    std::vector<std::thread> threadsToJoin;
+    auto joinForwarders = [&threadsToJoin]() {
+        for (auto& t : threadsToJoin) {
+            if (!t.joinable()) continue;
+            if (t.get_id() == std::this_thread::get_id()) {
+                t.detach();
+                continue;
+            }
+            t.join();
+        }
+        threadsToJoin.clear();
+    };
 
     {
         std::vector<std::shared_ptr<PortForwardData>> portsToRelease;
@@ -625,17 +678,15 @@ void SshPortForward::disconnectSession() {
                 data->listener = nullptr;
             }
             if (data->forwardThread.joinable()) {
-                try {
-                    data->forwardThread.detach();
-                } catch (const std::system_error& e) {
-                    OH_LOG_ERROR(LOG_APP, "disconnectSession: detach forwarder failed: %{public}s", e.what());
-                }
+                threadsToJoin.push_back(std::move(data->forwardThread));
             }
         }
     }
 
     if (!m_pfConnected.load() && !m_pfSession && (!m_pfSock || *m_pfSock == LIBSSH2_INVALID_SOCKET)) {
         OH_LOG_INFO(LOG_APP, "disconnectSession: Already disconnected or never connected.");
+        lock.unlock();
+        joinForwarders();
         return;
     }
 
@@ -677,6 +728,8 @@ void SshPortForward::disconnectSession() {
         *m_pfSock = LIBSSH2_INVALID_SOCKET;
     }
 
+    lock.unlock();
+    joinForwarders();
     OH_LOG_INFO(LOG_APP, "SshPortForward::disconnectSession() finished.");
 }
 
@@ -928,7 +981,7 @@ void SshPortForward::remotePortForwardingThread(std::shared_ptr<PortForwardData>
         const char* listen_host = "0.0.0.0";
         
         int listen_attempts = 0;
-        const int max_listen_attempts = 100;
+        const auto listenDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(15000);
         while (!data->shouldStop) {
              listener = libssh2_channel_forward_listen_ex(pfSessionPtr, listen_host, data->localPort, &bound_port, 10);
              if (listener) {
@@ -938,10 +991,11 @@ void SshPortForward::remotePortForwardingThread(std::shared_ptr<PortForwardData>
 
              rc = libssh2_session_last_error(pfSessionPtr, NULL, NULL, 0);
              if (rc == LIBSSH2_ERROR_EAGAIN) {
-                 if (++listen_attempts > max_listen_attempts) {
-                      OH_LOG_ERROR(LOG_APP, "Remote forward setup: Timeout waiting for listener after %d attempts.", max_listen_attempts);
+                 if (std::chrono::steady_clock::now() >= listenDeadline) {
+                      OH_LOG_ERROR(LOG_APP, "Remote forward setup: Timeout waiting for listener after %d attempts.", listen_attempts);
                       break;
                  }
+                 listen_attempts++;
                  lock.unlock();
                  OH_LOG_DEBUG(LOG_APP, "Remote forward setup: Waiting for socket (listen EAGAIN, attempt %d).", listen_attempts);
                  waitSocket(m_pfSession.get(), *m_pfSock.get());
@@ -1032,7 +1086,7 @@ void SshPortForward::remotePortForwardingThread(std::shared_ptr<PortForwardData>
          if (session && data->listener) {
              int rc = 0;
              int cancel_attempts = 0;
-             while ((rc = libssh2_channel_forward_cancel(data->listener)) == LIBSSH2_ERROR_EAGAIN && cancel_attempts < 5) {
+             while ((rc = libssh2_channel_forward_cancel(data->listener)) == LIBSSH2_ERROR_EAGAIN && cancel_attempts < 60) {
                  lock.unlock();
                  waitSocket(session, *m_pfSock.get());
                  lock.lock();
@@ -1063,6 +1117,7 @@ void SshPortForward::remotePortForwardingThread(std::shared_ptr<PortForwardData>
 LIBSSH2_CHANNEL* SshPortForward::openDirectChannel(int clientSocket, const std::string& targetHost, int targetPort,
                                                    const std::shared_ptr<PortForwardData>& data, int& rcOut) {
     rcOut = 0;
+    std::unique_lock<std::mutex> openSeq(m_openMutex);
     std::unique_lock<std::recursive_mutex> lock(m_pfMutex);
 
     LIBSSH2_SESSION* session = m_pfSession.get();
@@ -1072,8 +1127,9 @@ LIBSSH2_CHANNEL* SshPortForward::openDirectChannel(int clientSocket, const std::
         return nullptr;
     }
 
+    const long long budgetMs = 15000;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budgetMs);
     int waitAttempts = 0;
-    const int maxWaitAttempts = 100;
 
     while (true) {
         libssh2_session_set_last_error(session, 0, nullptr);
@@ -1100,15 +1156,18 @@ LIBSSH2_CHANNEL* SshPortForward::openDirectChannel(int clientSocket, const std::
             return nullptr;
         }
 
-        if (++waitAttempts > maxWaitAttempts) {
-            OH_LOG_ERROR(LOG_APP, "OpenChannel [Socket %{public}d]: timed out after %{public}d attempts.",
-                         clientSocket, maxWaitAttempts);
+        if (std::chrono::steady_clock::now() >= deadline) {
+            OH_LOG_ERROR(LOG_APP, "OpenChannel [Socket %{public}d]: timed out after %{public}d ms (%{public}d attempts).",
+                         clientSocket, (int)budgetMs, waitAttempts);
             rcOut = LIBSSH2_ERROR_TIMEOUT;
             return nullptr;
         }
 
+        ++waitAttempts;
+        libssh2_socket_t pfFd = (m_pfSock && *m_pfSock != LIBSSH2_INVALID_SOCKET) ? *m_pfSock.get() : LIBSSH2_INVALID_SOCKET;
         lock.unlock();
-        int wsRc = waitSocket(session, *m_pfSock.get());
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        int wsRc = pfFd == LIBSSH2_INVALID_SOCKET ? -1 : waitSocket(session, pfFd);
         lock.lock();
 
         session = m_pfSession.get();
@@ -1143,24 +1202,34 @@ void SshPortForward::handleLocalForwardConnection(int clientSocket, std::shared_
 
     if (channel == nullptr && !data->shouldStop.load()) {
         int active = m_activeChannels.load();
-        OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: channel open failed (code=%{public}d), active=%{public}d.",
-                    clientSocket, rc, active);
-        if (active > 0) {
+        const bool sessionBroken = rc == LIBSSH2_ERROR_SOCKET_NONE || rc == LIBSSH2_ERROR_SOCKET_SEND ||
+                                   rc == LIBSSH2_ERROR_SOCKET_RECV || rc == LIBSSH2_ERROR_SOCKET_TIMEOUT ||
+                                   rc == LIBSSH2_ERROR_SOCKET_DISCONNECT || !m_pfConnected.load();
+        OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: channel open failed (code=%{public}d), active=%{public}d, sessionBroken=%{public}d.",
+                    clientSocket, rc, active, sessionBroken ? 1 : 0);
+        if (!sessionBroken) {
+            OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: target refused, PF session kept alive.", clientSocket);
+        } else if (active > 0) {
             OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: skip PF session rebuild while %{public}d channel(s) active.",
                         clientSocket, active);
-        } else {
-            disconnectSession();
-            if (connectSession()) {
+        } else if (!m_pfRebuildBusy.exchange(true)) {
+            dropPfSessionOnly();
+            bool rebuilt = connectSession();
+            m_pfRebuildBusy.store(false);
+            if (rebuilt) {
                 rc = 0;
                 channel = openDirectChannel(clientSocket, data->targetHost, data->targetPort, data, rc);
             } else {
                 OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: PF session rebuild failed.", clientSocket);
             }
+        } else {
+            OH_LOG_WARN(LOG_APP, "Local Forward [Socket %{public}d]: PF session rebuild already in progress.", clientSocket);
         }
     }
 
     if (!channel || rc != 0 || data->shouldStop.load()) {
         m_forwardFailures.fetch_add(1);
+        data->failures.fetch_add(1);
         OH_LOG_ERROR(LOG_APP, "Local Forward [Socket %{public}d]: Failed to establish SSH channel to %{public}s:%{public}d (rc=%{public}d, stopped=%{public}d).", clientSocket, data->targetHost.c_str(), data->targetPort, rc, data->shouldStop.load());
         close(clientSocket);
         if (channel) {
@@ -1173,6 +1242,7 @@ void SshPortForward::handleLocalForwardConnection(int clientSocket, std::shared_
     }
 
     m_forwardAccepts.fetch_add(1);
+    data->accepts.fetch_add(1);
     OH_LOG_INFO(LOG_APP, "Local Forward: SSH channel established for socket %{public}d. Starting data loop.", clientSocket);
 
     forwardDataLoop(clientSocket, channel, data);
@@ -1214,18 +1284,35 @@ void SshPortForward::handleRemoteForwardConnection(LIBSSH2_CHANNEL* channel, std
          return;
     }
 
-    if (connect(targetSocket, (struct sockaddr*)&target_addr, sizeof(target_addr)) < 0) {
+    int sockFlags = fcntl(targetSocket, F_GETFL, 0);
+    if (sockFlags != -1) {
+        fcntl(targetSocket, F_SETFL, sockFlags | O_NONBLOCK);
+    }
+
+    int connRc = connect(targetSocket, (struct sockaddr*)&target_addr, sizeof(target_addr));
+    if (connRc < 0 && errno == EINPROGRESS) {
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        FD_SET(targetSocket, &wfds);
+        struct timeval connTimeout;
+        connTimeout.tv_sec = 5;
+        connTimeout.tv_usec = 0;
+        int wret = select(targetSocket + 1, NULL, &wfds, NULL, &connTimeout);
+        if (wret > 0) {
+            int soErr = 0;
+            socklen_t soLen = sizeof(soErr);
+            if (getsockopt(targetSocket, SOL_SOCKET, SO_ERROR, &soErr, &soLen) == 0 && soErr == 0) {
+                connRc = 0;
+            }
+        }
+    }
+    if (connRc < 0) {
          OH_LOG_ERROR(LOG_APP, "Remote Forward: Failed to connect to target %s:%d : %s",
                       data->targetHost.c_str(), data->targetPort, strerror(errno));
          close(targetSocket);
          std::lock_guard<std::recursive_mutex> lock(m_pfMutex);
          libssh2_channel_free(channel);
          return;
-    }
-    
-    int flags = fcntl(targetSocket, F_GETFL, 0);
-    if (flags != -1) {
-       fcntl(targetSocket, F_SETFL, flags | O_NONBLOCK);
     }
 
 
@@ -1567,9 +1654,8 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
             if (nread > 0) {
                 char* ptr = buffer;
                 size_t remaining = nread;
-                int write_attempts = 0;
-                const int max_write_attempts = 5;
-                while (remaining > 0 && !channel_closed && !data->shouldStop.load() && write_attempts < max_write_attempts) {
+                long long stallStart = 0;
+                while (remaining > 0 && !channel_closed && !data->shouldStop.load()) {
                      ssize_t channel_written = 0;
                      int write_errno = 0;
                      {
@@ -1589,26 +1675,32 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                      if (channel_written > 0) {
                          ptr += channel_written;
                          remaining -= channel_written;
-                         write_attempts = 0;
-                     } else if (channel_written == 0) {
-                         OH_LOG_WARN(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_write returned 0? Retrying.", socket_fd, channel);
-                         write_attempts++;
-                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                     } else {
-                         if (write_errno == LIBSSH2_ERROR_EAGAIN) {
-                              OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_write EAGAIN, will wait and retry.", socket_fd, channel);
-                              write_attempts++;
-                              std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                         } else {
-                             OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_write error %{public}d. Closing channel.", socket_fd, channel, write_errno);
-                             channel_closed = true;
-                             break;
-                         }
+                         stallStart = 0;
+                         continue;
                      }
+                     if (channel_written < 0 && write_errno != LIBSSH2_ERROR_EAGAIN) {
+                         OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_write error %{public}d. Closing channel.", socket_fd, channel, write_errno);
+                         channel_closed = true;
+                         break;
+                     }
+                     const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch()).count();
+                     if (stallStart == 0) {
+                         stallStart = nowMs;
+                     }
+                     const long long stalledMs = nowMs - stallStart;
+                     if (stalledMs > PF_WRITE_STALL_MS) {
+                         OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: channel write stalled %{public}lld ms with %zu byte(s) unsent, closing socket.",
+                                      socket_fd, channel, stalledMs, remaining);
+                         socket_closed = true;
+                         break;
+                     }
+                     OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: libssh2_channel_write EAGAIN (stalled %{public}lld ms), pumping and retrying.", socket_fd, channel, stalledMs);
+                     pumpPfSession();
+                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                  }
                  if (channel_closed || data->shouldStop.load()) continue;
                  if (remaining > 0) {
-                     OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Failed to write all %zu bytes to socket after %d attempts. Closing socket.", socket_fd, channel, nread, max_write_attempts);
                      socket_closed = true;
                  }
             } else if (nread == 0) {
@@ -1619,9 +1711,10 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                     if (channel && m_pfSession && !libssh2_channel_eof(channel)) {
                         OH_LOG_INFO(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Sending EOF to channel due to socket EOF.", socket_fd, channel);
                         int eof_rc = 0;
-                        int eof_attempts = 0;
-                        while ((eof_rc = libssh2_channel_send_eof(channel)) == LIBSSH2_ERROR_EAGAIN && eof_attempts < 5) {
+                        const auto eofDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
+                        while ((eof_rc = libssh2_channel_send_eof(channel)) == LIBSSH2_ERROR_EAGAIN) {
                              if (data->shouldStop.load()) break;
+                             if (std::chrono::steady_clock::now() >= eofDeadline) break;
                              lock.unlock();
                              LIBSSH2_SESSION* wsSession = m_pfSession.get();
                              libssh2_socket_t wsFd = LIBSSH2_INVALID_SOCKET;
@@ -1630,7 +1723,6 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
                              }
                              waitSocket(wsSession, wsFd);
                              lock.lock();
-                             eof_attempts++;
                              if (!m_pfSock || !channel) break;
                         }
                          if (eof_rc != 0 && eof_rc != LIBSSH2_ERROR_EAGAIN) {
@@ -1700,35 +1792,49 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
              if (nread > 0) {
                  char* ptr = buffer;
                  size_t remaining = nread;
-                 int write_attempts = 0;
-                 const int max_write_attempts = 5;
-                 while (remaining > 0 && !socket_closed && !data->shouldStop.load() && write_attempts < max_write_attempts) {
+                 long long stallStart = 0;
+                 while (remaining > 0 && !socket_closed && !data->shouldStop.load()) {
                     nwritten = send(socket_fd, ptr, remaining, MSG_NOSIGNAL);
                     if (nwritten < 0) {
                         OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: send(%zu bytes) returned %{public}zd (errno %{public}d)", socket_fd, channel, remaining, nwritten, errno);
                     }
 
-                    if (nwritten >= 0) {
+                    if (nwritten > 0) {
                          ptr += nwritten;
                          remaining -= nwritten;
-                         write_attempts = 0;
-                    } else {
-                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            OH_LOG_DEBUG(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: send returned EAGAIN/EWOULDBLOCK. Breaking inner loop to wait.", socket_fd, channel);
-                            write_attempts++;
-                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                         } else {
-                            OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: send() error: %{public}s. Closing socket.", socket_fd, channel, strerror(errno));
-                            socket_closed = true;
-                            break;
-                         }
+                         stallStart = 0;
+                         continue;
                     }
+                    const int send_errno = nwritten < 0 ? errno : EAGAIN;
+                    if (send_errno != EAGAIN && send_errno != EWOULDBLOCK) {
+                        OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: send() error: %{public}s. Closing socket.", socket_fd, channel, strerror(send_errno));
+                        socket_closed = true;
+                        break;
+                    }
+                    const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+                    if (stallStart == 0) {
+                        stallStart = nowMs;
+                    }
+                    const long long stalledMs = nowMs - stallStart;
+                    if (stalledMs > PF_WRITE_STALL_MS) {
+                        OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: local socket write stalled %{public}lld ms with %zu byte(s) unsent, closing socket.",
+                                     socket_fd, channel, stalledMs, remaining);
+                        socket_closed = true;
+                        break;
+                    }
+                    fd_set wfds;
+                    FD_ZERO(&wfds);
+                    FD_SET(socket_fd, &wfds);
+                    struct timeval wtime;
+                    wtime.tv_sec = 0;
+                    wtime.tv_usec = 50000;
+                    select(socket_fd + 1, NULL, &wfds, NULL, &wtime);
                  }
                  if (socket_closed || data->shouldStop.load()) {
                      break;
                  }
                  if (remaining > 0) {
-                     OH_LOG_ERROR(LOG_APP, "Forward Loop [S:%{public}d C:%{public}p]: Failed to write all %zu bytes to socket after %d attempts. Closing socket.", socket_fd, channel, nread, max_write_attempts);
                      socket_closed = true;
                      break;
                  }
@@ -1807,41 +1913,40 @@ void SshPortForward::forwardDataLoop(int socket_fd, LIBSSH2_CHANNEL* channel, st
         std::unique_lock<std::recursive_mutex> lock(m_pfMutex);
          if (channel_to_clean && m_pfSession) {
             int cleanup_rc = 0;
-            int cleanup_attempts = 0;
-            const int max_cleanup_attempts = 5;
+            auto cleanupReset = []() {
+                return std::chrono::steady_clock::now() + std::chrono::milliseconds(3000);
+            };
+            auto cleanupDeadline = cleanupReset();
 
             if (!libssh2_channel_eof(channel_to_clean)) {
-                 cleanup_attempts = 0;
-                 while((cleanup_rc = libssh2_channel_send_eof(channel_to_clean)) == LIBSSH2_ERROR_EAGAIN && cleanup_attempts < max_cleanup_attempts) {
+                 cleanupDeadline = cleanupReset();
+                 while((cleanup_rc = libssh2_channel_send_eof(channel_to_clean)) == LIBSSH2_ERROR_EAGAIN && std::chrono::steady_clock::now() < cleanupDeadline) {
                       if (data->shouldStop.load()) break;
                       lock.unlock();
                       waitSocket(m_pfSession.get(), *m_pfSock.get());
                       lock.lock();
-                      cleanup_attempts++;
-                       if (!m_pfSession || !channel_to_clean) break;
+                      if (!m_pfSession || !channel_to_clean) break;
                  }
                  if (cleanup_rc != 0 && cleanup_rc != LIBSSH2_ERROR_EAGAIN) OH_LOG_WARN(LOG_APP, "Forward Loop Cleanup: send_eof failed: %d", cleanup_rc);
             }
 
-            cleanup_attempts = 0;
-            while((cleanup_rc = libssh2_channel_close(channel_to_clean)) == LIBSSH2_ERROR_EAGAIN && cleanup_attempts < max_cleanup_attempts) {
+            cleanupDeadline = cleanupReset();
+            while((cleanup_rc = libssh2_channel_close(channel_to_clean)) == LIBSSH2_ERROR_EAGAIN && std::chrono::steady_clock::now() < cleanupDeadline) {
                  if (data->shouldStop.load()) break;
                  lock.unlock();
                  waitSocket(m_pfSession.get(), *m_pfSock.get());
                  lock.lock();
-                 cleanup_attempts++;
                  if (!m_pfSession || !channel_to_clean) break;
             }
              if (cleanup_rc != 0 && cleanup_rc != LIBSSH2_ERROR_EAGAIN) OH_LOG_WARN(LOG_APP, "Forward Loop Cleanup: close failed: %d", cleanup_rc);
 
 
-            cleanup_attempts = 0;
-            while((cleanup_rc = libssh2_channel_free(channel_to_clean)) == LIBSSH2_ERROR_EAGAIN && cleanup_attempts < max_cleanup_attempts) {
+            cleanupDeadline = cleanupReset();
+            while((cleanup_rc = libssh2_channel_free(channel_to_clean)) == LIBSSH2_ERROR_EAGAIN && std::chrono::steady_clock::now() < cleanupDeadline) {
                  if (data->shouldStop.load()) break;
                   lock.unlock();
                   waitSocket(m_pfSession.get(), *m_pfSock.get());
                   lock.lock();
-                 cleanup_attempts++;
                   if (!m_pfSession || !channel_to_clean) break;
             }
              if (cleanup_rc != 0 && cleanup_rc != LIBSSH2_ERROR_EAGAIN) {
@@ -2067,7 +2172,7 @@ bool SshPortForward::stopPortForwarding(int port, bool isRemote) {
         if (session && dataToStop->listener) {
             int rc = 0;
             int cancel_attempts = 0;
-             while ((rc = libssh2_channel_forward_cancel(dataToStop->listener)) == LIBSSH2_ERROR_EAGAIN && cancel_attempts < 5) {
+             while ((rc = libssh2_channel_forward_cancel(dataToStop->listener)) == LIBSSH2_ERROR_EAGAIN && cancel_attempts < 60) {
                  lock.unlock();
                  waitSocket(session, *m_pfSock.get());
                  lock.lock();
@@ -2115,8 +2220,27 @@ bool SshPortForward::isPortForwardingActive(int port, bool isRemote) {
     return false;
 }
 
-std::vector<std::tuple<int, std::string, int, bool, bool>> SshPortForward::listActivePortForwardings() {
+int SshPortForward::forwardFailuresOf(int port) {
     std::lock_guard<std::mutex> lock(m_forwardingMutex);
+    for (const auto& data : m_forwardingPorts) {
+        if (data && data->localPort == port) {
+            return data->failures.load();
+        }
+    }
+    return 0;
+}
+
+int SshPortForward::forwardAcceptsOf(int port) {
+    std::lock_guard<std::mutex> lock(m_forwardingMutex);
+    for (const auto& data : m_forwardingPorts) {
+        if (data && data->localPort == port) {
+            return data->accepts.load();
+        }
+    }
+    return 0;
+}
+
+std::vector<std::tuple<int, std::string, int, bool, bool>> SshPortForward::listActivePortForwardings() {    std::lock_guard<std::mutex> lock(m_forwardingMutex);
     std::vector<std::tuple<int, std::string, int, bool, bool>> result;
 
     for (const auto& data : m_forwardingPorts) {

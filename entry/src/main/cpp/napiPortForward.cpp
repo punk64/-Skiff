@@ -561,6 +561,29 @@ static napi_value GetForwardStats(napi_env env, napi_callback_info info) {
     return CreateNapiString(env, out);
 }
 
+static napi_value GetForwardStatsOf(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (argc < 2) {
+        napi_throw_type_error(env, nullptr, "Requires 2 arguments: sessionId, port");
+        return nullptr;
+    }
+
+    int sessionId = 0;
+    int port = 0;
+    napi_get_value_int32(env, args[0], &sessionId);
+    napi_get_value_int32(env, args[1], &port);
+    SshSession* sshSession = GetSshSessionById(sessionId);
+    if (!sshSession) {
+        return CreateNapiString(env, "0,0");
+    }
+    std::string out = std::to_string(sshSession->getForwardAcceptsOf(port)) + "," +
+        std::to_string(sshSession->getForwardFailuresOf(port));
+    return CreateNapiString(env, out);
+}
+
 // --- Registration --- 
 
 void RegisterPortForwardingFunctions(napi_env env, napi_value exports) {
@@ -572,6 +595,7 @@ void RegisterPortForwardingFunctions(napi_env env, napi_value exports) {
         { "isPortForwardingActive", nullptr, IsPortForwardingActive, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "listActivePortForwardings", nullptr, ListActivePortForwardings, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "getForwardStats", nullptr, GetForwardStats, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "getForwardStatsOf", nullptr, GetForwardStatsOf, nullptr, nullptr, nullptr, napi_default, nullptr },
     };
     
     napi_define_properties(env, exports, sizeof(portForwardDesc) / sizeof(portForwardDesc[0]), portForwardDesc);

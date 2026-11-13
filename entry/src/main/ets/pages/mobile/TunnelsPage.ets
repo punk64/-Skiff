@@ -166,8 +166,8 @@ export struct TunnelsPage {
     return $r('app.color.csx_text3')
   }
 
-  fwdCounts(hostId: number): number[] {
-    const parts: string[] = SshService.get().forwardStats(hostId).split(',')
+  fwdCounts(hostId: number, port: number): number[] {
+    const parts: string[] = SshService.get().forwardStatsOf(hostId, port).split(',')
     const a: number = parts.length > 0 ? Number(parts[0]) : 0
     const b: number = parts.length > 1 ? Number(parts[1]) : 0
     return [Number.isNaN(a) ? 0 : a, Number.isNaN(b) ? 0 : b]
@@ -189,14 +189,14 @@ export struct TunnelsPage {
       const ok: boolean = await probeTcp('127.0.0.1', port, 1200)
       return ok ? 'up' : 'down'
     }
-    const base: number[] = this.fwdCounts(hostId)
+    const base: number[] = this.fwdCounts(hostId, port)
     const ok: boolean = await probeTcp('127.0.0.1', port, 1200)
     if (!ok) {
       return 'down'
     }
     for (let i = 0; i < 6; i++) {
       await this.sleep(120)
-      const now: number[] = this.fwdCounts(hostId)
+      const now: number[] = this.fwdCounts(hostId, port)
       if (now[1] > base[1]) {
         return 'listen'
       }
@@ -407,7 +407,7 @@ export struct TunnelsPage {
         this.onBrowse(`http://127.0.0.1:${port}`)
         return
       }
-      const parts: string[] = SshService.get().forwardStats(h.id).split(',')
+      const parts: string[] = SshService.get().forwardStatsOf(h.id, port).split(',')
       const fails: string = parts.length > 1 ? parts[1] : '0'
       promptAction.showToast({
         message: this.t(`重置后仍取不到数据（通道失败 ${fails} 次），请检查服务器是否允许端口转发`,

@@ -274,7 +274,11 @@ int SshSession::waitSocket() {
 
     // --- 调用 select (不需要锁) ---
     // OH_LOG_DEBUG(LOG_APP, "waitSocket: Calling select (socket=%d, read=%d, write=%d)", current_sock, readfd != NULL, writefd != NULL); // Optional debug log
-    rc = select((int)(current_sock + 1), readfd, writefd, NULL, &timeout);
+    do {
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 50000;
+        rc = select((int)(current_sock + 1), readfd, writefd, NULL, &timeout);
+    } while (rc < 0 && errno == EINTR);
     // OH_LOG_DEBUG(LOG_APP, "waitSocket: select returned %d", rc); // Optional debug log
     // ---------------------------
 
@@ -292,8 +296,39 @@ int SshSession::waitSocket() {
     return rc;
 }
 
-bool SshSession::openConnect(const std::string& napiInput) {
+int SshSession::probeInbound(int waitMs) {
+    libssh2_socket_t current_sock = LIBSSH2_INVALID_SOCKET;
+    {
+        std::lock_guard<std::recursive_mutex> lock(libssh2Mutex);
+        if (!sock || *sock == LIBSSH2_INVALID_SOCKET) {
+            return -1;
+        }
+        current_sock = *sock;
+    }
 
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(current_sock, &rd);
+    struct timeval timeout;
+    timeout.tv_sec = waitMs / 1000;
+    timeout.tv_usec = (waitMs % 1000) * 1000;
+    int rc = select((int)(current_sock + 1), &rd, nullptr, nullptr, &timeout);
+    if (rc <= 0) {
+        return rc;
+    }
+
+    char c = 0;
+    int n = (int)recv(current_sock, &c, 1, MSG_PEEK);
+    if (n > 0) {
+        return 1;
+    }
+    if (n == 0) {
+        return -1;
+    }
+    return 0;
+}
+
+bool SshSession::openConnect(const std::string& napiInput) {
     uint32_t hostaddr {};
     int ret = 0;
     string userAuthList {};
@@ -1022,10 +1057,8 @@ bool SshSession::disconnect() {
 
 bool SshSession::sendData(const std::string& command) {
     // V5 - Extremely detailed logging
-    OH_LOG_INFO(LOG_APP, "sendData: Entry (length: %zu)", command.length());
 
     // 1. Check status
-    OH_LOG_INFO(LOG_APP, "sendData: Checking status...");
     SessionStatus currentStatus;
     {
         // OH_LOG_INFO(LOG_APP, "sendData: Acquiring statusMutex...");
@@ -1036,50 +1069,42 @@ bool SshSession::sendData(const std::string& command) {
             statusChange = true; // Mark activity only if connected
         }
     } // statusMutex released
-    OH_LOG_INFO(LOG_APP, "sendData: Current status is %d", static_cast<int>(currentStatus));
     if (currentStatus != SessionStatus::CONNECTED) {
         OH_LOG_ERROR(LOG_APP, "sendData: Failed - Session not connected. Returning false.");
         return false;
     }
-    OH_LOG_INFO(LOG_APP, "sendData: Status check OK.");
 
     // 2. Check channelShell validity
-    OH_LOG_INFO(LOG_APP, "sendData: Checking channelShell pointer...");
     if (!channelShell) {
         OH_LOG_ERROR(LOG_APP, "sendData: Failed - channelShell is NULL. Returning false.");
         return false;
     }
-    OH_LOG_INFO(LOG_APP, "sendData: channelShell pointer OK.");
 
     // 3. Acquire libssh2Mutex and check EOF inside lock
-    OH_LOG_INFO(LOG_APP, "sendData: Acquiring libssh2Mutex for EOF check and write...");
     std::lock_guard<std::recursive_mutex> sshLock(libssh2Mutex);
-    OH_LOG_INFO(LOG_APP, "sendData: Acquired libssh2Mutex.");
+
+    if (session) {
+        libssh2_session_set_blocking(session.get(), 0);
+    }
 
     // 4. Check channelShell EOF
-    OH_LOG_INFO(LOG_APP, "sendData: Checking channelShell EOF status inside lock...");
     bool is_eof = libssh2_channel_eof(channelShell.get());
-    OH_LOG_INFO(LOG_APP, "sendData: channelShell EOF status: %d", is_eof);
     if (is_eof) {
         OH_LOG_ERROR(LOG_APP, "sendData: Failed - channelShell is EOF. Returning false.");
         return false; // Exiting while lock is held
     }
-    OH_LOG_INFO(LOG_APP, "sendData: channelShell EOF check OK.");
 
     // 5. Prepare for write
     size_t totalWritten = 0;
     size_t commandLength = command.length();
     if (commandLength == 0) {
-        OH_LOG_INFO(LOG_APP, "sendData: Command is empty, nothing to send. Returning true.");
         return true; // Exiting while lock is held
     }
-    OH_LOG_INFO(LOG_APP, "sendData: Entering write loop for %zu bytes.", commandLength);
 
     // 6. Write loop
-    const int maxAttempts = 5;
-    int attempts = 0;
-    while (totalWritten < commandLength && attempts < maxAttempts) {
-        OH_LOG_INFO(LOG_APP, "sendData: Write loop attempt %{public}d: Offset %zu", attempts + 1, totalWritten);
+    const long long stallBudgetMs = 60000;
+    auto lastProgressAt = std::chrono::steady_clock::now();
+    while (totalWritten < commandLength) {
 
         // --- 恢复为直接阻塞写入 ---
         ssize_t n = libssh2_channel_write(channelShell.get(),
@@ -1087,14 +1112,11 @@ bool SshSession::sendData(const std::string& command) {
                                       commandLength - totalWritten);
         // ------------------------
 
-        OH_LOG_INFO(LOG_APP, "sendData: libssh2_channel_write returned %zd", n);
 
         if (n > 0) {
             totalWritten += n;
-            OH_LOG_INFO(LOG_APP, "sendData: Wrote %zd bytes, total: %zu", n, totalWritten);
-            attempts = 0; // Reset attempts on success
+            lastProgressAt = std::chrono::steady_clock::now();
         } else if (n == LIBSSH2_ERROR_EAGAIN) {
-            OH_LOG_INFO(LOG_APP, "sendData: Got EAGAIN (after blocking write), calling waitSocket..."); // 修改日志描述
             // Check EOF *before* waiting on the socket
             if (libssh2_channel_eof(channelShell.get())) {
                 OH_LOG_ERROR(LOG_APP, "sendData: Detected EOF during EAGAIN handling. Aborting write.");
@@ -1102,22 +1124,21 @@ bool SshSession::sendData(const std::string& command) {
             }
             // Keep lock while calling waitSocket as it uses session/sock
             int ws_rc = waitSocket();
-            OH_LOG_INFO(LOG_APP, "sendData: waitSocket returned %{public}d", ws_rc);
-            if (ws_rc <= 0) {
-                attempts++;
-                OH_LOG_INFO(LOG_APP, "sendData: waitSocket !ready (rc=%{public}d), attempt %{public}d/%{public}d. Incrementing attempt counter.", ws_rc, attempts, maxAttempts); // 修改日志，移除休眠
+            if (ws_rc < 0) {
                 // Check EOF again after waitSocket timeout/error
                 if (libssh2_channel_eof(channelShell.get())) {
                      OH_LOG_ERROR(LOG_APP, "sendData: Detected EOF after waitSocket timeout/error. Aborting write.");
                      return false; // Exit loop if EOF detected
                 }
-                // --- 移除这里的额外休眠 ---
-                // std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                // OH_LOG_INFO(LOG_APP, "sendData: Woke up.");
-                // --------------------------
-            } else {
-                 OH_LOG_INFO(LOG_APP, "sendData: waitSocket ready, retrying write.");
-                 // No sleep, no attempt increment
+                OH_LOG_ERROR(LOG_APP, "sendData: waitSocket failed (%d) with %zu/%zu bytes written.", ws_rc, totalWritten, commandLength);
+                return false;
+            }
+            long long stalledMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - lastProgressAt).count();
+            if (stalledMs > stallBudgetMs) {
+                OH_LOG_ERROR(LOG_APP, "sendData: write stalled %lld ms. Wrote %zu/%zu bytes. Returning false.",
+                             stalledMs, totalWritten, commandLength);
+                return false;
             }
         } else {
             // Other write error
@@ -1129,15 +1150,7 @@ bool SshSession::sendData(const std::string& command) {
             return false; // Exiting while lock is held
         }
     }
-    OH_LOG_INFO(LOG_APP, "sendData: Exited write loop. Total written: %zu", totalWritten);
 
-    // 7. Check if fully written
-    if (totalWritten < commandLength) {
-        OH_LOG_ERROR(LOG_APP, "sendData: Write timed out after %d attempts. Wrote %zu/%zu bytes. Returning false.", maxAttempts, totalWritten, commandLength);
-        return false; // Exiting while lock is held
-    }
-
-    OH_LOG_INFO(LOG_APP, "sendData: Exiting successfully. Returning true.");
     return true; // Exiting while lock is held (lock_guard will release)
 }
 
@@ -1145,16 +1158,6 @@ void SshSession::receiveData() {
     auto threadId = std::this_thread::get_id();
     OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData 开始执行 (v13 - 增加初始化日志)", threadId, sessionId); // 添加 sessionId
     OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial logManagerInitialized = %{public}d", threadId, sessionId, logManagerInitialized.load()); // 添加日志：记录初始 logManagerInitialized
-
-    // --- Define the lines/strings to filter out ---
-    // NOTE: Adjust these strings precisely based on what you see in YOUR terminal
-    const std::vector<std::string> lines_to_filter = {
-        "# Configuring terminal for directory tracking (ignore if echoed)", // The starting comment
-        "stty -echo",                                                      // The stty command itself (might appear after prompt)
-        "# Configuration complete",                                        // The ending comment
-        "> > > > >"                                                        // Add the occasional extra prompt line
-    };
-    // ---------------------------------------------
 
     char buffer[READ_MAX_BUFF_SIZE];
     ssize_t n = 0;
@@ -1170,7 +1173,6 @@ void SshSession::receiveData() {
         if (session && channelShell) {
             libssh2_channel_set_blocking(channelShell.get(), 0);
             n = libssh2_channel_read(channelShell.get(), buffer, sizeof(buffer) - 1);
-            libssh2_channel_set_blocking(channelShell.get(), 1);
 
             // --- 添加详细的首次读取日志 ---
             OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial read result n = %zd", threadId, sessionId, n);
@@ -1187,50 +1189,30 @@ void SshSession::receiveData() {
                     initial_data_processed = true; // 标记为已处理，避免后续逻辑误判
                     // 直接跳出 if (n > 0) 的处理，因为首次读取只执行一次
                 } else {
-                    // --- 原始逻辑（在 else 块中） ---
-                    // --- Filtering Check for Initial Read ---
-                    bool initial_should_filter = false;
-                    // Simple check: does the received block contain any filter string?
-                    for (const auto& filter_str : lines_to_filter) {
-                        // Check if the data CONTAINS the filter string. Adjust if needed (e.g., check start/end)
-                        if (initial_received_data.find(filter_str) != std::string::npos) {
-                            OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial read data contains filter string: '%s'. Filtering out.", threadId, sessionId, filter_str.c_str());
-                            initial_should_filter = true;
-                            break;
-                        }
+                    OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial read successful (%zd bytes). Buffering/Processing...", threadId, sessionId, n);
+                    if (followTerminalDirectory) {
+                        parseOSC7Sequence(initial_received_data); // Use the string version
                     }
-                    // --------------------------------------
-
-                    if (!initial_should_filter) {
-                        OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial read successful (%zd bytes). Buffering/Processing...", threadId, sessionId, n);
-                        if (followTerminalDirectory) {
-                            parseOSC7Sequence(initial_received_data); // Use the string version
-                        }
-                        if (!logManagerInitialized.load()) {
-                            OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: logManager not initialized, appending to initialBuffer.", threadId, sessionId); // 记录缓冲行为
-                            std::lock_guard<std::mutex> bufferLock(bufferMutex);
-                            if (initialBuffer.length() + n < MAX_INITIAL_BUFFER_SIZE) {
-                                initialBuffer.append(buffer, n);
-                                OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Appended initial data to buffer. Buffer size: %zu", threadId, sessionId, initialBuffer.length());
-                            } else {
-                                OH_LOG_WARN(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial buffer full, dropping initial data.", threadId, sessionId);
-                            }
+                    if (!logManagerInitialized.load()) {
+                        OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: logManager not initialized, appending to initialBuffer.", threadId, sessionId); // 记录缓冲行为
+                        std::lock_guard<std::mutex> bufferLock(bufferMutex);
+                        if (initialBuffer.length() + n < MAX_INITIAL_BUFFER_SIZE) {
+                            initialBuffer.append(buffer, n);
+                            OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Appended initial data to buffer. Buffer size: %zu", threadId, sessionId, initialBuffer.length());
                         } else {
-                            OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: logManager initialized, writing to logManager.", threadId, sessionId); // 记录写日志行为
-                            logManager.writeLog(buffer, n);
+                            OH_LOG_WARN(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial buffer full, dropping initial data.", threadId, sessionId);
                         }
-                        OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Calling pendingCallData for initial data.", threadId, sessionId); // 记录调用回调
-                        pendingCallData(buffer, false); // Send to UI
-                        {
-                            std::lock_guard<std::mutex> status_lock(statusMutex);
-                            statusChange = true;
-                        }
-                        initial_data_processed = true;
                     } else {
-                         OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Initial read data was filtered out.", threadId, sessionId);
-                         // Still mark as processed so we don't treat it as an error/EOF
-                         initial_data_processed = true;
+                        OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: logManager initialized, writing to logManager.", threadId, sessionId); // 记录写日志行为
+                        logManager.writeLog(buffer, n);
                     }
+                    OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] receiveData: Calling pendingCallData for initial data.", threadId, sessionId); // 记录调用回调
+                    pendingCallData(buffer, false); // Send to UI
+                    {
+                        std::lock_guard<std::mutex> status_lock(statusMutex);
+                        statusChange = true;
+                    }
+                    initial_data_processed = true;
                     // --- 原始逻辑结束 ---
                 } // --- 新增 else 块结束 ---
 
@@ -1294,8 +1276,6 @@ void SshSession::receiveData() {
                        // --- 设置为非阻塞读 ---
                        libssh2_channel_set_blocking(channelShell.get(), 0);
                        n = libssh2_channel_read(channelShell.get(), buffer, sizeof(buffer) - 1);
-                       // --- 恢复阻塞模式 --- (即使出错也要恢复，或者后续逻辑依赖阻塞模式)
-                       libssh2_channel_set_blocking(channelShell.get(), 1);
 
                        if (n < 0) {
                            read_errno = libssh2_session_last_errno(session.get());
@@ -1312,67 +1292,41 @@ void SshSession::receiveData() {
 
             // --- 4. Process read result (Filtering added here) ---
             if (n > 0) {
-                // Successfully read data
                 buffer[n] = '\0';
-                std::string received_data(buffer, n); // Convert to string for filtering
+                std::string received_data(buffer, n);
 
-                // --- 新增：检查是否在配置 Shell ---
                 if (isConfiguringShell.load()) {
                     OH_LOG_INFO(LOG_APP, "[Thread %{public}ld] receiveData: Discarding data received during shell configuration (%zd bytes).", threadId, n);
-                    continue; // 直接跳到下一次循环，丢弃此数据块
+                    continue;
                 }
-                // -------------------------------
 
-                // --- Filtering Check ---
-                bool should_filter = false;
-                 // Simple check: does the received block contain any filter string?
-                 // More advanced: Check if the line *ends* with the filter string after removing prompt?
-                for (const auto& filter_str : lines_to_filter) {
-                    // Check if the data CONTAINS the filter string.
-                    // You might need a more sophisticated check depending on your exact output.
-                    // For example, checking if the line *ends* with `stty -echo` after stripping whitespace.
-                    if (received_data.find(filter_str) != std::string::npos) {
-                        OH_LOG_INFO(LOG_APP, "[Thread %{public}ld] receiveData: Data contains filter string: '%s'. Filtering out.", threadId, filter_str.c_str());
-                        should_filter = true;
-                        break; // Found a match, no need to check others for this block
-                    }
+                if (followTerminalDirectory) {
+                    parseOSC7Sequence(received_data); // Use the string
                 }
-                // ---------------------
 
-                if (!should_filter) { // If data should NOT be filtered
-                    // Original processing logic:
-                    if (followTerminalDirectory) {
-                        parseOSC7Sequence(received_data); // Use the string
-                    }
-
-                    if (!logManagerInitialized.load()) {
-                        std::lock_guard<std::mutex> bufferLock(bufferMutex);
-                         if (!logManagerInitialized.load()) {
-                             if (initialBuffer.length() + n < MAX_INITIAL_BUFFER_SIZE) {
-                                 initialBuffer.append(buffer, n);
-                                 // OH_LOG_DEBUG(LOG_APP, "[Thread %{public}ld] receiveData: Appended data to buffer. Buffer size: %zu", threadId, initialBuffer.length());
-                             } else {
-                                  OH_LOG_WARN(LOG_APP, "[Thread %{public}ld] receiveData: Initial buffer full, dropping data.", threadId);
-                             }
+                if (!logManagerInitialized.load()) {
+                    std::lock_guard<std::mutex> bufferLock(bufferMutex);
+                     if (!logManagerInitialized.load()) {
+                         if (initialBuffer.length() + n < MAX_INITIAL_BUFFER_SIZE) {
+                             initialBuffer.append(buffer, n);
+                             // OH_LOG_DEBUG(LOG_APP, "[Thread %{public}ld] receiveData: Appended data to buffer. Buffer size: %zu", threadId, initialBuffer.length());
                          } else {
-                            logManager.writeLog(buffer, n);
+                              OH_LOG_WARN(LOG_APP, "[Thread %{public}ld] receiveData: Initial buffer full, dropping data.", threadId);
                          }
-                    } else {
+                     } else {
                         logManager.writeLog(buffer, n);
-                    }
-
-                    pendingCallData(buffer, false); // Send to UI
-
-                    { // Update status (unchanged)
-                        std::lock_guard<std::mutex> status_lock(statusMutex);
-                        statusChange = true;
-                    }
+                     }
                 } else {
-                    // Data was filtered out, do nothing (or just log)
-                    OH_LOG_INFO(LOG_APP, "[Thread %{public}ld] receiveData: Data filtered out.", threadId);
+                    logManager.writeLog(buffer, n);
                 }
-                // -------------------------------------------------
-                continue; // Continue loop immediately after processing/filtering
+
+                pendingCallData(buffer, false); // Send to UI
+
+                { // Update status (unchanged)
+                    std::lock_guard<std::mutex> status_lock(statusMutex);
+                    statusChange = true;
+                }
+                continue;
             } else if (n == 0) {
                 // EOF (unchanged)
                 OH_LOG_INFO(LOG_APP, "[Thread %{public}ld] receiveData: Read 0 bytes -> Channel EOF detected，标记退出", threadId);
@@ -1514,15 +1468,38 @@ void SshSession::keepAliveThread() {
     
     // 确保间隔大于0
     const bool idleCheckEnabled = keepAliveInterval > 0;
-    int idleLimitSec = keepAliveInterval * 4;
-    if (idleLimitSec < 120) {
-        idleLimitSec = 120;
+    int idleLimitSec = keepAliveInterval * 10;
+    if (idleLimitSec < 600) {
+        idleLimitSec = 600;
     }
     lastRxMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 
+    int sendFailStreak = 0;
+    int eofStreak = 0;
+
     // 记录开始时间
     auto startTime = std::chrono::steady_clock::now();
+
+    auto markDead = [&](const char* reason) {
+        OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] %{public}s", threadId, sessionId, reason);
+        {
+            std::lock_guard<std::mutex> lock(statusMutex);
+            status = SessionStatus::DISCONNECTED;
+        }
+        pendingCallData("idle timeout", true);
+        libssh2_socket_t deadSock = LIBSSH2_INVALID_SOCKET;
+        {
+            std::lock_guard<std::recursive_mutex> lock(libssh2Mutex);
+            if (sock && *sock != LIBSSH2_INVALID_SOCKET) {
+                deadSock = *sock;
+            }
+        }
+        if (deadSock != LIBSSH2_INVALID_SOCKET) {
+            shutdown(deadSock, SHUT_RDWR);
+            OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] 已关闭失效连接的 socket", threadId, sessionId);
+        }
+    };
     
     while (!stopThread.load()) {
         // 检查会话是否连接
@@ -1539,55 +1516,55 @@ void SshSession::keepAliveThread() {
         }
 
         if (idleCheckEnabled) {
+            int pi = probeInbound(0);
+            if (pi > 0) {
+                lastRxMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            }
             const long long last = lastRxMs.load();
             const long long idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count() - last;
             if (last > 0 && idleMs > (long long)idleLimitSec * 1000) {
-                OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] 空闲 %{public}d 秒超过阈值 %{public}d 秒，判定连接失效", 
-                             threadId, sessionId, (int)(idleMs / 1000), idleLimitSec);
-                {
-                    std::lock_guard<std::mutex> lock(statusMutex);
-                    status = SessionStatus::DISCONNECTED;
-                }
-                pendingCallData("idle timeout", true);
-                libssh2_socket_t deadSock = LIBSSH2_INVALID_SOCKET;
-                {
-                    std::lock_guard<std::recursive_mutex> lock(libssh2Mutex);
-                    if (sock && *sock != LIBSSH2_INVALID_SOCKET) {
-                        deadSock = *sock;
-                    }
-                }
-                if (deadSock != LIBSSH2_INVALID_SOCKET) {
-                    shutdown(deadSock, SHUT_RDWR);
-                    OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] 已关闭失效连接的 socket", threadId, sessionId);
-                }
+                char reason[160];
+                snprintf(reason, sizeof(reason), "空闲 %d 秒超过阈值 %d 秒且无任何入站字节，判定连接失效",
+                         (int)(idleMs / 1000), idleLimitSec);
+                markDead(reason);
                 break;
             }
         }
 
         // 定期发送 keepalive 消息
         int next_time = keepAliveInterval > 0 ? keepAliveInterval : 30;
+        bool sendDead = false;
         if (keepAliveInterval > 0) {
             std::lock_guard<std::recursive_mutex> lock(libssh2Mutex);
             if (session) {
                 int rc = libssh2_keepalive_send(session.get(), &next_time);
                 
                 if (rc == 0) {
+                    sendFailStreak = 0;
                     OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] Keepalive 消息已发送，下次发送时间: %{public}d秒后", 
                                threadId, sessionId, next_time);
-                } else if (rc == LIBSSH2_ERROR_EAGAIN) {
-                    // 发送缓冲区已满，这是正常的，稍后再试
-                    OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] Keepalive 发送缓冲区已满 (EAGAIN)", 
-                               threadId, sessionId);
+                } else if (rc == LIBSSH2_ERROR_EAGAIN || rc == LIBSSH2_ERROR_SOCKET_SEND || rc == LIBSSH2_ERROR_SOCKET_TIMEOUT) {
+                    OH_LOG_INFO(LOG_APP, "[Thread %{public}ld][Session %{public}d] Keepalive 暂不可发送 (errno=%{public}d)，稍后再试", 
+                               threadId, sessionId, rc);
                 } else {
-                    OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] Keepalive 发送失败，错误码: %{public}d", 
-                                threadId, sessionId, rc);
+                    ++sendFailStreak;
+                    OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] Keepalive 发送失败，错误码: %{public}d，连续 %{public}d 次", 
+                                threadId, sessionId, rc, sendFailStreak);
+                    if (sendFailStreak >= 3) {
+                        sendDead = true;
+                    }
                 }
             } else {
                 OH_LOG_ERROR(LOG_APP, "[Thread %{public}ld][Session %{public}d] 会话已失效，keepAliveThread 退出", 
                             threadId, sessionId);
-                break;
+                sendDead = true;
             }
+        }
+        if (sendDead) {
+            markDead("keepalive 连续发送失败，判定连接失效");
+            break;
         }
         
         // 更新运行时间统计（可选）
@@ -1619,8 +1596,29 @@ void SshSession::keepAliveThread() {
                    threadId, sessionId, sleepTime);
         
         // 分段休眠，便于快速响应停止信号
+        bool eofDead = false;
         for (int i = 0; i < sleepTime && !stopThread.load(); i++) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
+            if (!idleCheckEnabled) {
+                continue;
+            }
+            int pi = probeInbound(0);
+            if (pi > 0) {
+                eofStreak = 0;
+                lastRxMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            } else if (pi < 0) {
+                if (++eofStreak >= 3) {
+                    eofDead = true;
+                    break;
+                }
+            } else {
+                eofStreak = 0;
+            }
+        }
+        if (eofDead) {
+            markDead("socket 连续返回 EOF/无效，判定连接失效");
+            break;
         }
     }
     
@@ -1810,7 +1808,7 @@ bool SshSession::listDirectory(const std::string& path, std::function<void(const
     }
 }
 
-bool SshSession::uploadFile(int localFd, const std::string& remotePath, std::function<void(int)> progressCallback) {
+bool SshSession::uploadFile(int localFd, const std::string& remotePath, std::function<void(int64_t)> progressCallback) {
     if (!transferSftpSession) {
         OH_LOG_ERROR(LOG_APP, "传输 SFTP 会话未初始化 (Transfer SFTP session not initialized)");
         return false;
@@ -1821,6 +1819,11 @@ bool SshSession::uploadFile(int localFd, const std::string& remotePath, std::fun
     return result;
 }
 
+void SshSession::setUploadThrottle(int64_t bps) {
+    if (!transferSftpSession) return;
+    transferSftpSession->setThrottleBps(bps);
+}
+
 std::string SshSession::getLastUploadError() const {
     if (!transferSftpSession) {
         return std::string();
@@ -1828,7 +1831,7 @@ std::string SshSession::getLastUploadError() const {
     return transferSftpSession->getLastUploadError();
 }
 
-bool SshSession::downloadFile(const std::string& remotePath, int localFd, std::function<void(off_t)> progressCallback) {
+bool SshSession::downloadFile(const std::string& remotePath, int localFd, std::function<void(int64_t)> progressCallback) {
     OH_LOG_INFO(LOG_APP, "SshSession::downloadFile called for %s to fd %d", remotePath.c_str(), localFd);
     if (!transferSftpSession) {
         OH_LOG_ERROR(LOG_APP, "传输 SFTP 会话未初始化 (Transfer SFTP session not initialized)");
@@ -2074,6 +2077,20 @@ int SshSession::getForwardAccepts() {
     return portForward->forwardAccepts();
 }
 
+int SshSession::getForwardFailuresOf(int port) {
+    if (!portForward) {
+        return 0;
+    }
+    return portForward->forwardFailuresOf(port);
+}
+
+int SshSession::getForwardAcceptsOf(int port) {
+    if (!portForward) {
+        return 0;
+    }
+    return portForward->forwardAcceptsOf(port);
+}
+
 // --- 恢复 setLogging 实现 ---
 bool SshSession::setLogging(int fd, int logType, int existOperation, bool includeHeader, bool omitKnownPassword, bool omitSessionData) {
     OH_LOG_INFO(LOG_APP, "SshSession::setLogging called with fd=%{public}d, logType=%{public}d, existOperation=%{public}d, includeHeader=%{public}d, omitKnownPassword=%{public}d, omitSessionData=%{public}d", 
@@ -2167,7 +2184,7 @@ bool SshSession::resizePty(int width, int height) {
 
     int rc;
     int attempts = 0;
-    const int maxAttempts = 5; // 限制重试次数，防止无限循环
+    const int maxAttempts = 20; // 限制重试次数，防止无限循环
 
     // 循环调用 libssh2_channel_request_pty_size，处理 EAGAIN 错误
     OH_LOG_INFO(LOG_APP, "调整 PTY 大小：进入 libssh2_channel_request_pty_size 循环");
@@ -2240,6 +2257,21 @@ bool SshSession::cancelTransfer() {
     return requestSent; // 返回是否至少向一个 SFTP 会话发送了取消请求
 }
 // -------------------------
+
+bool SshSession::pauseTransfer(bool on) {
+    OH_LOG_INFO(LOG_APP, "SshSession::pauseTransfer called: %{public}d", on ? 1 : 0);
+    bool sent = false;
+    std::lock_guard<std::recursive_mutex> lock(libssh2Mutex);
+    if (transferSftpSession) {
+        transferSftpSession->pauseTransfer(on);
+        sent = true;
+    }
+    if (interactiveSftpSession) {
+        interactiveSftpSession->pauseTransfer(on);
+        sent = true;
+    }
+    return sent;
+}
 
 // 实现parseOSC7Sequence方法 (手动解析版本)
 void SshSession::parseOSC7Sequence(const std::string& data) {
