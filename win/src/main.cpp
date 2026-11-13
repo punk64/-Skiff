@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <set>
+#include <memory>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -486,6 +488,28 @@ struct Sample {
 
 std::map<int, Sample> g_samples;
 
+struct StatsJob {
+  int idx = -1;
+  int sid = -1;
+};
+
+struct StatsPacket {
+  int idx = -1;
+  bool ok = false;
+  int latency = 0;
+  int cpu = 0;
+  int ram = 0;
+  std::wstring net;
+  int netp = 0;
+};
+
+std::deque<StatsJob> g_statsJobs;
+std::vector<StatsPacket> g_statsDone;
+std::mutex g_statsMtx;
+std::condition_variable g_statsCv;
+std::atomic<bool> g_statsStop{false};
+std::thread g_statsWorker;
+
 std::string TrimAscii(const std::string& s) {
   size_t a = 0;
   size_t b = s.size();
@@ -560,17 +584,7 @@ void SyncHostStates() {
   }
 }
 
-void CollectStats(int idx) {
-  if (idx < 0 || idx >= (int)g_state.hosts.size()) return;
-  sk::Host& h = g_state.hosts[(size_t)idx];
-  if (h.state != sk::HostState::Live) {
-    h.cpu = 0;
-    h.ram = 0;
-    h.netp = 0;
-    h.net.clear();
-    return;
-  }
-  int sid = h.sessionId;
+void CollectStats(int sid, StatsPacket& p) {
   if (sid < 0) return;
   sk::SshService& svc = sk::SshService::Instance();
   if (!svc.IsConnected(sid)) return;
@@ -583,10 +597,13 @@ void CollectStats(int idx) {
   if (!svc.Exec(sid, cmd, raw) || raw.empty()) {
     Sample& sp = g_samples[sid];
     ++sp.fails;
+    if (sp.fails == 1 || sp.fails == 3) {
+      sk::LogWrite("W", "stats exec failed sid=%d fails=%d bytes=%zu", sid, sp.fails, raw.size());
+    }
     if (sp.fails >= 3) sp.nextAt = (long long)(GetTickCount64() + 60000);
     return;
   }
-  h.latency = (int)(GetTickCount64() - t0);
+  p.latency = (int)(GetTickCount64() - t0);
 
   std::vector<std::string> parts;
   size_t start = 0;
@@ -618,7 +635,7 @@ void CollectStats(int idx) {
         int pct = (int)((dt - di) * 100 / dt);
         if (pct < 0) pct = 0;
         if (pct > 100) pct = 100;
-        h.cpu = pct;
+        p.cpu = pct;
       }
     }
     sp.cpuTotal = total;
@@ -636,7 +653,7 @@ void CollectStats(int idx) {
     int pct = (int)((memTotal - memAvail) * 100 / memTotal);
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
-    h.ram = pct;
+    p.ram = pct;
   }
 
   long long rx = 0;
@@ -665,15 +682,128 @@ void CollectStats(int idx) {
     double secs = (double)(nowMs - sp.at) / 1000.0;
     if (secs < 0.2) secs = 1.0;
     long long rate = (long long)((double)(drx + dtx) / secs);
-    h.net = FmtRate(rate);
+    p.net = FmtRate(rate);
     int pct = (int)((double)rate / (10.0 * 1024.0 * 1024.0) * 100.0);
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
-    h.netp = pct;
+    p.netp = pct;
   }
   sp.rx = rx;
   sp.tx = tx;
   sp.at = nowMs;
+  p.ok = true;
+}
+
+void StatsWorker() {
+  for (;;) {
+    StatsJob job;
+    {
+      std::unique_lock<std::mutex> lk(g_statsMtx);
+      g_statsCv.wait(lk, [] { return g_statsStop.load() || !g_statsJobs.empty(); });
+      if (g_statsStop.load()) return;
+      job = g_statsJobs.front();
+      g_statsJobs.pop_front();
+    }
+    StatsPacket p;
+    p.idx = job.idx;
+    CollectStats(job.sid, p);
+    std::lock_guard<std::mutex> lk(g_statsMtx);
+    g_statsDone.push_back(p);
+  }
+}
+
+void StatsStart() {
+  if (!g_statsWorker.joinable()) g_statsWorker = std::thread(StatsWorker);
+}
+
+void StatsStop() {
+  {
+    std::lock_guard<std::mutex> lk(g_statsMtx);
+    g_statsStop.store(true);
+    g_statsJobs.clear();
+  }
+  g_statsCv.notify_all();
+  if (!g_statsWorker.joinable()) return;
+  HANDLE h = (HANDLE)g_statsWorker.native_handle();
+  if (WaitForSingleObject(h, 1500) == WAIT_OBJECT_0) {
+    g_statsWorker.join();
+  } else {
+    g_statsWorker.detach();
+  }
+}
+
+void PumpStats() {
+  std::vector<StatsPacket> done;
+  {
+    std::lock_guard<std::mutex> lk(g_statsMtx);
+    if (g_statsDone.empty()) return;
+    done.swap(g_statsDone);
+  }
+  bool ch = false;
+  for (size_t i = 0; i < done.size(); ++i) {
+    const StatsPacket& p = done[i];
+    if (p.idx < 0 || p.idx >= (int)g_state.hosts.size()) continue;
+    sk::Host& h = g_state.hosts[(size_t)p.idx];
+    if (h.state != sk::HostState::Live) continue;
+    if (!p.ok) continue;
+    h.latency = p.latency;
+    h.cpu = p.cpu;
+    h.ram = p.ram;
+    ch = true;
+  }
+  if (ch && g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
+struct NetSmp {
+  unsigned long long rx = 0;
+  unsigned long long tx = 0;
+  unsigned long long at = 0;
+  double rate = 0.0;
+};
+
+std::map<int, NetSmp> g_netSmp;
+long long g_netNextAt = 0;
+
+void PumpNetRate() {
+  ULONGLONG now = GetTickCount64();
+  sk::SshService& svc = sk::SshService::Instance();
+  bool ch = false;
+  for (int i = 0; i < (int)g_state.hosts.size(); ++i) {
+    sk::Host& h = g_state.hosts[(size_t)i];
+    if (h.state != sk::HostState::Live || h.sessionId < 0) {
+      g_netSmp.erase(i);
+      continue;
+    }
+    unsigned long long rx = 0;
+    unsigned long long tx = 0;
+    svc.Traffic(h.sessionId, rx, tx);
+    int xid = svc.TransferSessionId(h.sessionId);
+    if (xid != -1) {
+      unsigned long long xr = 0;
+      unsigned long long xt = 0;
+      svc.Traffic(xid, xr, xt);
+      rx += xr;
+      tx += xt;
+    }
+    NetSmp& s = g_netSmp[i];
+    if (s.at > 0 && now > s.at && rx >= s.rx && tx >= s.tx) {
+      double secs = (double)(now - s.at) / 1000.0;
+      if (secs < 0.2) secs = 1.0;
+      double inst = (double)((rx - s.rx) + (tx - s.tx)) / secs;
+      s.rate = s.rate > 0.0 ? s.rate * 0.45 + inst * 0.55 : inst;
+      long long rate = (long long)s.rate;
+      h.net = FmtRate(rate);
+      int pct = (int)((double)rate / (10.0 * 1024.0 * 1024.0) * 100.0);
+      if (pct < 0) pct = 0;
+      if (pct > 100) pct = 100;
+      h.netp = pct;
+      ch = true;
+    }
+    s.rx = rx;
+    s.tx = tx;
+    s.at = now;
+  }
+  if (ch && g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
 void SplitHostPort(const std::wstring& dest, std::string& host, int& port) {
@@ -725,18 +855,18 @@ void ProbeWorker() {
       job = g_probeJobs.front();
       g_probeJobs.pop_front();
     }
-    int baseAcc = svc.ForwardAccepts(job.sid);
-    int baseFail = svc.ForwardFailures(job.sid);
+    int baseAcc = svc.ForwardAcceptsOf(job.sid, job.port);
+    int baseFail = svc.ForwardFailuresOf(job.sid, job.port);
     int ok = 0;
     if (ProbeLocal(job.port, 160)) {
       ok = 1;
       for (int i = 0; i < 10; ++i) {
         Sleep(30);
-        if (svc.ForwardFailures(job.sid) > baseFail) {
+        if (svc.ForwardFailuresOf(job.sid, job.port) > baseFail) {
           ok = 0;
           break;
         }
-        if (svc.ForwardAccepts(job.sid) > baseAcc) {
+        if (svc.ForwardAcceptsOf(job.sid, job.port) > baseAcc) {
           ok = 1;
           break;
         }
@@ -802,13 +932,19 @@ void PumpProbe() {
           tn.retryIn = 0;
           tn.nextAt = now + 3000;
         } else {
-          tn.state = sk::TunState::Retry;
-          tn.probed = 0;
           ++tn.fails;
-          int wait = tn.fails <= 1 ? 5 : (tn.fails == 2 ? 10 : 15);
-          tn.retryIn = wait;
-          tn.nextAt = now + (long long)wait * 1000;
-          if (d.sid >= 0 && d.port > 0) sk::SshService::Instance().ForwardStopLocal(d.sid, d.port);
+          tn.probed = 0;
+          if (tn.fails < 3) {
+            tn.state = sk::TunState::Retry;
+            tn.retryIn = 3;
+            tn.nextAt = now + 2000;
+          } else {
+            tn.fails = 0;
+            tn.state = sk::TunState::Retry;
+            tn.retryIn = 15;
+            tn.nextAt = now + 15000;
+            if (d.sid >= 0 && d.port > 0) sk::SshService::Instance().ForwardStopLocal(d.sid, d.port);
+          }
         }
         changed = true;
         break;
@@ -888,9 +1024,9 @@ void PatrolTunnels() {
           tn.fails = 0;
           tn.retryIn = 0;
           tn.probed = 0;
-          tn.lastAcc = svc.ForwardAccepts(sid);
-          tn.lastFails = svc.ForwardFailures(sid);
           tn.nextAt = (long long)(now + 600);
+          tn.lastAcc = svc.ForwardAcceptsOf(sid, port);
+          tn.lastFails = svc.ForwardFailuresOf(sid, port);
           changed = true;
         } else {
           ++tn.fails;
@@ -903,17 +1039,20 @@ void PatrolTunnels() {
         }
         continue;
       }
-      int acc = svc.ForwardAccepts(sid);
-      int fl = svc.ForwardFailures(sid);
+      int acc = svc.ForwardAcceptsOf(sid, port);
+      int fl = svc.ForwardFailuresOf(sid, port);
       if (fl > tn.lastFails) {
         tn.lastFails = fl;
         tn.lastAcc = acc;
         ++tn.fails;
-        int wait = tn.fails <= 1 ? 5 : (tn.fails == 2 ? 10 : 15);
+        if (tn.fails < 3) {
+          continue;
+        }
+        tn.fails = 0;
         tn.state = sk::TunState::Retry;
-        tn.retryIn = wait;
+        tn.retryIn = 5;
         tn.probed = 0;
-        tn.nextAt = (long long)(now + (ULONGLONG)wait * 1000ULL);
+        tn.nextAt = (long long)(now + 5000);
         svc.ForwardStopLocal(sid, port);
         changed = true;
         continue;
@@ -940,7 +1079,8 @@ void PatrolTunnels() {
   if (changed && g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
-void ClipboardSet(const std::wstring& text);
+bool ClipboardSet(const std::wstring& text);
+bool ClipboardCopy(const std::wstring& text);
 
 bool ProbeLocal(int port, int timeoutMs) {
   SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -1015,8 +1155,8 @@ void BrowseTunnel(int index) {
       tn.nextAt = now + 300;
       tn.retryIn = 0;
       tn.probed = 0;
-      tn.lastAcc = svc.ForwardAccepts(sid);
-      tn.lastFails = svc.ForwardFailures(sid);
+      tn.lastAcc = svc.ForwardAcceptsOf(sid, port);
+      tn.lastFails = svc.ForwardFailuresOf(sid, port);
       if (g_hwnd != nullptr) InvalidateRect(g_hwnd, nullptr, FALSE);
       Sleep(300);
     }
@@ -1026,8 +1166,8 @@ void BrowseTunnel(int index) {
   tn.retryIn = 0;
   tn.fails = 0;
   tn.probed = up ? 2 : 0;
-  tn.lastAcc = svc.ForwardAccepts(sid);
-  tn.lastFails = svc.ForwardFailures(sid);
+  tn.lastAcc = svc.ForwardAcceptsOf(sid, port);
+  tn.lastFails = svc.ForwardFailuresOf(sid, port);
   tn.nextAt = now + 3000;
   g_state.refreshAt = now;
   g_state.dirty = true;
@@ -1298,10 +1438,6 @@ void SftpLoadRemote() {
     g_state.sftpScrollL = 0.0f;
     g_state.sftpScrollR = 0.0f;
   }
-  if (XferBusy()) {
-    SftpNotify(sk::Tr(L"传输中，稍后刷新"), true);
-    return;
-  }
   if (sid < 0) {
     g_state.sftpStatus = sk::Tr(L"未连接");
     g_state.sftpRemote.clear();
@@ -1380,33 +1516,148 @@ void PumpSftpList() {
 
 struct XferRow {
   int kind = 0;
+  int sid = -1;
+  int host = -1;
   std::wstring name;
+  std::wstring localPath;
+  std::string remotePath;
   int state = 0;
   int pct = 0;
   unsigned long long done = 0;
   unsigned long long total = 0;
+  bool paused = false;
+  bool cancelReq = false;
   std::wstring err;
 };
+
+unsigned long long g_xfSpeed = 0;
+unsigned long long g_xfEta = 0;
+
+struct FlowState {
+  std::atomic<long long> linkBps{0};
+  std::atomic<long long> lastAct{0};
+  std::atomic<long long> keyAt{0};
+  std::atomic<int> rttMs{0};
+  double factor = 1.0;
+  long long lastLimit = 0;
+};
+
+std::mutex g_flowMtx;
+std::map<int, std::shared_ptr<FlowState>> g_flows;
+
+std::shared_ptr<FlowState> FlowOf(int host) {
+  std::lock_guard<std::mutex> lk(g_flowMtx);
+  std::shared_ptr<FlowState>& f = g_flows[host];
+  if (!f) f = std::make_shared<FlowState>();
+  return f;
+}
+
+void FlowTouch() {
+  FlowOf(g_state.CurrentHostId())->lastAct.store((long long)GetTickCount64());
+}
+
+void FlowKey() {
+  std::shared_ptr<FlowState> f = FlowOf(g_state.CurrentHostId());
+  long long now = (long long)GetTickCount64();
+  f->lastAct.store(now);
+  f->keyAt.store(now);
+}
+
+void FlowRtt() {
+  std::shared_ptr<FlowState> f = FlowOf(g_state.CurrentHostId());
+  long long now = (long long)GetTickCount64();
+  long long k = f->keyAt.exchange(0);
+  if (k <= 0 || now <= k) return;
+  long long ms = now - k;
+  if (ms > 5000) return;
+  int prev = f->rttMs.load();
+  int v = prev > 0 ? (int)((prev * 3 + ms) / 4) : (int)ms;
+  f->rttMs.store(v);
+}
+
+void FlowTick(int host, int sid) {
+  if (sid < 0) return;
+  std::shared_ptr<FlowState> f = FlowOf(host);
+  long long link = f->linkBps.load();
+  if (link <= 0) return;
+  long long now = (long long)GetTickCount64();
+  bool adaptive = g_state.xferAdaptive;
+  bool active = (now - f->lastAct.load()) < 2000;
+  int rtt = f->rttMs.load();
+
+  double target = 1.0;
+  if (adaptive) {
+    if (active) target = 0.35;
+    if (rtt > 300) target *= 0.6;
+    else if (rtt > 150) target *= 0.85;
+  }
+  if (target < f->factor) {
+    f->factor = target;
+  } else if (target > f->factor) {
+    f->factor += 0.12;
+    if (f->factor > target) f->factor = target;
+  }
+
+  long long lim = adaptive ? (long long)((double)link * f->factor) : 0;
+  if (lim > 0 && lim < 32768) lim = 32768;
+  if (lim == f->lastLimit) return;
+  f->lastLimit = lim;
+  sk::SshService::Instance().SetUploadLimit(sid, lim);
+}
+
+std::wstring FmtDur(unsigned long long sec) {
+  if (sec >= 3600) {
+    return std::to_wstring((int)(sec / 3600)) + L"h" + std::to_wstring((int)((sec % 3600) / 60)) + L"m";
+  }
+  if (sec >= 60) return std::to_wstring((int)(sec / 60)) + L"m" + std::to_wstring((int)(sec % 60)) + L"s";
+  return std::to_wstring((int)sec) + L"s";
+}
 
 struct XferJob {
   int idx = -1;
   int sid = -1;
+  int host = -1;
   int kind = 0;
   std::wstring localPath;
   std::string remotePath;
 };
 
-std::mutex g_xfMtx;
-std::condition_variable g_xfCv;
-std::deque<XferJob> g_xfJobs;
-std::thread g_xfWorker;
-bool g_xfStop = false;
+struct XferLane {
+  std::mutex mtx;
+  std::condition_variable cv;
+  std::deque<XferJob> jobs;
+  std::thread th;
+  bool stop = false;
 
-std::mutex g_xfRunMtx;
-int g_xfRunIdx = -1;
-int g_xfRunPct = 0;
-unsigned long long g_xfRunDone = 0;
-unsigned long long g_xfRunTotal = 0;
+  std::mutex runMtx;
+  int runIdx = -1;
+  int pct = 0;
+  unsigned long long done = 0;
+  unsigned long long total = 0;
+
+  unsigned long long speed = 0;
+  std::deque<std::pair<ULONGLONG, unsigned long long>> hist;
+  int prevIdx = -1;
+};
+
+std::mutex g_xfLaneMtx;
+std::map<int, std::shared_ptr<XferLane>> g_xfLanes;
+
+std::shared_ptr<XferLane> XferLaneOf(int host) {
+  std::lock_guard<std::mutex> lk(g_xfLaneMtx);
+  std::shared_ptr<XferLane>& l = g_xfLanes[host];
+  if (!l) l = std::make_shared<XferLane>();
+  return l;
+}
+
+std::vector<std::pair<int, std::shared_ptr<XferLane>>> XferLaneList() {
+  std::vector<std::pair<int, std::shared_ptr<XferLane>>> ls;
+  std::lock_guard<std::mutex> lk(g_xfLaneMtx);
+  for (std::map<int, std::shared_ptr<XferLane>>::iterator it = g_xfLanes.begin(); it != g_xfLanes.end(); ++it) {
+    ls.push_back(*it);
+  }
+  return ls;
+}
 
 std::mutex g_xfDoneMtx;
 std::deque<std::pair<int, std::wstring>> g_xfDone;
@@ -1415,30 +1666,30 @@ std::vector<XferRow> g_xfRows;
 bool g_xfNeedRemote = false;
 bool g_xfNeedLocal = false;
 
-void XferWorker() {
+void XferWorker(std::shared_ptr<XferLane> lane) {
   sk::SshService& svc = sk::SshService::Instance();
   for (;;) {
     XferJob job;
     {
-      std::unique_lock<std::mutex> lk(g_xfMtx);
-      g_xfCv.wait(lk, [] { return g_xfStop || !g_xfJobs.empty(); });
-      if (g_xfStop) return;
-      job = g_xfJobs.front();
-      g_xfJobs.pop_front();
+      std::unique_lock<std::mutex> lk(lane->mtx);
+      lane->cv.wait(lk, [&lane] { return lane->stop || !lane->jobs.empty(); });
+      if (lane->stop) return;
+      job = lane->jobs.front();
+      lane->jobs.pop_front();
     }
     {
-      std::lock_guard<std::mutex> lk(g_xfRunMtx);
-      g_xfRunIdx = job.idx;
-      g_xfRunPct = 0;
-      g_xfRunDone = 0;
-      g_xfRunTotal = 0;
+      std::lock_guard<std::mutex> lk(lane->runMtx);
+      lane->runIdx = job.idx;
+      lane->pct = 0;
+      lane->done = 0;
+      lane->total = 0;
     }
-    sk::SshService::ProgressFn prog = [](unsigned long long d, unsigned long long t) {
-      std::lock_guard<std::mutex> lk(g_xfRunMtx);
-      g_xfRunDone = d;
-      g_xfRunTotal = t;
+    sk::SshService::ProgressFn prog = [lane](unsigned long long d, unsigned long long t) {
+      std::lock_guard<std::mutex> lk(lane->runMtx);
+      lane->done = d;
+      lane->total = t;
       int pct = t > 0 ? (int)((d * 100ULL) / t) : 0;
-      g_xfRunPct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
+      lane->pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
     };
     std::string err;
     bool ok = false;
@@ -1447,9 +1698,10 @@ void XferWorker() {
     } else {
       ok = svc.SftpDownload(job.sid, job.remotePath, job.localPath, err, prog);
     }
+    svc.ReapTransferSession();
     {
-      std::lock_guard<std::mutex> lk(g_xfRunMtx);
-      g_xfRunIdx = -1;
+      std::lock_guard<std::mutex> lk(lane->runMtx);
+      lane->runIdx = -1;
     }
     {
       std::lock_guard<std::mutex> lk(g_xfDoneMtx);
@@ -1459,19 +1711,49 @@ void XferWorker() {
   }
 }
 
-void XferStop() {
+void XferSubmit(const XferJob& job) {
+  std::shared_ptr<XferLane> lane = XferLaneOf(job.host);
+  bool needStart = false;
   {
-    std::lock_guard<std::mutex> lk(g_xfMtx);
-    g_xfStop = true;
-    g_xfJobs.clear();
+    std::lock_guard<std::mutex> lk(lane->mtx);
+    lane->jobs.push_back(job);
+    if (!lane->th.joinable()) {
+      lane->stop = false;
+      needStart = true;
+    }
   }
-  g_xfCv.notify_all();
-  if (!g_xfWorker.joinable()) return;
-  HANDLE h = (HANDLE)g_xfWorker.native_handle();
-  if (WaitForSingleObject(h, 1500) == WAIT_OBJECT_0) {
-    g_xfWorker.join();
-  } else {
-    g_xfWorker.detach();
+  if (needStart) {
+    lane->th = std::thread(XferWorker, lane);
+    SK_LOGI("xfer lane start host=%d", job.host);
+  }
+  SK_LOGI("xfer submit host=%d idx=%d kind=%d", job.host, job.idx, job.kind);
+  lane->cv.notify_one();
+}
+
+void XferRequestStop() {
+  std::vector<std::pair<int, std::shared_ptr<XferLane>>> ls = XferLaneList();
+  for (size_t i = 0; i < ls.size(); ++i) {
+    {
+      std::lock_guard<std::mutex> lk(ls[i].second->mtx);
+      ls[i].second->stop = true;
+      ls[i].second->jobs.clear();
+    }
+    ls[i].second->cv.notify_all();
+  }
+}
+
+void XferStop() {
+  XferRequestStop();
+  std::vector<std::pair<int, std::shared_ptr<XferLane>>> ls = XferLaneList();
+  for (size_t i = 0; i < ls.size(); ++i) {
+    std::shared_ptr<XferLane> lane = ls[i].second;
+    if (!lane->th.joinable()) continue;
+    HANDLE h = (HANDLE)lane->th.native_handle();
+    if (WaitForSingleObject(h, 1500) == WAIT_OBJECT_0) {
+      lane->th.join();
+    } else {
+      lane->th.detach();
+    }
   }
 }
 
@@ -1487,22 +1769,33 @@ void XferRebuild() {
   g_state.sftpQueueIdx.clear();
   g_state.sftpQueueState.clear();
   size_t n = g_xfRows.size();
-  size_t start = n > 8 ? n - 8 : 0;
+  size_t start = n > 10 ? n - 10 : 0;
+  int curHost = g_state.CurrentHostId();
   for (size_t i = start; i < n; ++i) {
     const XferRow& r = g_xfRows[i];
+    if (r.host != curHost) continue;
     std::wstring line = r.kind == 0 ? L"↑ " : L"↓ ";
     line += r.name;
     line += L" · ";
     if (r.state == 0) {
       line += sk::Tr(L"排队中");
     } else if (r.state == 1) {
-      line += std::to_wstring(r.pct) + L"%";
-      if (r.total > 0) line += L"  " + FmtBytes(r.done) + L" / " + FmtBytes(r.total);
+      if (r.paused) {
+        line += sk::Tr(L"已暂停");
+        if (r.total > 0) line += L"  " + FmtBytes(r.done) + L" / " + FmtBytes(r.total);
+      } else {
+        line += std::to_wstring(r.pct) + L"%";
+        if (r.total > 0) line += L"  " + FmtBytes(r.done) + L" / " + FmtBytes(r.total);
+        if (g_xfSpeed > 0) line += L"  " + FmtBytes(g_xfSpeed) + L"/s";
+        if (g_xfEta > 0) line += L"  " + std::wstring(sk::Tr(L"剩")) + L" " + FmtDur(g_xfEta);
+      }
     } else if (r.state == 2) {
       line += sk::Tr(L"完成");
     } else {
       line += sk::Tr(L"失败");
       if (!r.err.empty()) line += L" " + r.err;
+      line += L" · ";
+      line += sk::Tr(L"点击重试");
     }
     g_state.sftpQueue.push_back(line);
     g_state.sftpQueueIdx.push_back((int)i);
@@ -1510,48 +1803,155 @@ void XferRebuild() {
   }
 }
 
+void UpdateXferBar() {
+  g_state.sftpBar.clear();
+  if (g_xfRows.empty()) return;
+  int curHost = g_state.CurrentHostId();
+  int running = -1;
+  int wait = 0;
+  for (size_t i = 0; i < g_xfRows.size(); ++i) {
+    const XferRow& r = g_xfRows[i];
+    if (r.host != curHost) continue;
+    if (r.state == 1) running = (int)i;
+    else if (r.state == 0) ++wait;
+  }
+  std::wstring s;
+  if (running >= 0) {
+    const XferRow& r = g_xfRows[(size_t)running];
+    s = r.kind == 0 ? L"↑ " : L"↓ ";
+    s += r.name;
+    s += L" " + std::to_wstring(r.pct) + L"%";
+    if (r.paused) {
+      s += L" · " + std::wstring(sk::Tr(L"已暂停"));
+      g_xfEta = 0;
+    } else if (g_xfSpeed > 0) {
+      s += L" " + FmtBytes(g_xfSpeed) + L"/s";
+      g_xfEta = r.total > r.done ? (r.total - r.done) / g_xfSpeed : 0;
+    } else {
+      g_xfEta = 0;
+    }
+    if (g_xfEta > 0) s += L" " + std::wstring(sk::Tr(L"剩")) + L" " + FmtDur(g_xfEta);
+    long long lim = FlowOf(curHost)->lastLimit;
+    if (lim > 0) {
+      s += L" · ";
+      s += sk::Tr(L"限");
+      s += L" ";
+      s += FmtBytes((unsigned long long)lim);
+      s += L"/s";
+    }
+    if (wait > 0) s += L" · " + std::to_wstring(wait) + sk::Tr(L" 排队");
+  } else if (wait > 0) {
+    s = std::to_wstring(wait) + sk::Tr(L" 项排队");
+  }
+  int others = 0;
+  for (size_t i = 0; i < g_xfRows.size(); ++i) {
+    if (g_xfRows[i].host != curHost && g_xfRows[i].state < 2) ++others;
+  }
+  if (others > 0) {
+    if (!s.empty()) s += L" · ";
+    s += std::wstring(sk::Tr(L"另有 ")) + std::to_wstring(others) + sk::Tr(L" 项在其他主机");
+  }
+  if (s.empty()) return;
+  g_state.sftpBar = s;
+}
+
+void XferRetryJob(int idx) {
+  if (idx < 0 || idx >= (int)g_xfRows.size()) return;
+  XferRow& r = g_xfRows[(size_t)idx];
+  if (r.state != 3) return;
+  XferJob job;
+  job.idx = idx;
+  job.sid = r.sid;
+  job.host = r.host;
+  job.kind = r.kind;
+  job.localPath = r.localPath;
+  job.remotePath = r.remotePath;
+  r.state = 0;
+  r.pct = 0;
+  r.done = 0;
+  r.err.clear();
+  XferSubmit(job);
+  g_state.sftpStatus = std::wstring(sk::Tr(L"重试 ")) + r.name;
+  XferRebuild();
+}
+
 void XferCancelJob(int idx) {
+  if (idx < 0 || idx >= (int)g_xfRows.size()) return;
+  XferRow& r = g_xfRows[(size_t)idx];
+  if (r.state == 3) {
+    XferRetryJob(idx);
+    return;
+  }
+  if (r.state == 1) {
+    r.cancelReq = true;
+    r.paused = false;
+    sk::SshService::Instance().CancelTransfer(r.sid);
+    g_state.sftpStatus = std::wstring(sk::Tr(L"正在取消 ")) + r.name;
+    XferRebuild();
+    return;
+  }
   bool removed = false;
   {
-    std::lock_guard<std::mutex> lk(g_xfMtx);
-    for (std::deque<XferJob>::iterator it = g_xfJobs.begin(); it != g_xfJobs.end(); ++it) {
+    std::shared_ptr<XferLane> lane = XferLaneOf(r.host);
+    std::lock_guard<std::mutex> lk(lane->mtx);
+    for (std::deque<XferJob>::iterator it = lane->jobs.begin(); it != lane->jobs.end(); ++it) {
       if (it->idx != idx) continue;
-      g_xfJobs.erase(it);
+      lane->jobs.erase(it);
       removed = true;
       break;
     }
   }
-  if (idx >= 0 && idx < (int)g_xfRows.size() && g_xfRows[(size_t)idx].state == 0) {
-    g_xfRows[(size_t)idx].state = 3;
-    g_xfRows[(size_t)idx].err = sk::Tr(L"已取消");
-    g_state.sftpStatus = sk::Tr(L"已取消 ") + g_xfRows[(size_t)idx].name;
+  if (r.state == 0) {
+    r.state = 3;
+    r.err = sk::Tr(L"已取消");
+    g_state.sftpStatus = sk::Tr(L"已取消 ") + r.name;
     removed = true;
   }
   if (removed) XferRebuild();
 }
 
+void XferPauseJob(int idx) {
+  if (idx < 0 || idx >= (int)g_xfRows.size()) return;
+  XferRow& r = g_xfRows[(size_t)idx];
+  if (r.state != 1) return;
+  r.paused = !r.paused;
+  sk::SshService::Instance().PauseTransfer(r.sid, r.paused);
+  g_state.sftpStatus = (r.paused ? std::wstring(sk::Tr(L"已暂停 ")) : std::wstring(sk::Tr(L"继续 "))) + r.name;
+  XferRebuild();
+  UpdateXferBar();
+}
+
+void XferRowClick(int idx) {
+  if (idx < 0 || idx >= (int)g_xfRows.size()) return;
+  if (g_xfRows[(size_t)idx].state == 1) {
+    XferPauseJob(idx);
+    return;
+  }
+  XferCancelJob(idx);
+}
+
 void XferQueue(int kind, int sid, const std::wstring& name, const std::wstring& localPath,
                const std::string& remotePath) {
-  if (!XferBusy() && !g_xfRows.empty()) {
+  if (!XferBusy() && g_xfRows.size() >= 12) {
     g_xfRows.clear();
     g_state.sftpQueue.clear();
   }
   XferRow row;
   row.kind = kind;
+  row.sid = sid;
+  row.host = g_state.CurrentHostId();
   row.name = name;
+  row.localPath = localPath;
+  row.remotePath = remotePath;
   g_xfRows.push_back(row);
   XferJob job;
   job.idx = (int)g_xfRows.size() - 1;
   job.sid = sid;
+  job.host = row.host;
   job.kind = kind;
   job.localPath = localPath;
   job.remotePath = remotePath;
-  {
-    std::lock_guard<std::mutex> lk(g_xfMtx);
-    g_xfJobs.push_back(job);
-  }
-  if (!g_xfWorker.joinable()) g_xfWorker = std::thread(XferWorker);
-  g_xfCv.notify_one();
+  XferSubmit(job);
   XferRebuild();
 }
 
@@ -1566,10 +1966,17 @@ void XferPoll() {
     int idx = done[i].first;
     if (idx < 0 || idx >= (int)g_xfRows.size()) continue;
     XferRow& r = g_xfRows[(size_t)idx];
+    bool cancelled = r.cancelReq;
+    r.cancelReq = false;
+    r.paused = false;
     if (done[i].second.empty()) {
       r.state = 2;
       r.pct = 100;
       g_state.sftpStatus = (r.kind == 0 ? std::wstring(sk::Tr(L"已上传 ")) : std::wstring(sk::Tr(L"已下载 "))) + r.name;
+    } else if (cancelled) {
+      r.state = 3;
+      r.err = sk::Tr(L"已取消");
+      g_state.sftpStatus = sk::Tr(L"已取消 ") + r.name;
     } else {
       r.state = 3;
       r.err = done[i].second;
@@ -1582,29 +1989,86 @@ void XferPoll() {
     }
     changed = true;
   }
-  int runIdx = -1;
-  int pct = 0;
-  unsigned long long dn = 0;
-  unsigned long long tt = 0;
+  struct LaneSnap {
+    int runIdx = -1;
+    int pct = 0;
+    unsigned long long done = 0;
+    unsigned long long total = 0;
+    unsigned long long speed = 0;
+  };
+  std::map<int, LaneSnap> snaps;
   {
-    std::lock_guard<std::mutex> lk(g_xfRunMtx);
-    runIdx = g_xfRunIdx;
-    pct = g_xfRunPct;
-    dn = g_xfRunDone;
-    tt = g_xfRunTotal;
+    std::vector<std::pair<int, std::shared_ptr<XferLane>>> ls = XferLaneList();
+    ULONGLONG nowTick = GetTickCount64();
+    for (size_t i = 0; i < ls.size(); ++i) {
+      std::shared_ptr<XferLane> lane = ls[i].second;
+      LaneSnap sn;
+      {
+        std::lock_guard<std::mutex> lk(lane->runMtx);
+        sn.runIdx = lane->runIdx;
+        sn.pct = lane->pct;
+        sn.done = lane->done;
+        sn.total = lane->total;
+      }
+      if (sn.runIdx >= 0) {
+        if (lane->prevIdx != sn.runIdx) {
+          lane->prevIdx = sn.runIdx;
+          lane->hist.clear();
+          lane->hist.push_back(std::make_pair(nowTick, sn.done));
+          lane->speed = 0;
+        } else {
+          lane->hist.push_back(std::make_pair(nowTick, sn.done));
+          while (lane->hist.size() > 2 && nowTick - lane->hist.front().first > 3000) lane->hist.pop_front();
+          ULONGLONG t0 = lane->hist.front().first;
+          unsigned long long d0 = lane->hist.front().second;
+          if (nowTick - t0 >= 800) {
+            lane->speed = (sn.done > d0 ? sn.done - d0 : 0) * 1000ULL / (nowTick - t0);
+          }
+        }
+      } else {
+        lane->prevIdx = -1;
+        lane->hist.clear();
+        lane->speed = 0;
+      }
+      if (lane->speed > 0) {
+        std::shared_ptr<FlowState> f = FlowOf(ls[i].first);
+        long long prev = f->linkBps.load();
+        long long v = prev > 0 ? (prev * 3 + (long long)lane->speed * 7) / 10 : (long long)lane->speed;
+        if (v < 16384) v = 16384;
+        f->linkBps.store(v);
+      }
+      sn.speed = lane->speed;
+      snaps[ls[i].first] = sn;
+    }
+  }
+  int curHost = g_state.CurrentHostId();
+  int curRun = -1;
+  g_xfSpeed = 0;
+  {
+    std::map<int, LaneSnap>::iterator it = snaps.find(curHost);
+    if (it != snaps.end()) {
+      curRun = it->second.runIdx;
+      if (curRun >= 0) g_xfSpeed = it->second.speed;
+    }
   }
   for (size_t i = 0; i < g_xfRows.size(); ++i) {
     XferRow& r = g_xfRows[i];
     if (r.state >= 2) continue;
-    if ((int)i == runIdx) {
-      if (r.state != 1 || r.pct != pct || r.done != dn || r.total != tt) {
+    std::map<int, LaneSnap>::iterator it = snaps.find(r.host);
+    bool running = (it != snaps.end() && it->second.runIdx == (int)i);
+    if (running) {
+      const LaneSnap& sn = it->second;
+      if (r.state != 1 || r.pct != sn.pct || r.done != sn.done || r.total != sn.total) {
         r.state = 1;
-        r.pct = pct;
-        r.done = dn;
-        r.total = tt;
+        r.pct = sn.pct;
+        r.done = sn.done;
+        r.total = sn.total;
         changed = true;
-        g_state.sftpStatus = (r.kind == 0 ? std::wstring(sk::Tr(L"上传中 ")) : std::wstring(sk::Tr(L"下载中 "))) +
-                             r.name + L" " + std::to_wstring(pct) + L"%";
+        if (r.host == curHost) {
+          g_state.sftpStatus = (r.kind == 0 ? std::wstring(sk::Tr(L"上传中 ")) : std::wstring(sk::Tr(L"下载中 "))) +
+                               r.name + L" " + std::to_wstring(sn.pct) + L"%";
+          if (sn.speed > 0) g_state.sftpStatus += L"  " + FmtBytes(sn.speed) + L"/s";
+        }
       }
     } else if (r.state != 0) {
       r.state = 0;
@@ -1613,10 +2077,33 @@ void XferPoll() {
     }
   }
   if (changed) XferRebuild();
-  bool idle = runIdx < 0;
+  static int qHostSeen = -2;
+  if (qHostSeen != curHost) {
+    qHostSeen = curHost;
+    XferRebuild();
+    changed = true;
+  }
+  std::wstring prevBar = g_state.sftpBar;
+  UpdateXferBar();
+  if (g_hwnd != nullptr && (changed || prevBar != g_state.sftpBar)) {
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+  }
+  bool idle = true;
+  for (std::map<int, LaneSnap>::iterator it = snaps.begin(); it != snaps.end(); ++it) {
+    if (it->second.runIdx >= 0) {
+      idle = false;
+      break;
+    }
+  }
   if (idle) {
-    std::lock_guard<std::mutex> lk(g_xfMtx);
-    if (!g_xfJobs.empty()) idle = false;
+    std::vector<std::pair<int, std::shared_ptr<XferLane>>> ls = XferLaneList();
+    for (size_t i = 0; i < ls.size(); ++i) {
+      std::lock_guard<std::mutex> lk(ls[i].second->mtx);
+      if (!ls[i].second->jobs.empty()) {
+        idle = false;
+        break;
+      }
+    }
   }
   if (idle && changed) {
     bool needR = g_xfNeedRemote;
@@ -1629,6 +2116,11 @@ void XferPoll() {
       if (needL) SftpLoadLocal();
       g_state.sftpStatus = keep;
     }
+  }
+  for (std::map<int, LaneSnap>::iterator it = snaps.begin(); it != snaps.end(); ++it) {
+    int rowIdx = it->second.runIdx;
+    if (rowIdx < 0 || rowIdx >= (int)g_xfRows.size()) continue;
+    FlowTick(it->first, g_xfRows[(size_t)rowIdx].sid);
   }
 }
 
@@ -1870,9 +2362,9 @@ void PumpPendingSftp() {
 
 bool ClipboardOpen(bool write) {
   HWND owner = write ? g_hwnd : nullptr;
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < 20; ++i) {
     if (OpenClipboard(owner)) return true;
-    Sleep(20);
+    Sleep(30);
   }
   return false;
 }
@@ -1892,20 +2384,41 @@ std::wstring ClipboardGet() {
   return out;
 }
 
-void ClipboardSet(const std::wstring& text) {
-  if (text.empty() || !ClipboardOpen(true)) return;
-  EmptyClipboard();
+bool ClipboardSet(const std::wstring& text) {
+  if (text.empty()) return false;
   size_t bytes = (text.size() + 1) * sizeof(wchar_t);
   HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-  if (mem != nullptr) {
-    void* dst = GlobalLock(mem);
-    if (dst != nullptr) {
-      memcpy(dst, text.c_str(), bytes);
-      GlobalUnlock(mem);
-      SetClipboardData(CF_UNICODETEXT, mem);
-    }
+  if (mem == nullptr) return false;
+  void* dst = GlobalLock(mem);
+  if (dst == nullptr) {
+    GlobalFree(mem);
+    return false;
   }
+  memcpy(dst, text.c_str(), bytes);
+  GlobalUnlock(mem);
+  if (!ClipboardOpen(true)) {
+    GlobalFree(mem);
+    return false;
+  }
+  bool ok = false;
+  if (EmptyClipboard()) ok = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
   CloseClipboard();
+  if (!ok) GlobalFree(mem);
+  return ok;
+}
+
+bool ClipboardCopy(const std::wstring& text) {
+  if (!ClipboardSet(text)) {
+    SK_LOGW("clip set fail chars=%d", (int)text.size());
+    return false;
+  }
+  std::wstring back = ClipboardGet();
+  if (back != text) {
+    SK_LOGW("clip verify mismatch wrote=%d read=%d", (int)text.size(), (int)back.size());
+    return false;
+  }
+  SK_LOGI("clip copy ok chars=%d", (int)text.size());
+  return true;
 }
 
 sk::FormField* EditField() {
@@ -2007,13 +2520,13 @@ std::map<int, int> g_ptySize;
 void ApplyTermGrid() {
   TermGeom g;
   if (!TermGeomOf(g)) return;
+  if (!(g_client.W() > 120.0f) || !(g_client.H() > 120.0f)) return;
   int sid = g_state.CurrentSessionId();
   sk::Terminal* term = sk::SessionHub::Instance().Find(sid);
   if (term == nullptr) return;
   int cols = (int)(g.area.W() / g.cw);
   int rows = (int)(g.area.H() / g.lh);
-  if (cols < 20) cols = 20;
-  if (rows < 6) rows = 6;
+  if (cols < 20 || rows < 5) return;
   if (cols > 500) cols = 500;
   if (rows > 200) rows = 200;
   if (term->Cols() != cols || term->Rows() != rows) term->Resize(cols, rows);
@@ -2021,19 +2534,99 @@ void ApplyTermGrid() {
   std::map<int, int>::iterator it = g_ptySize.find(sid);
   if (it != g_ptySize.end() && it->second == sig) return;
   if (!sk::SshService::Instance().IsConnected(sid)) return;
+  bool firstSync = (it == g_ptySize.end());
+  static int pendSid = -1;
+  static int pendSig = 0;
+  static int pendCount = 0;
+  static unsigned long long pendAt = 0;
+  unsigned long long now = GetTickCount64();
+  if (pendSid == sid && pendSig == sig) {
+    ++pendCount;
+  } else {
+    pendSid = sid;
+    pendSig = sig;
+    pendCount = 1;
+  }
+  if (!firstSync) {
+    if (pendCount < 2) return;
+    if (now - pendAt < 300) return;
+  }
+  pendAt = now;
   if (sk::SshService::Instance().ResizePty(sid, cols, rows)) g_ptySize[sid] = sig;
+}
+
+struct TermOut {
+  int sid = -1;
+  std::string bytes;
+};
+
+std::deque<TermOut> g_termOut;
+std::set<int> g_termWarned;
+std::mutex g_termOutMtx;
+std::condition_variable g_termOutCv;
+std::atomic<bool> g_termOutStop{false};
+std::thread g_termOutWorker;
+
+void TermOutWorker() {
+  for (;;) {
+    TermOut job;
+    {
+      std::unique_lock<std::mutex> lk(g_termOutMtx);
+      g_termOutCv.wait(lk, [] { return g_termOutStop.load() || !g_termOut.empty(); });
+      if (g_termOut.empty()) {
+        if (g_termOutStop.load()) return;
+        continue;
+      }
+      job = g_termOut.front();
+      g_termOut.pop_front();
+    }
+    sk::SshService::Instance().Send(job.sid, job.bytes);
+  }
+}
+
+void TermOutStart() {
+  if (!g_termOutWorker.joinable()) g_termOutWorker = std::thread(TermOutWorker);
+}
+
+void TermOutStop() {
+  {
+    std::lock_guard<std::mutex> lk(g_termOutMtx);
+    g_termOutStop.store(true);
+    g_termOut.clear();
+  }
+  g_termOutCv.notify_all();
+  if (!g_termOutWorker.joinable()) return;
+  HANDLE h = (HANDLE)g_termOutWorker.native_handle();
+  if (WaitForSingleObject(h, 800) == WAIT_OBJECT_0) {
+    g_termOutWorker.join();
+  } else {
+    g_termOutWorker.detach();
+  }
+}
+
+void TermQueue(int sid, const std::string& bytes) {
+  if (sid < 0 || bytes.empty()) return;
+  FlowKey();
+  {
+    std::lock_guard<std::mutex> lk(g_termOutMtx);
+    if (g_termOut.size() > 4096) g_termOut.pop_front();
+    TermOut job;
+    job.sid = sid;
+    job.bytes = bytes;
+    g_termOut.push_back(job);
+  }
+  TermOutStart();
+  g_termOutCv.notify_one();
 }
 
 void TermSend(const std::string& bytes) {
   int sid = g_state.CurrentSessionId();
   if (sid < 0) return;
+  sk::Terminal* cur = sk::SessionHub::Instance().Find(sid);
+  if (cur != nullptr && cur->ScrollBack() > 0) cur->ScrollToBottom();
   if (sk::SshService::Instance().IsConnected(sid)) {
-    sk::SshService::Instance().Send(sid, bytes);
-    return;
+    TermQueue(sid, bytes);
   }
-  sk::Terminal* term = sk::SessionHub::Instance().Find(sid);
-  if (term == nullptr) return;
-  for (wchar_t ch : U82W(bytes)) term->OnKey(ch, false, false, false);
 }
 
 void TermPaste() {
@@ -2055,6 +2648,40 @@ struct SelDrag {
 
 SelDrag g_drag;
 
+
+std::string TermKeySeq(UINT vk, bool ctrl, bool shift, bool appCursor) {
+  char finalCh = 0;
+  switch (vk) {
+    case VK_UP: finalCh = 'A'; break;
+    case VK_DOWN: finalCh = 'B'; break;
+    case VK_RIGHT: finalCh = 'C'; break;
+    case VK_LEFT: finalCh = 'D'; break;
+    case VK_HOME: finalCh = 'H'; break;
+    case VK_END: finalCh = 'F'; break;
+    default: break;
+  }
+  int mod = (shift ? 1 : 0) + (ctrl ? 4 : 0);
+  if (finalCh != 0) {
+    std::string out = "\x1b";
+    if (mod != 0) {
+      out += "[1;";
+      out += std::to_string(mod + 1);
+      out += finalCh;
+    } else if (appCursor) {
+      out += "O";
+      out += finalCh;
+    } else {
+      out += "[";
+      out += finalCh;
+    }
+    return out;
+  }
+  if (vk == VK_INSERT) return "\x1b[2~";
+  if (vk == VK_DELETE) return "\x1b[3~";
+  if (vk == VK_PRIOR) return "\x1b[5~";
+  if (vk == VK_NEXT) return "\x1b[6~";
+  return std::string();
+}
 
 UINT KeyVk(UINT wp, LPARAM lp) {
   if (wp != VK_PROCESSKEY) return wp;
@@ -2129,6 +2756,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_SIZE:
+      if (wParam == SIZE_MINIMIZED || wParam == SIZE_MAXHIDE) return 0;
       Relayout(hwnd);
       g_render.Resize(LOWORD(lParam), HIWORD(lParam), (float)g_state.dpi);
       if (!g_inSizeMove) ApplyTermGrid();
@@ -2166,6 +2794,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_ERASEBKGND:
       return 1;
     case WM_TIMER: {
+      if (wParam == 7) {
+        KillTimer(hwnd, 7);
+        DestroyWindow(hwnd);
+        return 0;
+      }
       if (wParam == 2) {
         bool need = g_state.view == sk::View::Term ||
                     g_state.modal == sk::ModalKind::Prompt;
@@ -2180,6 +2813,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       if (wParam != 1) return 0;
       SyncHostStates();
       PumpSftpList();
+      sk::SshService::Instance().ReapTransferSession();
       if (!g_state.toast.empty() &&
           (long long)GetTickCount64() > g_state.toastAt + 2600) {
         g_state.toast.clear();
@@ -2221,11 +2855,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       ULONGLONG now = GetTickCount64();
       if (now >= (ULONGLONG)g_state.statsNextAt) {
         g_state.statsNextAt = (long long)(now + 5000);
-        for (int i = 0; i < (int)g_state.hosts.size(); ++i) {
-          if (g_state.hosts[(size_t)i].state == sk::HostState::Live) CollectStats(i);
+        {
+          std::lock_guard<std::mutex> lk(g_statsMtx);
+          for (int i = 0; i < (int)g_state.hosts.size(); ++i) {
+            sk::Host& h = g_state.hosts[(size_t)i];
+            if (h.state != sk::HostState::Live) continue;
+            StatsJob job;
+            job.idx = i;
+            job.sid = h.sessionId;
+            g_statsJobs.push_back(job);
+          }
         }
-        InvalidateRect(hwnd, nullptr, FALSE);
+        if (!g_statsWorker.joinable()) StatsStart();
+        g_statsCv.notify_all();
       }
+      if (now >= (ULONGLONG)g_netNextAt) {
+        g_netNextAt = (long long)(now + 1000);
+        PumpNetRate();
+      }
+      PumpStats();
       return 0;
     }
     case WM_APP + 41:
@@ -2236,7 +2884,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       PumpProbe();
       return 0;
     case WM_APP + 43:
-      XferCancelJob((int)wParam);
+      XferRowClick((int)wParam);
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     case WM_APP + 44:
@@ -2273,9 +2921,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONDOWN: {
       float x = (float)GET_X_LPARAM(lParam);
       float y = (float)GET_Y_LPARAM(lParam);
+      FlowTouch();
       sk::Terminal* dragTerm = nullptr;
       int row = 0, col = 0;
       if (TermPoint(x, y, dragTerm, row, col)) {
+        SetCapture(hwnd);
         dragTerm->ClearSelection();
         g_state.searchFocus = false;
         g_state.selectAll = false;
@@ -2283,8 +2933,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         g_drag.sid = g_state.CurrentSessionId();
         g_drag.row = row;
         g_drag.col = col;
+        SK_LOGI("term sel down %d,%d", row, col);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
+      }
+      sk::Terminal* clearTerm = sk::SessionHub::Instance().Find(g_state.CurrentSessionId());
+      if (clearTerm != nullptr && clearTerm->HasSelection()) {
+        clearTerm->ClearSelection();
+        InvalidateRect(hwnd, nullptr, FALSE);
       }
       int id = sk::HitTest(g_state, g_client, x, y);
       if (g_state.modal == sk::ModalKind::Channel) {
@@ -2327,10 +2983,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       return 0;
     }
     case WM_LBUTTONUP: {
-      if (!g_drag.active) break;
+      bool dragging = g_drag.active;
+      int dragSid = g_drag.sid;
       g_drag.active = false;
-      sk::Terminal* term = sk::SessionHub::Instance().Find(g_drag.sid);
-      if (term != nullptr && term->HasSelection()) ClipboardSet(term->SelectedText());
+      if (GetCapture() == hwnd) ReleaseCapture();
+      if (!dragging) break;
+      sk::Terminal* term = sk::SessionHub::Instance().Find(dragSid);
+      if (term != nullptr && term->HasSelection()) {
+        std::wstring picked = term->SelectedText();
+        if (!picked.empty()) {
+          bool ok = ClipboardCopy(picked);
+          g_state.toast =
+              ok ? sk::Tr(L"已复制 ") + std::to_wstring((int)picked.size()) + sk::Tr(L" 字符")
+                 : sk::Tr(L"复制失败：剪贴板被其他程序占用");
+          g_state.toastAt = (long long)GetTickCount64();
+          g_state.toastKind = ok ? 0 : 1;
+          SK_LOGI("term sel copy %d ok=%d", (int)picked.size(), ok ? 1 : 0);
+        }
+      }
       InvalidateRect(hwnd, nullptr, FALSE);
       return 0;
     }
@@ -2344,6 +3014,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
           int row = 0, col = 0;
           TermClamp(x, y, g, term, row, col);
           term->SetSelection(g_drag.row, g_drag.col, row, col);
+          static int lastDragRow = -1;
+          static int lastDragCol = -1;
+          if (row != lastDragRow || col != lastDragCol) {
+            lastDragRow = row;
+            lastDragCol = col;
+            SK_LOGI("term sel drag %d,%d", row, col);
+          }
           InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -2399,6 +3076,37 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
       }
       int id = sk::HitTest(g_state, g_client, x, y);
+      if (id >= sk::HitQueueRowBase && id < sk::HitQueueRowBase + 12) {
+        int qi = id - sk::HitQueueRowBase;
+        if (qi < 0 || qi >= (int)g_state.sftpQueueIdx.size()) return 0;
+        int idx = g_state.sftpQueueIdx[(size_t)qi];
+        if (idx < 0 || idx >= (int)g_xfRows.size()) return 0;
+        const XferRow& row = g_xfRows[(size_t)idx];
+        POINT qpt{ (LONG)x, (LONG)y };
+        ClientToScreen(hwnd, &qpt);
+        HMENU qm = CreatePopupMenu();
+        if (row.state == 1) {
+          AppendMenuW(qm, MF_STRING, 1, row.paused ? sk::Tr(L"继续") : sk::Tr(L"暂停"));
+          AppendMenuW(qm, MF_STRING, 2, sk::Tr(L"取消本次"));
+        } else if (row.state == 0) {
+          AppendMenuW(qm, MF_STRING, 2, sk::Tr(L"取消本次"));
+        } else if (row.state == 3) {
+          AppendMenuW(qm, MF_STRING, 3, sk::Tr(L"重试"));
+        }
+        if (GetMenuItemCount(qm) == 0) {
+          DestroyMenu(qm);
+          return 0;
+        }
+        SetForegroundWindow(hwnd);
+        int qc = (int)TrackPopupMenu(qm, TPM_RETURNCMD | TPM_RIGHTBUTTON, qpt.x, qpt.y, 0, hwnd,
+                                     nullptr);
+        DestroyMenu(qm);
+        if (qc == 1) XferPauseJob(idx);
+        else if (qc == 2) XferCancelJob(idx);
+        else if (qc == 3) XferCancelJob(idx);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      }
       int hostIdx = -1;
       if (id >= sk::HitHostBase && id < sk::HitDashCardBase) {
         hostIdx = id - sk::HitHostBase;
@@ -2472,9 +3180,45 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       }
       return 0;
     }
+    case WM_CAPTURECHANGED:
+      g_drag.active = false;
+      return 0;
     case WM_LBUTTONDBLCLK: {
       float x = (float)GET_X_LPARAM(lParam);
       float y = (float)GET_Y_LPARAM(lParam);
+      sk::Terminal* dblTerm = nullptr;
+      int dblRow = 0, dblCol = 0;
+      if (TermPoint(x, y, dblTerm, dblRow, dblCol)) {
+        static unsigned long long lastDblAt = 0;
+        static int lastDblRow = -1;
+        static int lastDblCol = -1;
+        unsigned long long nowDbl = GetTickCount64();
+        bool triple = (nowDbl - lastDblAt < 600 && dblRow == lastDblRow && dblCol == lastDblCol);
+        lastDblAt = nowDbl;
+        lastDblRow = dblRow;
+        lastDblCol = dblCol;
+        if (triple) {
+          dblTerm->SelectLineAt(dblRow);
+        } else {
+          dblTerm->SelectWordAt(dblRow, dblCol);
+        }
+        g_drag.active = false;
+        if (dblTerm->HasSelection()) {
+          std::wstring picked = dblTerm->SelectedText();
+          if (!picked.empty()) {
+            bool ok = ClipboardCopy(picked);
+            g_state.toast =
+                ok ? sk::Tr(L"已复制 ") + std::to_wstring((int)picked.size()) + sk::Tr(L" 字符")
+                   : sk::Tr(L"复制失败：剪贴板被其他程序占用");
+            g_state.toastAt = (long long)GetTickCount64();
+            g_state.toastKind = ok ? 0 : 1;
+            SK_LOGI("term sel dbl %d,%d triple=%d chars=%d ok=%d", dblRow, dblCol, triple ? 1 : 0,
+                    (int)picked.size(), ok ? 1 : 0);
+          }
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      }
       int id = sk::HitTest(g_state, g_client, x, y);
       if (id >= sk::HitSideCardBase && id < sk::HitSortKey) {
         int base = id >= sk::HitRecentBase ? sk::HitRecentBase : sk::HitSideCardBase;
@@ -2570,17 +3314,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       }
       if (g_state.view == sk::View::Term) {
         sk::Terminal* term = TermOf(g_state.CurrentSessionId());
-        if (term) term->ScrollToBottom();
+        if (term) term->ScrollLines(delta > 0 ? 3 : -3);
         InvalidateRect(hwnd, nullptr, FALSE);
       }
       return 0;
     }
     case kMsgSsh: {
       int sid = (int)wParam;
+      if (sid < 0) return 0;
       sk::SshService& svc = sk::SshService::Instance();
       std::string data = svc.PumpOutput(sid);
       sk::Terminal* term = sk::SessionHub::Instance().Find(sid);
       if (term != nullptr && !data.empty()) term->Feed(data);
+      if (!data.empty()) FlowRtt();
+      FlowTouch();
 
       sk::SshState st = svc.State(sid);
       int tabIdx = g_state.FindTabBySession(sid);
@@ -2706,10 +3453,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
           return 0;
         }
         if (sid >= 0 && sk::SshService::Instance().IsConnected(sid)) {
+          g_termWarned.erase(sid);
           std::string bytes = KeyToBytes(ch, ctrl);
-          if (!bytes.empty()) sk::SshService::Instance().Send(sid, bytes);
+          if (!bytes.empty()) TermQueue(sid, bytes);
         } else if (term != nullptr && (ch >= 32 || ch == L'\r' || ch == 8)) {
-          term->OnKey(ch, ctrl, false, false);
+          if (g_termWarned.insert(sid).second) {
+            term->Feed("\r\n\x1b[90m" + W2U8(sk::Tr(L"连接已断开，按键不会发送，请重新连接")) + "\x1b[0m\r\n");
+          }
           InvalidateRect(hwnd, nullptr, FALSE);
         }
       }
@@ -2718,6 +3468,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_KEYDOWN: {
       UINT vk = KeyVk((UINT)wParam, lParam);
       bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       if (ctrl && (vk == 'C' || vk == 'X' || vk == 'V' || vk == 'A')) {
         std::wstring* buf = EditBuffer();
         if (buf != nullptr) {
@@ -2728,6 +3479,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
           return 0;
         }
         if (g_state.view == sk::View::Term && g_state.modal == sk::ModalKind::None) {
+          if (vk == 'C') {
+            sk::Terminal* tc = TermOf(g_state.CurrentSessionId());
+            if (tc != nullptr && tc->HasSelection()) {
+              std::wstring picked = tc->SelectedText();
+              bool ok = ClipboardCopy(picked);
+              g_state.toast = ok ? sk::Tr(L"已复制选中的终端内容") : sk::Tr(L"复制失败：剪贴板被其他程序占用");
+              g_state.toastAt = (long long)GetTickCount64();
+              g_state.toastKind = ok ? 0 : 1;
+              SK_LOGI("term sel keycopy %d ok=%d", (int)picked.size(), ok ? 1 : 0);
+              InvalidateRect(hwnd, nullptr, FALSE);
+              return 0;
+            }
+          }
           TermSend(std::string(1, (char)(vk - 'A' + 1)));
           return 0;
         }
@@ -2739,20 +3503,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
       }
-      if (ctrl && vk == '1') { g_suppressChar = true; g_state.OpenPage(sk::View::Term); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (ctrl && vk == '2') { g_suppressChar = true; g_state.OpenPage(sk::View::Sftp); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (ctrl && vk == '3') { g_suppressChar = true; g_state.OpenPage(sk::View::Tun); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (ctrl && vk == '4') { g_suppressChar = true; g_state.OpenPage(sk::View::Set); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (ctrl && vk == '0') { g_suppressChar = true; g_state.OpenPage(sk::View::Dash); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
-      if (ctrl && vk == 'K') { g_suppressChar = true; g_state.searchFocus = true; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if ((vk == VK_PRIOR || vk == VK_NEXT) && g_state.view == sk::View::Term &&
+          g_state.modal == sk::ModalKind::None) {
+        if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+          sk::Terminal* term = TermOf(g_state.CurrentSessionId());
+          if (term != nullptr) {
+            int step = term->Rows() - 1;
+            if (step < 1) step = 1;
+            term->ScrollLines(vk == VK_PRIOR ? step : -step);
+          }
+          InvalidateRect(hwnd, nullptr, FALSE);
+          return 0;
+        }
+      }
+      if (g_state.view == sk::View::Term && g_state.modal == sk::ModalKind::None &&
+          (vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT ||
+           vk == VK_HOME || vk == VK_END || vk == VK_INSERT || vk == VK_DELETE ||
+           vk == VK_PRIOR || vk == VK_NEXT || (vk == VK_TAB && shift))) {
+        sk::Terminal* tk = TermOf(g_state.CurrentSessionId());
+        std::string seqOut;
+        if (vk == VK_TAB) {
+          seqOut = "\x1b[Z";
+        } else {
+          seqOut = TermKeySeq(vk, ctrl, shift, tk != nullptr && tk->AppCursor());
+        }
+        if (!seqOut.empty()) TermSend(seqOut);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+      }
+      if (ctrl && vk == '1') { g_state.OpenPage(sk::View::Term); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (ctrl && vk == '2') { g_state.OpenPage(sk::View::Sftp); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (ctrl && vk == '3') { g_state.OpenPage(sk::View::Tun); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (ctrl && vk == '4') { g_state.OpenPage(sk::View::Set); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (ctrl && vk == '0') { g_state.OpenPage(sk::View::Dash); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (ctrl && vk == 'K') { g_state.searchFocus = true; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (ctrl && vk == 'W') {
-        g_suppressChar = true;
         int sid = g_state.CurrentSessionId();
         if (sid >= 0) g_state.CloseTab(g_state.activeTab);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
       }
-      if (ctrl && vk == VK_OEM_COMMA) { g_suppressChar = true; g_state.OpenPage(sk::View::Set); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+      if (ctrl && vk == VK_OEM_COMMA) { g_state.OpenPage(sk::View::Set); InvalidateRect(hwnd, nullptr, FALSE); return 0; }
       if (vk == VK_F11) {
         ToggleFullscreen(hwnd, !g_state.fullscreen);
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -2774,11 +3565,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
       }
       break;
     }
+    case WM_CLOSE:
+      sk::SshService::Instance().CancelAllTransfers();
+      XferRequestStop();
+      if (XferBusy()) {
+        g_state.sftpBar = sk::Tr(L"正在停止传输…");
+        InvalidateRect(hwnd, nullptr, FALSE);
+        SetTimer(hwnd, 7, 400, nullptr);
+        return 0;
+      }
+      return DefWindowProc(hwnd, WM_CLOSE, wParam, lParam);
     case WM_DESTROY:
       sk::SaveStore(g_state);
+      sk::SshService::Instance().CancelAllTransfers();
       XferStop();
       ListStop();
       ProbeStop();
+      StatsStop();
+      TermOutStop();
       sk::SshService::Instance().DisconnectAll();
       sk::SessionHub::Instance().Clear();
       g_render.Shutdown();
@@ -2798,6 +3602,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     if (prev != nullptr) {
       ShowWindow(prev, SW_RESTORE);
       SetForegroundWindow(prev);
+    } else {
+      MessageBoxW(nullptr,
+                  L"已有一个轻舟进程在后台运行，但它的主窗口已不存在（通常发生在传输文件时点了关闭）。\n\n"
+                  L"请打开「任务管理器 → 详细信息」，结束名为 Skiff-*.exe 的进程后再启动。",
+                  L"轻舟 Skiff", MB_ICONWARNING | MB_OK);
     }
     return 0;
   }

@@ -24,6 +24,18 @@ float MidY(const Rect& rc) { return rc.t + rc.H() * kHalf; }
 
 std::wstring Num(int v) { return std::to_wstring(v); }
 
+std::wstring ClipToWidth(Render& r, const std::wstring& s, FontId f, float maxW) {
+  if (maxW <= 0.0f) return std::wstring();
+  if (r.Measure(s.c_str(), f) <= maxW) return s;
+  std::wstring out = s;
+  while (!out.empty()) {
+    out.pop_back();
+    std::wstring probe = out + L"\u2026";
+    if (r.Measure(probe.c_str(), f) <= maxW) return probe;
+  }
+  return std::wstring();
+}
+
 std::wstring JoinRemotePath(const std::wstring& base, const std::wstring& name) {  if (base.empty() || base == L"/") return std::wstring(L"/") + name;
   if (base.back() == L'/') return base + name;
   return base + L"/" + name;
@@ -242,6 +254,12 @@ Rect TitleButtonRect(const AppState& st, const Rect& client, int index) {
   float w = st.S(44);
   float right = client.r - w * (float)(2 - index);
   return Rect{ right - w, client.t, right, client.t + st.S(L::TitleH) };
+}
+
+Rect TitleXferRect(const AppState& st, const Rect& client) {
+  float w = st.S(60);
+  float right = client.r - st.S(44) * 3 - st.S(10);
+  return Rect{ right - w, client.t + st.S(5), right, client.t + st.S(L::TitleH) - st.S(5) };
 }
 
 float SidebarSearchTop(const AppState& st, const Rect& s) {
@@ -713,7 +731,7 @@ void DrawTitleBar(Render& r, const AppState& st, const Rect& client, const Palet
   r.FillRound(mk.D2D(), st.S(3), p.accent);
 
   float tx = mk.r + st.S(6);
-  float limit = bar.r - st.S(44) * 3 - st.S(10);
+  float limit = bar.r - st.S(44) * 3 - st.S(10) - st.S(68);
   if (limit > tx) {
     r.PushClip(D2D1::RectF(tx, bar.t, limit, bar.b));
     const wchar_t* brand = Tr(L"轻舟 Skiff");
@@ -724,6 +742,18 @@ void DrawTitleBar(Render& r, const AppState& st, const Rect& client, const Palet
     r.TextVertCenter(tail.c_str(), D2D1::RectF(tx + bw, bar.t, limit, bar.b), p.text2,
                      FontId::Small);
     r.PopClip();
+  }
+
+  {
+    Rect xb = TitleXferRect(st, client);
+    bool hotX = st.hoverId == HitTitleXfer;
+    bool busyX = !st.sftpBar.empty();
+    if (hotX || busyX) r.FillRound(xb.D2D(), st.S(4), p.surface2);
+    std::wstring lbl = Tr(L"传输");
+    float lw2 = r.Measure(lbl.c_str(), FontId::Small);
+    float lx = xb.l + (xb.W() - lw2) * kHalf;
+    r.TextVertCenter(lbl.c_str(), D2D1::RectF(lx, xb.t, lx + lw2 + st.S(1), xb.b),
+                     busyX ? p.accent : p.text2, FontId::Small);
   }
 
   for (int i = 0; i < 3; ++i) {
@@ -1043,6 +1073,24 @@ void DrawStatus(Render& r, const AppState& st, const Rect& status, const Palette
   right[1] = L"UTF-8";
   right[2] = dim;
   right[3] = sha;
+  float rightW = 0.0f;
+  for (int i = 0; i < 4; ++i) rightW += r.Measure(right[i].c_str(), FontId::MonoSm);
+  rightW += st.S(28.0f) * 3.0f;
+  float rightStart = status.r - st.S(12) - rightW;
+
+  if (!st.sftpBar.empty()) {
+    float bx = x + st.S(14.0f);
+    float bx2 = rightStart - st.S(14.0f);
+    if (bx2 - bx > st.S(72.0f)) {
+      r.Fill(Rect{ x + st.S(14.0f), status.t + st.S(6.0f), x + st.S(15.0f), status.b - st.S(6.0f) }.D2D(),
+             p.line);
+      std::wstring shown = ClipToWidth(r, st.sftpBar, FontId::MonoSm, bx2 - bx);
+      r.PushClip(D2D1::RectF(bx, status.t, bx2, status.b));
+      r.TextVertCenter(shown.c_str(), D2D1::RectF(bx, status.t, bx2, status.b), p.accent, FontId::MonoSm);
+      r.PopClip();
+    }
+  }
+
   float rx = status.r - st.S(12);
   for (int i = 0; i < 4; ++i) {
     float w = r.Measure(right[i].c_str(), FontId::MonoSm);
@@ -1293,6 +1341,13 @@ void DrawModalImpl(Render& r, AppState& st, const Rect& client) {
                    D2D1::RectF(panel.l + st.S(22.0f), panel.t + st.S(16.0f),
                                panel.r - st.S(52.0f), panel.t + st.S(40.0f)),
                    p.text, FontId::Title);
+  if (st.modal == ModalKind::Queue) {
+    Rect ab{ panel.r - st.S(140.0f), panel.t + st.S(14.0f), panel.r - st.S(58.0f), panel.t + st.S(42.0f) };
+    bool hot = st.hoverId == HitQueueAdapt;
+    r.StrokeRound(ab.D2D(), st.S(L::RBtn), hot ? p.accent : p.lineStrong, st.S(1.0f));
+    r.TextVertCenter(Tr(st.xferAdaptive ? L"自适应限速" : L"全速传输"), ab.D2D(),
+                     hot ? p.accent : p.text2, FontId::Micro, Align::Center);
+  }
   if (!st.modalNote.empty()) {
     r.PushClip(D2D1::RectF(panel.l + st.S(22.0f), panel.t + st.S(40.0f),
                            panel.r - st.S(22.0f), panel.t + st.S(60.0f)));
@@ -2444,6 +2499,10 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
   if (st.modal != ModalKind::None) {
     Rect panel = ModalPanel(st, client);
     if (!panel.Hit(x, y)) return HitModalBackdrop;
+    if (st.modal == ModalKind::Queue) {
+      Rect ab{ panel.r - st.S(140.0f), panel.t + st.S(14.0f), panel.r - st.S(58.0f), panel.t + st.S(42.0f) };
+      if (ab.Hit(x, y)) return HitQueueAdapt;
+    }
     if (ModalCloseRect(st, panel).Hit(x, y)) return HitModalClose;
     if (ModalOkRect(st, panel).Hit(x, y)) return HitModalOk;
     if (st.modal == ModalKind::DatePicker) {
@@ -2538,6 +2597,7 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
     for (int i = 0; i < 3; ++i) {
       if (TitleButtonRect(st, client, i).Hit(x, y)) return HitTitleMin + i;
     }
+    if (TitleXferRect(st, client).Hit(x, y)) return HitTitleXfer;
 
     if (st.sideCollapsed) {
       if (SideExpandRect(st, sidebar).Hit(x, y)) return HitSideExpand;
@@ -2658,6 +2718,9 @@ int HitTest(const AppState& st, const Rect& client, float x, float y) {
   }
 
   if (!st.fullscreen && status.Hit(x, y) && x < status.l + st.S(180)) return HitStatusConn;
+  if (!st.fullscreen && !st.sftpBar.empty() && status.Hit(x, y) && x < status.r - st.S(200)) {
+    return HitXferBar;
+  }
   return HitNone;
 }
 
@@ -2754,6 +2817,11 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     }
     if (id == HitBackupPlain) {
       st.backupPlain = !st.backupPlain;
+      st.dirty = true;
+      return;
+    }
+    if (id == HitQueueAdapt) {
+      st.xferAdaptive = !st.xferAdaptive;
       st.dirty = true;
       return;
     }
@@ -3038,6 +3106,12 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     if (hwnd) ShowWindow(hwnd, SW_MINIMIZE);
     return;
   }
+  if (id == HitTitleXfer) {
+    st.modal = ModalKind::Queue;
+    st.modalTitle = Tr(L"传输队列");
+    st.modalNote = st.sftpQueue.empty() ? Tr(L"暂无待传输任务") : Tr(L"运行中点击暂停，右键可取消或重试");
+    return;
+  }
   if (id == HitTitleMax) {
     if (hwnd) ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
     return;
@@ -3265,7 +3339,7 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     return;
   }
 
-  if (id >= HitTunRowBase) {
+  if (id >= HitTunRowBase && id < HitTunRowBase + 20) {
     int index = id - HitTunRowBase;
     int hi = st.CurrentHostId() >= 0 ? st.CurrentHostId() : st.ActiveHostIndex();
     if (hi >= 0 && hi < (int)st.hosts.size()) {
@@ -3385,7 +3459,7 @@ void OnHit(AppState& st, int id, HWND hwnd) {
   if (id == HitFtpQueue) {
     st.modal = ModalKind::Queue;
     st.modalTitle = Tr(L"传输队列");
-    st.modalNote = st.sftpQueue.empty() ? Tr(L"暂无待传输任务") : Tr(L"按加入顺序串行执行");
+    st.modalNote = st.sftpQueue.empty() ? Tr(L"暂无待传输任务") : Tr(L"运行中点击暂停，右键可取消或重试");
     return;
   }
 
@@ -3478,6 +3552,13 @@ void OnHit(AppState& st, int id, HWND hwnd) {
     st.modal = ModalKind::StatusPanel;
     st.modalTitle = Tr(L"连接详情");
     st.modalNote = Tr(L"当前会话的协议参数与主机指纹");
+    return;
+  }
+
+  if (id == HitXferBar) {
+    st.modal = ModalKind::Queue;
+    st.modalTitle = Tr(L"传输队列");
+    st.modalNote = st.sftpQueue.empty() ? Tr(L"暂无待传输任务") : Tr(L"运行中点击暂停，右键可取消或重试");
     return;
   }
 }

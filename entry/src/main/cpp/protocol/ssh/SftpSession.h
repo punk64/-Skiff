@@ -5,6 +5,7 @@
 #include <libssh2_sftp.h>
 #include "protocol/proxy/proxyClient.h"
 #include <string>
+#include <cstdint>
 #include <memory>
 #include <functional>
 #include <vector>
@@ -57,8 +58,11 @@ static constexpr int DEFAULT_MAX_EMPTY_RESULTS = 5;    // 默认最大连续空�
 static constexpr size_t DEFAULT_BUFFER_SIZE = 131072;  // 默认缓冲区大小 128KB
 static constexpr size_t LARGE_BUFFER_SIZE = 524288;   // 大文件缓冲区大小 512KB
 static constexpr size_t HUGE_BUFFER_SIZE = 2097152;   // 特大文件缓冲区大小 2MB
-static constexpr off_t LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 大文件阈值 50MB
-static constexpr off_t HUGE_FILE_THRESHOLD = 1024 * 1024 * 1024; // 特大文件阈值 1GB
+static constexpr size_t SFTP_WRITE_CHUNK = 65536;     // 单次 SFTP 写入上限 64KB
+static constexpr size_t SFTP_READ_CHUNK = 65536;      // 单次 SFTP 读取上限 64KB
+static constexpr long long SFTP_STALL_TIMEOUT_MS = 60000; // 写入无进展判定失败阈值 60s
+static constexpr int64_t LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 大文件阈值 50MB
+static constexpr int64_t HUGE_FILE_THRESHOLD = 1024 * 1024 * 1024; // 特大文件阈值 1GB
 
 class SftpSession {
 public:
@@ -86,12 +90,14 @@ public:
     bool getFileInfo(const std::string& path, FileInfo& info);
     
     // 上传文件
-    bool uploadFile(int localFd, const std::string& remotePath, std::function<void(int)> progressCallback = nullptr);
+    bool uploadFile(int localFd, const std::string& remotePath, std::function<void(int64_t)> progressCallback = nullptr);
 
     std::string getLastUploadError() const { return lastUploadError; }
+
+    void setThrottleBps(int64_t bps) { throttleBps.store(bps); }
     
     // 下载文件
-    bool downloadFile(const std::string& remotePath, int localFd, std::function<void(off_t)> progressCallback);
+    bool downloadFile(const std::string& remotePath, int localFd, std::function<void(int64_t)> progressCallback);
     
     // 删除文件
     bool deleteFile(const std::string& path);
@@ -136,6 +142,9 @@ public:
     void requestCancel();
     // -------------------------
 
+    void pauseTransfer(bool on);
+    bool isPaused() const { return pauseRequested.load(); }
+
 private:
     SftpConfig config;                                      // 连接配置
     std::mutex sessionMutex;                               // 会话互斥锁
@@ -153,8 +162,11 @@ private:
     
     // --- 新增: 取消和超时标志 ---
     std::atomic<bool> cancelRequested{false};
+    std::atomic<bool> pauseRequested{false};
     std::atomic<bool> operationTimedOut{false}; // Flag specifically set by the timeout thread
     std::shared_ptr<std::atomic<bool>> currentOperationActiveFlag{nullptr}; // Flag to signal if the monitored operation is still running
+    std::atomic<int64_t> ioProgress{0};
+    std::atomic<int64_t> throttleBps{0};
     // ---------------------------
 
     // --- 新增: keepalive相关成员变量 ---
@@ -210,11 +222,10 @@ auto SftpSession::executeNonBlocking(Func operation, const char* opName) -> decl
         // 针对指针类型返回值
         if constexpr (std::is_pointer<ReturnType>::value) {
             while (!result && 
-                  libssh2_session_last_errno(session.get()) == LIBSSH2_ERROR_EAGAIN && 
-                  retryCount < maxRetryCount) {
+                  libssh2_session_last_errno(session.get()) == LIBSSH2_ERROR_EAGAIN) {
                 
                 if (time(nullptr) - startTime > maxTimeoutSec) {
-                    OH_LOG_ERROR(LOG_APP, "操作 %{public}s 超时", opName);
+                    OH_LOG_ERROR(LOG_APP, "操作 %{public}s 超时 (轮询 %{public}d 次)", opName, retryCount);
                     break;
                 }
                 
@@ -230,11 +241,10 @@ auto SftpSession::executeNonBlocking(Func operation, const char* opName) -> decl
         } else {
             // 数值型返回值处理类似逻辑
             while ((result < 0) && 
-                  libssh2_session_last_errno(session.get()) == LIBSSH2_ERROR_EAGAIN && 
-                  retryCount < maxRetryCount) {
+                  libssh2_session_last_errno(session.get()) == LIBSSH2_ERROR_EAGAIN) {
                 
                 if (time(nullptr) - startTime > maxTimeoutSec) {
-                    OH_LOG_ERROR(LOG_APP, "操作 %{public}s 超时", opName);
+                    OH_LOG_ERROR(LOG_APP, "操作 %{public}s 超时 (轮询 %{public}d 次)", opName, retryCount);
                     break;
                 }
                 

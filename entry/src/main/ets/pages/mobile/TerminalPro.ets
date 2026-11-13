@@ -127,6 +127,9 @@ export struct TerminalPro {
   private portReady: boolean = false
   private pendingText: string = ''
   private flushTimer: number = -1
+  private outQueue: string = ''
+  private sendBuf: string = ''
+  private sendTimer: number = -1
   @StorageLink('csx_lang') csxLang: string = 'zh'
 
   t(zh: string, en: string): string {
@@ -154,6 +157,7 @@ export struct TerminalPro {
 
   aboutToDisappear(): void {
     this.flushText()
+    this.flushSend()
     if (this.flushTimer >= 0) {
       clearTimeout(this.flushTimer)
       this.flushTimer = -1
@@ -230,6 +234,11 @@ export struct TerminalPro {
       })
       this.controller.postMessage('__init_port__', [ports[0]], '*')
       this.portReady = true
+      if (this.outQueue.length > 0) {
+        const q: string = this.outQueue
+        this.outQueue = ''
+        this.write(q)
+      }
     } catch (err) {
       this.portReady = false
     }
@@ -254,7 +263,7 @@ export struct TerminalPro {
     if (!this.ready || this.closed) {
       return
     }
-    SshService.get().send(this.hostId, s)
+    this.queueSend(s)
   }
 
   startSession(): void {
@@ -269,7 +278,15 @@ export struct TerminalPro {
 
   write(text: string): void {
     if (!this.nativePorts) {
+      this.outQueue += text
+      if (this.outQueue.length > 1048576) {
+        this.outQueue = this.outQueue.substring(this.outQueue.length - 262144)
+      }
       return
+    }
+    if (this.outQueue.length > 0) {
+      text = this.outQueue + text
+      this.outQueue = ''
     }
     try {
       const ext: webview.WebMessageExt = new webview.WebMessageExt()
@@ -277,17 +294,48 @@ export struct TerminalPro {
       ext.setString('\x01' + text)
       this.nativePorts.postMessageEventExt(ext)
     } catch (err) {
+      this.outQueue = text + this.outQueue
+      if (this.outQueue.length > 1048576) {
+        this.outQueue = this.outQueue.substring(this.outQueue.length - 262144)
+      }
+    }
+  }
+
+  queueSend(seq: string): void {
+    if (this.closed || seq.length === 0) {
+      return
+    }
+    this.sendBuf += seq
+    if (this.sendBuf.length >= 4096 || seq.indexOf('\r') >= 0) {
+      this.flushSend()
+      return
+    }
+    if (this.sendTimer < 0) {
+      this.sendTimer = setTimeout(() => {
+        this.sendTimer = -1
+        this.flushSend()
+      }, 8)
+    }
+  }
+
+  flushSend(): void {
+    if (this.sendTimer >= 0) {
+      clearTimeout(this.sendTimer)
+      this.sendTimer = -1
+    }
+    if (this.sendBuf.length === 0) {
+      return
+    }
+    const s: string = this.sendBuf
+    this.sendBuf = ''
+    try {
+      SshService.get().send(this.hostId, s)
+    } catch (err) {
     }
   }
 
   sendKey(seq: string): void {
-    if (this.closed || seq.length === 0) {
-      return
-    }
-    try {
-      SshService.get().send(this.hostId, seq)
-    } catch (err) {
-    }
+    this.queueSend(seq)
   }
 
   applyFont(size: number): void {

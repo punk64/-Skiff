@@ -47,6 +47,9 @@ public:
     bool Connect(int id, const SshParams& p);
     void Disconnect(int id);
     void DisconnectAll();
+    void CancelAllTransfers();
+    void CancelTransfer(int sid);
+    void PauseTransfer(int sid, bool on);
     bool Send(int id, const std::string& bytes);
     bool ResizePty(int id, int cols, int rows);
 
@@ -80,11 +83,20 @@ public:
     bool SftpChmod(int id, const std::string& path, unsigned int mode,
                    std::string* err = nullptr);
 
+    void Traffic(int id, unsigned long long& rx, unsigned long long& tx) const;
+
+    int EnsureTransferSession(int id);
+    int TransferSessionId(int id) const;
+    void ReapTransferSession();
+    void SetUploadLimit(int id, long long bps);
+
     bool ForwardStartLocal(int id, int localPort, const std::string& targetHost, int targetPort);
     bool ForwardStopLocal(int id, int localPort);
     bool ForwardActive(int id, int localPort);
     int ForwardAccepts(int id);
     int ForwardFailures(int id);
+    int ForwardAcceptsOf(int id, int port);
+    int ForwardFailuresOf(int id, int port);
 
 private:
     SshService();

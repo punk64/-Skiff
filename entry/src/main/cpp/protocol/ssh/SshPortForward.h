@@ -37,6 +37,8 @@ struct PortForwardData {
     bool anyInterface = false; // Add this to track if the listener should bind to INADDR_ANY
     std::atomic<bool> shouldStop{false};
     std::atomic<bool> running{false};
+    std::atomic<int> accepts{0};
+    std::atomic<int> failures{0};
     int listenSocket = -1;
     LIBSSH2_LISTENER* listener = nullptr; // For remote forwarding listener tracking
     std::thread forwardThread;
@@ -83,6 +85,8 @@ public:
     std::vector<std::tuple<int, std::string, int, bool, bool>> listActivePortForwardings();
     int forwardFailures() const { return m_forwardFailures.load(); }
     int forwardAccepts() const { return m_forwardAccepts.load(); }
+    int forwardFailuresOf(int port);
+    int forwardAcceptsOf(int port);
 
 private:
     SshSession* m_mainSession; // Renamed for clarity - primarily for ThreadPool access
@@ -95,6 +99,8 @@ private:
     std::unique_ptr<libssh2_socket_t> m_pfSock;
     std::recursive_mutex m_pfMutex; // Dedicated mutex for the PF session/socket
     std::atomic<bool> m_pfConnected{false};
+    std::atomic<bool> m_pfRebuildBusy{false};
+    std::mutex m_openMutex;
     std::atomic<int> m_activeChannels{0};
     std::atomic<int> m_forwardFailures{0};
     std::atomic<int> m_forwardAccepts{0};
@@ -111,6 +117,7 @@ private:
     void pfHeartbeatThread();
     int pumpPfSession();
     void closePfNightChannel();
+    void dropPfSessionOnly();
     // ---------------------------------------
 
     // 工具函数

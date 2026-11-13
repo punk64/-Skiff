@@ -1,9 +1,11 @@
 #include "ui/Terminal.h"
 #include "app/Layout.h"
+#include "compat/Log.h"
 #include <d2d1helper.h>
 #include <string>
 #include <vector>
 #include <deque>
+#include <algorithm>
 
 namespace sk {
 
@@ -158,6 +160,14 @@ void Terminal::Reset(int cols, int rows) {
   curBg_ = 0;
   curBold_ = false;
   screen_.clear();
+  history_.clear();
+  scrollBack_ = 0;
+  alt_ = false;
+  mainScreen_.clear();
+  wrapPending_ = false;
+  savedCx_ = 0;
+  savedCy_ = 0;
+  csiWarned_ = false;
   for (int i = 0; i < rows_; ++i) screen_.push_back(BlankLine(cols_));
   out_.clear();
   dirty_ = true;
@@ -170,6 +180,10 @@ void Terminal::Resize(int cols, int rows) {
   if (cols == cols_ && rows == rows_ && oldRows == rows_) return;
   std::deque<Line> old;
   old.swap(screen_);
+  alt_ = false;
+  mainScreen_.clear();
+  history_.clear();
+  scrollBack_ = 0;
   cols_ = cols;
   rows_ = rows;
   for (int i = 0; i < rows_; ++i) screen_.push_back(BlankLine(cols_));
@@ -200,7 +214,12 @@ void Terminal::Resize(int cols, int rows) {
 void Terminal::NewLine() {
   ++cy_;
   if (cy_ >= rows_) {
-    if (!screen_.empty()) screen_.pop_front();
+    if (!screen_.empty()) {
+      history_.push_back(std::move(screen_.front()));
+      while (static_cast<int>(history_.size()) > kHistMax) history_.pop_front();
+      if (scrollBack_ > 0 && scrollBack_ < kHistMax) ++scrollBack_;
+      screen_.pop_front();
+    }
     screen_.push_back(BlankLine(cols_));
     cy_ = rows_ - 1;
   }
@@ -214,7 +233,8 @@ void Terminal::PutChar(wchar_t ch, wchar_t ch2) {
   if (ch == 0) ch = L' ';
   int w = (ch2 != 0 || WideCp(static_cast<unsigned>(ch))) ? 2 : 1;
   if (w > cols_) w = 1;
-  if (cx_ + w > cols_) {
+  if (wrapPending_ || cx_ + w > cols_) {
+    wrapPending_ = false;
     cx_ = 0;
     NewLine();
   }
@@ -242,48 +262,29 @@ void Terminal::PutChar(wchar_t ch, wchar_t ch2) {
   }
   cx_ += w;
   if (cx_ >= cols_) {
-    cx_ = 0;
-    NewLine();
+    cx_ = cols_;
+    wrapPending_ = true;
   }
   dirty_ = true;
 }
 
 void Terminal::CarriageReturn() {
   cx_ = 0;
+  wrapPending_ = false;
   dirty_ = true;
 }
 
 void Terminal::Backspace() {
-  int line = cy_;
-  int col = cx_ - 1;
-  if (col < 0) {
-    if (line <= 0) return;
-    --line;
-    col = cols_ - 1;
+  if (wrapPending_) {
+    wrapPending_ = false;
+    cx_ = cols_ > 0 ? cols_ - 1 : 0;
+    dirty_ = true;
+    return;
   }
-  if (line >= 0 && line < static_cast<int>(screen_.size())) {
-    Line& ln = screen_[static_cast<size_t>(line)];
-    if (col >= 0 && col < static_cast<int>(ln.cells.size())) {
-      if (ln.cells[static_cast<size_t>(col)].cont && col > 0) --col;
-      Cell& c = ln.cells[static_cast<size_t>(col)];
-      c.ch = L' ';
-      c.ch2 = 0;
-      c.fg = curFg_;
-      c.bg = curBg_;
-      c.cont = false;
-      if (col + 1 < static_cast<int>(ln.cells.size())) {
-        Cell& tail = ln.cells[static_cast<size_t>(col + 1)];
-        if (tail.cont) {
-          tail.ch = L' ';
-          tail.ch2 = 0;
-          tail.cont = false;
-        }
-      }
-    }
+  if (cx_ > 0) {
+    --cx_;
+    dirty_ = true;
   }
-  cy_ = line;
-  cx_ = col < 0 ? 0 : col;
-  dirty_ = true;
 }
 
 void Terminal::ClearAll() {
@@ -294,6 +295,145 @@ void Terminal::ClearAll() {
   while (static_cast<int>(screen_.size()) < rows_) screen_.push_back(BlankLine(cols_));
   cx_ = 0;
   cy_ = 0;
+  wrapPending_ = false;
+  dirty_ = true;
+}
+
+void Terminal::EraseDisplay(int mode) {
+  int width = cols_ < 1 ? 1 : cols_;
+  if (mode == 3) {
+    history_.clear();
+    scrollBack_ = 0;
+    dirty_ = true;
+    return;
+  }
+  if (screen_.empty()) return;
+  if (mode == 0 || mode == 1) {
+    if (mode == 1) {
+      for (int r = 0; r < cy_ && r < static_cast<int>(screen_.size()); ++r) {
+        screen_[static_cast<size_t>(r)].cells.assign(static_cast<size_t>(width), Cell());
+      }
+    }
+    if (cy_ >= 0 && cy_ < static_cast<int>(screen_.size())) {
+      Line& ln = screen_[static_cast<size_t>(cy_)];
+      if (static_cast<int>(ln.cells.size()) < width) ln.cells.resize(static_cast<size_t>(width), Cell());
+      int from = 0;
+      int to = width;
+      if (mode == 0) {
+        from = cx_ < 0 ? 0 : cx_;
+        if (from > width) from = width;
+      } else {
+        to = cx_ + 1;
+        if (to < 0) to = 0;
+        if (to > width) to = width;
+      }
+      for (int k = from; k < to; ++k) ln.cells[static_cast<size_t>(k)] = Cell();
+    }
+    if (mode == 0) {
+      for (int r = cy_ + 1; r < static_cast<int>(screen_.size()); ++r) {
+        screen_[static_cast<size_t>(r)].cells.assign(static_cast<size_t>(width), Cell());
+      }
+    }
+  } else {
+    for (size_t r = 0; r < screen_.size(); ++r) {
+      screen_[r].cells.assign(static_cast<size_t>(width), Cell());
+    }
+    cx_ = 0;
+    cy_ = 0;
+    wrapPending_ = false;
+  }
+  dirty_ = true;
+}
+
+void Terminal::EraseLine(int mode) {
+  if (cy_ < 0 || cy_ >= static_cast<int>(screen_.size())) return;
+  if (mode != 0 && mode != 1 && mode != 2) return;
+  int width = cols_ < 1 ? 1 : cols_;
+  Line& ln = screen_[static_cast<size_t>(cy_)];
+  if (static_cast<int>(ln.cells.size()) < width) ln.cells.resize(static_cast<size_t>(width), Cell());
+  int from = 0;
+  int to = width;
+  if (mode == 0) {
+    from = cx_ < 0 ? 0 : cx_;
+    if (from > width) from = width;
+  } else if (mode == 1) {
+    to = cx_ + 1;
+    if (to < 0) to = 0;
+    if (to > width) to = width;
+  }
+  for (int k = from; k < to; ++k) ln.cells[static_cast<size_t>(k)] = Cell();
+  dirty_ = true;
+}
+
+void Terminal::InsertLines(int n) {
+  if (n < 1) n = 1;
+  if (rows_ < 1) return;
+  while (static_cast<int>(screen_.size()) < rows_) screen_.push_back(BlankLine(cols_));
+  if (cy_ < 0 || cy_ >= static_cast<int>(screen_.size())) return;
+  for (int k = 0; k < n; ++k) {
+    screen_.insert(screen_.begin() + cy_, BlankLine(cols_));
+    screen_.pop_back();
+  }
+  dirty_ = true;
+}
+
+void Terminal::DeleteLines(int n) {
+  if (n < 1) n = 1;
+  if (rows_ < 1) return;
+  while (static_cast<int>(screen_.size()) < rows_) screen_.push_back(BlankLine(cols_));
+  for (int k = 0; k < n; ++k) {
+    if (cy_ < 0 || cy_ >= static_cast<int>(screen_.size())) break;
+    screen_.erase(screen_.begin() + cy_);
+    screen_.push_back(BlankLine(cols_));
+  }
+  dirty_ = true;
+}
+
+void Terminal::InsertChars(int n) {
+  if (n < 1) n = 1;
+  if (cy_ < 0 || cy_ >= static_cast<int>(screen_.size())) return;
+  int width = cols_ < 1 ? 1 : cols_;
+  Line& ln = screen_[static_cast<size_t>(cy_)];
+  if (static_cast<int>(ln.cells.size()) < width) ln.cells.resize(static_cast<size_t>(width), Cell());
+  if (cx_ < 0) cx_ = 0;
+  if (cx_ >= width) return;
+  if (n > width - cx_) n = width - cx_;
+  ln.cells.insert(ln.cells.begin() + cx_, static_cast<size_t>(n), Cell());
+  ln.cells.resize(static_cast<size_t>(width));
+  dirty_ = true;
+}
+
+void Terminal::DeleteChars(int n) {
+  if (n < 1) n = 1;
+  if (cy_ < 0 || cy_ >= static_cast<int>(screen_.size())) return;
+  int width = cols_ < 1 ? 1 : cols_;
+  Line& ln = screen_[static_cast<size_t>(cy_)];
+  if (static_cast<int>(ln.cells.size()) < width) ln.cells.resize(static_cast<size_t>(width), Cell());
+  if (cx_ < 0) cx_ = 0;
+  if (cx_ >= width) return;
+  if (n > width - cx_) n = width - cx_;
+  ln.cells.erase(ln.cells.begin() + cx_, ln.cells.begin() + cx_ + n);
+  ln.cells.resize(static_cast<size_t>(width), Cell());
+  dirty_ = true;
+}
+
+void Terminal::ScrollScreenUp(int n) {
+  if (n < 1) n = 1;
+  if (screen_.empty()) return;
+  for (int k = 0; k < n; ++k) {
+    screen_.pop_front();
+    screen_.push_back(BlankLine(cols_));
+  }
+  dirty_ = true;
+}
+
+void Terminal::ScrollScreenDown(int n) {
+  if (n < 1) n = 1;
+  if (screen_.empty()) return;
+  for (int k = 0; k < n; ++k) {
+    screen_.pop_back();
+    screen_.push_front(BlankLine(cols_));
+  }
   dirty_ = true;
 }
 
@@ -411,6 +551,33 @@ void Terminal::Feed(const std::string& utf8) {
         i += 3;
         continue;
       }
+      if (kind == '7' || kind == '8' || kind == 'D' || kind == 'E' || kind == 'M') {
+        if (kind == '7') {
+          savedCx_ = cx_;
+          savedCy_ = cy_;
+        } else if (kind == '8') {
+          cx_ = savedCx_;
+          cy_ = savedCy_;
+          if (cx_ < 0) cx_ = 0;
+          if (cx_ > cols_ - 1) cx_ = cols_ - 1;
+          if (cy_ < 0) cy_ = 0;
+          if (cy_ > rows_ - 1) cy_ = rows_ - 1;
+          wrapPending_ = false;
+          dirty_ = true;
+        } else if (kind == 'D') {
+          NewLine();
+        } else if (kind == 'E') {
+          CarriageReturn();
+          NewLine();
+        } else {
+          if (cy_ > 0) --cy_;
+          else ScrollScreenDown(1);
+          wrapPending_ = false;
+          dirty_ = true;
+        }
+        i += 2;
+        continue;
+      }
       if (kind != '[') {
         i += 2;
         continue;
@@ -427,6 +594,7 @@ void Terminal::Feed(const std::string& utf8) {
       }
       char finalByte = src[j];
       std::string raw = src.substr(i + 2, j - (i + 2));
+      bool priv = !raw.empty() && (raw[0] == '?' || raw[0] == '>' || raw[0] == '<' || raw[0] == '=');
       std::vector<int> args;
       int value = 0;
       bool has = false;
@@ -446,23 +614,14 @@ void Terminal::Feed(const std::string& utf8) {
         }
       }
       if (has) args.push_back(value);
+      int a0 = args.size() > 0 ? args[0] : 1;
+      if (a0 < 1) a0 = 1;
       if (finalByte == 'm') {
         ParseSgr(args);
       } else if (finalByte == 'K') {
-        int mode = args.empty() ? 0 : args[0];
-        if (cy_ >= 0 && cy_ < static_cast<int>(screen_.size())) {
-          Line& ln = screen_[static_cast<size_t>(cy_)];
-          if (static_cast<int>(ln.cells.size()) < cols_) ln.cells.resize(static_cast<size_t>(cols_), Cell());
-          int from = 0;
-          int to = cols_;
-          if (mode == 0) from = cx_ < 0 ? 0 : cx_;
-          else if (mode == 1) to = cx_ + 1;
-          if (from < 0) from = 0;
-          if (to > cols_) to = cols_;
-          for (int k = from; k < to; ++k) ln.cells[static_cast<size_t>(k)] = Cell();
-        }
+        EraseLine(args.empty() ? 0 : args[0]);
       } else if (finalByte == 'J') {
-        ClearAll();
+        EraseDisplay(args.empty() ? 0 : args[0]);
       } else if (finalByte == 'H' || finalByte == 'f') {
         int row = args.size() > 0 ? args[0] : 1;
         int col = args.size() > 1 ? args[1] : 1;
@@ -472,7 +631,102 @@ void Terminal::Feed(const std::string& utf8) {
         if (col > cols_) col = cols_;
         cy_ = row - 1;
         cx_ = col - 1;
+        wrapPending_ = false;
         dirty_ = true;
+      } else if (finalByte == 'A') {
+        cy_ -= a0;
+        if (cy_ < 0) cy_ = 0;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'B') {
+        cy_ += a0;
+        if (cy_ > rows_ - 1) cy_ = rows_ - 1;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'C') {
+        cx_ += a0;
+        if (cx_ > cols_ - 1) cx_ = cols_ - 1;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'D') {
+        cx_ -= a0;
+        if (cx_ < 0) cx_ = 0;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'E') {
+        cy_ += a0;
+        if (cy_ > rows_ - 1) cy_ = rows_ - 1;
+        cx_ = 0;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'F') {
+        cy_ -= a0;
+        if (cy_ < 0) cy_ = 0;
+        cx_ = 0;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'G') {
+        cx_ = a0 - 1;
+        if (cx_ < 0) cx_ = 0;
+        if (cx_ > cols_ - 1) cx_ = cols_ - 1;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'd') {
+        cy_ = a0 - 1;
+        if (cy_ < 0) cy_ = 0;
+        if (cy_ > rows_ - 1) cy_ = rows_ - 1;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (finalByte == 'L') {
+        InsertLines(a0);
+      } else if (finalByte == 'M') {
+        DeleteLines(a0);
+      } else if (finalByte == '@') {
+        InsertChars(a0);
+      } else if (finalByte == 'P') {
+        DeleteChars(a0);
+      } else if (finalByte == 'S') {
+        ScrollScreenUp(a0);
+      } else if (finalByte == 'T') {
+        ScrollScreenDown(a0);
+      } else if (finalByte == 's') {
+        savedCx_ = cx_;
+        savedCy_ = cy_;
+      } else if (finalByte == 'u') {
+        cx_ = savedCx_;
+        cy_ = savedCy_;
+        if (cx_ < 0) cx_ = 0;
+        if (cx_ > cols_ - 1) cx_ = cols_ - 1;
+        if (cy_ < 0) cy_ = 0;
+        if (cy_ > rows_ - 1) cy_ = rows_ - 1;
+        wrapPending_ = false;
+        dirty_ = true;
+      } else if (priv && (finalByte == 'h' || finalByte == 'l') && a0 == 1) {
+        appCursor_ = (finalByte == 'h');
+      } else if (priv && (finalByte == 'h' || finalByte == 'l') && a0 == 1049) {
+        if (finalByte == 'h' && !alt_) {
+          mainScreen_ = screen_;
+          mainCx_ = cx_;
+          mainCy_ = cy_;
+          alt_ = true;
+          ClearAll();
+        } else if (finalByte == 'l' && alt_) {
+          screen_ = std::move(mainScreen_);
+          mainScreen_.clear();
+          cx_ = mainCx_;
+          cy_ = mainCy_;
+          if (cx_ < 0) cx_ = 0;
+          if (cx_ > cols_ - 1) cx_ = cols_ - 1;
+          if (cy_ < 0) cy_ = 0;
+          if (cy_ > rows_ - 1) cy_ = rows_ - 1;
+          alt_ = false;
+          wrapPending_ = false;
+          while (static_cast<int>(screen_.size()) < rows_) screen_.push_back(BlankLine(cols_));
+          dirty_ = true;
+        }
+      } else if (!csiWarned_) {
+        csiWarned_ = true;
+        SK_LOGW("term: unhandled CSI args='%s' final=%c", raw.c_str(), finalByte);
       }
       i = j + 1;
       continue;
@@ -516,6 +770,33 @@ D2D1_COLOR_F Terminal::ColorOf(unsigned char idx, bool bold, const Palette& p) c
   return c;
 }
 
+static bool IsWordChar(wchar_t c) {
+  if (c >= L'a' && c <= L'z') return true;
+  if (c >= L'A' && c <= L'Z') return true;
+  if (c >= L'0' && c <= L'9') return true;
+  return c == L'_' || c == L'.' || c == L'/' || c == L'-' || c == L'~' || c == L':' || c == L'@';
+}
+
+void Terminal::SelectWordAt(int row, int col) {
+  if (row < 0 || row >= rows_) return;
+  const Line& ln = ViewLine(static_cast<int>(history_.size()) - scrollBack_ + row);
+  int n = static_cast<int>(ln.cells.size());
+  if (n > cols_) n = cols_;
+  if (n <= 0) return;
+  if (col < 0) col = 0;
+  if (col >= n) col = n - 1;
+  int a = col;
+  int b = col;
+  while (a > 0 && IsWordChar(ln.cells[static_cast<size_t>(a - 1)].ch)) --a;
+  while (b + 1 < n && IsWordChar(ln.cells[static_cast<size_t>(b + 1)].ch)) ++b;
+  SetSelection(row, a, row, b);
+}
+
+void Terminal::SelectLineAt(int row) {
+  if (row < 0 || row >= rows_) return;
+  SetSelection(row, 0, row, cols_ > 0 ? cols_ - 1 : 0);
+}
+
 void Terminal::SetSelection(int r0, int c0, int r1, int c1) {
   selR0_ = r0;
   selC0_ = c0;
@@ -540,11 +821,12 @@ std::wstring Terminal::SelectedText() const {
     t = sc; sc = ec; ec = t;
   }
   int maxRow = er;
-  if (maxRow >= (int)screen_.size()) maxRow = (int)screen_.size() - 1;
+  if (maxRow >= rows_) maxRow = rows_ - 1;
+  int base = static_cast<int>(history_.size()) - scrollBack_;
   std::wstring out;
   for (int row = sr; row <= maxRow; ++row) {
     if (row < 0) continue;
-    const Line& ln = screen_[static_cast<size_t>(row)];
+    const Line& ln = ViewLine(base + row);
     int cs = row == sr ? sc : 0;
     int ce = row == er ? ec + 1 : cols_;
     if (cs < 0) cs = 0;
@@ -576,10 +858,21 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
   r.Fill(area.D2D(), p.termBg);
   r.PushClip(area.D2D());
 
-  int rowCount = static_cast<int>(screen_.size());
+  int total = static_cast<int>(history_.size() + screen_.size());
+  int origin = static_cast<int>(history_.size()) - scrollBack_;
+  static int logR0 = -2;
+  static int logR1 = -2;
+  if (selR0_ != logR0 || selR1_ != logR1) {
+    logR0 = selR0_;
+    logR1 = selR1_;
+    SK_LOGI("term draw sel %d,%d-%d,%d sb=%d rows=%d total=%d", selR0_, selC0_, selR1_, selC1_,
+            scrollBack_, rows_, total);
+  }
+  if (origin < 0) origin = 0;
+  int rowCount = total - origin;
   if (rowCount > rows_) rowCount = rows_;
   for (int row = 0; row < rowCount; ++row) {
-    const Line& ln = screen_[static_cast<size_t>(row)];
+    const Line& ln = ViewLine(origin + row);
     float y = area.t + lh * static_cast<float>(row);
     if (y >= area.b) break;
     if (selR0_ >= 0) {
@@ -595,8 +888,13 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
         float x1 = area.l + cw * static_cast<float>(ce);
         if (x1 > area.r) x1 = area.r;
         if (x1 > x0) {
-          r.Fill(D2D1::RectF(x0, y, x1, y + lh),
-                 D2D1::ColorF(p.accent.r, p.accent.g, p.accent.b, 0.22f));
+          float mr = p.termBg.r + (p.accent.r - p.termBg.r) * 0.45f;
+          float mg = p.termBg.g + (p.accent.g - p.termBg.g) * 0.45f;
+          float mb = p.termBg.b + (p.accent.b - p.termBg.b) * 0.45f;
+          r.Fill(D2D1::RectF(x0, y, x1, y + lh), D2D1::ColorF(mr, mg, mb, 1.0f));
+          float bar = cw * 0.18f;
+          if (bar < 2.0f) bar = 2.0f;
+          r.Fill(D2D1::RectF(x0, y, x0 + bar, y + lh), p.accent);
         }
       }
     }
@@ -656,7 +954,7 @@ void Terminal::Draw(Render& r, const Rect& area, float fontSize, const Palette& 
   }
 
   bool blinkOn = !focused_ || ((GetTickCount64() / 530ULL) % 2ULL) == 0ULL;
-  if (blinkOn && cy_ >= 0 && cy_ < rows_ && cx_ >= 0 && cx_ <= cols_) {
+  if (blinkOn && scrollBack_ == 0 && selR0_ < 0 && cy_ >= 0 && cy_ < rows_ && cx_ >= 0 && cx_ <= cols_) {
     int wide = 1;
     if (cy_ < static_cast<int>(screen_.size())) {
       const Line& ln = screen_[static_cast<size_t>(cy_)];
@@ -754,9 +1052,31 @@ std::wstring Terminal::TakeOut() {
 }
 
 void Terminal::ScrollToBottom() {
-  cy_ = rows_ - 1;
-  if (cy_ < 0) cy_ = 0;
+  scrollBack_ = 0;
   dirty_ = true;
+}
+
+void Terminal::ScrollLines(int lines) {
+  if (lines == 0 || rows_ < 1) return;
+  int limit = static_cast<int>(history_.size());
+  int next = scrollBack_ + lines;
+  if (next < 0) next = 0;
+  if (next > limit) next = limit;
+  if (next == scrollBack_) return;
+  scrollBack_ = next;
+  if (scrollBack_ > 0) ClearSelection();
+  dirty_ = true;
+}
+
+const Line& Terminal::ViewLine(int idx) const {
+  int h = static_cast<int>(history_.size());
+  if (idx < 0) idx = 0;
+  if (idx < h) return history_[static_cast<size_t>(idx)];
+  int s = idx - h;
+  if (s < 0) s = 0;
+  if (s >= static_cast<int>(screen_.size())) s = static_cast<int>(screen_.size()) - 1;
+  if (s < 0) s = 0;
+  return screen_[static_cast<size_t>(s)];
 }
 
 }

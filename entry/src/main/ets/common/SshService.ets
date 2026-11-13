@@ -7,6 +7,7 @@ import {
   getHostKeyFingerprint,
   execCommand,
   getForwardStats,
+  getForwardStatsOf,
   SftpFileInfo, UploadProgressItem, DownloadProgressItem
 } from 'libentry.so'
 import { fileIo as fs } from '@kit.CoreFileKit'
@@ -290,6 +291,18 @@ export class SshService {
     }
   }
 
+  forwardStatsOf(hostId: number, port: number): string {
+    const sid: number = this.sessionOf(hostId)
+    if (sid < 0) {
+      return '0,0'
+    }
+    try {
+      return getForwardStatsOf(sid, port)
+    } catch (e) {
+      return '0,0'
+    }
+  }
+
   aliveCount(): number {
     return this.byHost.size
   }
@@ -430,6 +443,9 @@ export class SshService {
   }
 
   resize(hostId: number, cols: number, rows: number): void {
+    if (!(cols >= 20) || !(rows >= 4)) {
+      return
+    }
     const sid: number = this.sessionOf(hostId)
     if (sid < 0) {
       return

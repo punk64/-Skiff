@@ -151,6 +151,8 @@ struct AppState {
   std::wstring sftpPath;
   std::wstring sftpLocalPath;
   std::wstring sftpStatus;
+  std::wstring sftpBar;
+  bool xferAdaptive = true;
   int sftpSelRemote = -1;
   int sftpSelLocal = -1;
   int sftpSide = 1;

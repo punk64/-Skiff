@@ -82,3 +82,52 @@ if(MSVC)
   target_compile_options(Skiff PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/wd4996 /wd4267 /wd4244 /wd4018 /wd4100>)
   target_link_options(Skiff PRIVATE "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
 endif()
+
+if(BUILD_RESUME_TEST)
+  add_executable(skiff_resume_test
+    src/test_resume.cpp
+    src/compat/Platform.cpp
+    src/compat/Crypto.cpp
+    src/core/SerialSessionWin.cpp
+    src/core/SshService.cpp
+    ${CORE_DIR}/jsonAnalyse/cJSON.c
+    ${CORE_SOURCES}
+  )
+
+  target_include_directories(skiff_resume_test BEFORE PRIVATE
+    ${COMPAT_DIR}
+    ${CORE_DIR}
+    ${CORE_DIR}/include
+    ${CORE_DIR}/protocol
+    ${CORE_DIR}/command
+    ${CORE_DIR}/jsonAnalyse
+    ${LIBSSH2_DIR}/include
+  )
+  target_include_directories(skiff_resume_test PRIVATE src)
+
+  target_compile_definitions(skiff_resume_test PRIVATE
+    UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
+    _WINSOCK_DEPRECATED_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS
+  )
+
+  set_source_files_properties(
+    ${CORE_SOURCES}
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core/SshService.cpp"
+    PROPERTIES COMPILE_OPTIONS "/FI${COMPAT_DIR}/Platform.h"
+  )
+
+  target_link_libraries(skiff_resume_test PRIVATE
+    ws2_32 bcrypt crypt32 advapi32 user32
+    "${LIBSSH2_DIR}/lib/libssh2.lib"
+  )
+
+  set_target_properties(skiff_resume_test PROPERTIES
+    OUTPUT_NAME "skiff_resume_test"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/bin"
+  )
+
+  if(MSVC)
+    target_compile_options(skiff_resume_test PRIVATE /utf-8 /EHsc /MP /permissive-)
+    target_compile_options(skiff_resume_test PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/wd4996 /wd4267 /wd4244 /wd4018 /wd4100>)
+  endif()
+endif()

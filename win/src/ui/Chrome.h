@@ -19,7 +19,7 @@ struct Rect {
 
 enum HitId {
   HitNone = 0,
-  HitTitleMin = 1, HitTitleMax, HitTitleClose,
+  HitTitleMin = 1, HitTitleMax, HitTitleClose, HitTitleXfer,
   HitSearch = 10, HitNewHost, HitSettings, HitHelp,
   HitTabBase = 100, HitTabAdd = 130, HitTabsRightBase = 132,
   HitHostBase = 200,
@@ -33,6 +33,7 @@ enum HitId {
   HitSetNavBase = 600,
   HitSetCtrlBase = 640,
   HitStatusConn = 700,
+  HitXferBar = 701,
   HitModalBackdrop = 800, HitModalClose, HitModalOk, HitModalCancel,
   HitTabCloseBase = 900, HitHostEditBase = 940,
   HitFormFieldBase = 1000, HitFormSegBase = 1020, HitFormBrowseBase = 1100,
@@ -49,7 +50,8 @@ enum HitId {
   HitQueueRowBase = 1200,
   HitSideCardBase = 2000, HitRecentBase = 2400,
   HitSortKey = 2500, HitSortDir = 2501, HitSideSearch = 2510,
-  HitSideSettings = 2511, HitSideCollapse = 2512, HitSideExpand = 2513
+  HitSideSettings = 2511, HitSideCollapse = 2512, HitSideExpand = 2513,
+  HitQueueAdapt = 2514
 };
 
 enum SetKindId {

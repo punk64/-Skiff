@@ -163,6 +163,7 @@ private:
     int keepAliveInterval = 60;  // 保活时间间隔（秒）
     
     int waitSocket();
+    int probeInbound(int waitMs);
     
     void runAsyncInThreadPool(std::function<void()> task);
     
@@ -253,10 +254,12 @@ public:
     bool initSftp();
     bool listDirectory(const std::string& path, std::function<void(const FileInfo&)> callback);
     bool realPath(const std::string& path, std::string& out);
-    bool uploadFile(int localFd, const std::string& remotePath, std::function<void(int)> progressCallback = nullptr);
+    bool uploadFile(int localFd, const std::string& remotePath, std::function<void(int64_t)> progressCallback = nullptr);
+
+    void setUploadThrottle(int64_t bps);
 
     std::string getLastUploadError() const;
-    bool downloadFile(const std::string& remotePath, int localFd, std::function<void(off_t)> progressCallback);
+    bool downloadFile(const std::string& remotePath, int localFd, std::function<void(int64_t)> progressCallback);
     bool deleteFile(const std::string& path);
     bool createDirectory(const std::string& path);
     bool deleteDirectory(const std::string& path);
@@ -284,6 +287,8 @@ public:
     std::vector<std::tuple<int, std::string, int, bool, bool>> listActivePortForwardings();
     int getForwardFailures();
     int getForwardAccepts();
+    int getForwardFailuresOf(int port);
+    int getForwardAcceptsOf(int port);
     
     // 设置日志
     bool setLogging(int fd, int logType, int existOperation, bool includeHeader = false, bool omitKnownPassword = false, bool omitSessionData = false) override;
@@ -307,6 +312,8 @@ public:
      * @return 如果成功发送取消请求则返回 true，否则返回 false (例如，SFTP 会话未初始化)。
      */
     bool cancelTransfer();
+
+    bool pauseTransfer(bool on);
 
     // OSC7目录跟踪相关方法
     bool enableDirectoryTracking(bool enable);

@@ -957,7 +957,7 @@ static napi_value UploadFile(napi_env env, napi_callback_info info) {
                 try {
                     bool fileSuccess = sshSession->uploadFile(uploadItem.fd, uploadItem.remotePath,
                         // SFTP 进度回调 - Capture the state variable
-                        [&](int progress) { // progress is 0-100 for the current file
+                        [&](int64_t uploadedBytes) {
                             // 检查是否请求取消
                             if (wd->cancelRequested.load()) {
                                 // 取消时发送终止信号
@@ -966,7 +966,11 @@ static napi_value UploadFile(napi_env env, napi_callback_info info) {
                             
                             if (!wd->tsfnActive) return;
 
-                            off_t currentFileUploaded = (static_cast<off_t>(progress) * uploadItem.fileSize) / 100;
+                            if (uploadedBytes < 0) uploadedBytes = 0;
+                            if (uploadItem.fileSize > 0 && uploadedBytes > uploadItem.fileSize) {
+                                uploadedBytes = uploadItem.fileSize;
+                            }
+                            off_t currentFileUploaded = static_cast<off_t>(uploadedBytes);
                             off_t diff = currentFileUploaded - uploadItem.uploadedBytes;
                             if (diff < 0) diff = 0;
 
@@ -975,7 +979,13 @@ static napi_value UploadFile(napi_env env, napi_callback_info info) {
                                 wd->totalUploadedBytes = wd->totalSize;
                             }
 
-                            uploadItem.progress = progress;
+                            int filePct = 0;
+                            if (uploadItem.fileSize > 0) {
+                                filePct = static_cast<int>((uploadedBytes * 100) / uploadItem.fileSize);
+                            }
+                            if (filePct < 0) filePct = 0;
+                            if (filePct > 100) filePct = 100;
+                            uploadItem.progress = filePct;
                             uploadItem.uploadedBytes = currentFileUploaded;
 
                             // --- BEGIN MODIFICATION: N-API Callback Frequency Optimization ---
@@ -989,7 +999,7 @@ static napi_value UploadFile(napi_env env, napi_callback_info info) {
                             bool byteThresholdMet = (wd->totalUploadedBytes - lastReportedTotalUploadedBytes >= upload_progress_report_threshold_bytes);
                             bool timeThresholdMet = (elapsedSinceLastReportMs >= progress_report_interval_ms);
                             bool progressHappened = (wd->totalUploadedBytes > lastReportedTotalUploadedBytes); // 检查是否有实际进度
-                            bool fileCompleted = (progress == 100); // 当前文件完成也强制更新
+                            bool fileCompleted = (uploadItem.fileSize > 0 && uploadedBytes >= uploadItem.fileSize);
 
                             // 条件：字节阈值达到 或 (时间阈值达到且确有进度) 或 文件完成
                             if (byteThresholdMet || (timeThresholdMet && progressHappened) || fileCompleted)
@@ -1550,7 +1560,7 @@ static napi_value DownloadFile(napi_env env, napi_callback_info info) {
                 wd->success = sshSession->downloadFile(wd->remotePath, wd->fd,
                     // SFTP 进度回调 (byte count) - 加入节流逻辑
                     // --- BEGIN: Modified Progress Lambda with Throttling ---
-                    [&](off_t bytesDownloaded) {
+                    [&](int64_t bytesDownloaded) {
                         if (!wd->tsfnActive.load()) return; // Use .load() for atomic read
 
                         wd->downloadedBytes = bytesDownloaded; // Update total downloaded bytes in workData immediately

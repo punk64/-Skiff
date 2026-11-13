@@ -52,3 +52,4 @@ authorized_keys
 
 # 本地临时产物（构建日志等）一律不追踪
 /.tmp/
+/win/nul

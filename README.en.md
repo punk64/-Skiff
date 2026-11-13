@@ -1,6 +1,6 @@
 # Skiff
 
-**Version** HarmonyOS 0.4.0 · Windows 0.2.0 · **License** MIT
+**Version** HarmonyOS 0.4.7 · Windows 0.2.24 · **License** MIT
 
 **SSH, tunnels and file transfer — on a HarmonyOS phone and on Windows.** The phone build is rebuilt for portrait use: one-tap forwarding, and a built-in browser that opens the server panel the moment the tunnel is up. The desktop build is a single portable exe: sidebar of hosts, tabbed terminal, two-pane SFTP.
 
@@ -66,7 +66,7 @@ Once the phone build was done I wanted the same thing while sitting at a desk: n
 
 ### Terminal
 
-- Real PTY output rendered by xterm.js, bundled Cascadia Mono, adjustable font size
+- Real PTY output rendered by xterm.js, bundled Cascadia Mono, adjustable font size, 5000 lines of scrollback by dragging
 - **Six-row extended keyboard**: letters, digits and symbols, control keys, arrows and editing keys in separate groups; `Shift` / `Caps` behave independently, `Ctrl` / `Alt` combinations pass through, `Del` and `⌫` send their own control sequences
 - One segmented control switches between Terminal / Tunnels / Files inside a session; the session bar keeps the host name and disconnect action
 - Output is batched per frame (16 ms / 32 KB thresholds) so long scrolls stay smooth
@@ -93,6 +93,12 @@ Once the phone build was done I wanted the same thing while sitting at a desk: n
 - **Session logs**: one file per session, viewable, exportable and clearable, keeping the latest 19
 - **Application logs**: connections, forwards, exceptions and crashes written daily to the sandbox, shown separately from session logs
 - **Global error capture**: uncaught exceptions and crash reasons persisted for later inspection
+
+### Backup and restore
+
+- Encrypted export: hosts (password, key passphrase, fingerprint, registration and expiry, auto-connect), tunnel rules, the private keys themselves and UI preferences in one file, AES-256-CBC with an HMAC check, optionally unencrypted
+- Import only appends: deduplicated on `user@host:port`, an existing host is skipped whole, and a same-named key with different contents is stored as a copy — existing configuration is never overwritten
+- One format on both editions: a backup exported on the phone imports on Windows, and vice versa
 
 ### Appearance and language
 
@@ -127,6 +133,10 @@ Once the phone build was done I wanted the same thing while sitting at a desk: n
 - **Closing a tab does not disconnect**: the tab disappears, the session keeps running and reading, and reopening returns to the same screen contents
 - Tab bar, `Ctrl+1`–`Ctrl+4` to switch, `Ctrl+0` for home, `Ctrl+W` to close a tab
 - Adjustable font, size, cursor style and UI scale; `Ctrl+wheel` zooms instantly
+- **Scrollback**: wheel up or `Shift+PageUp` to review the last 2000 lines; any key or scrolling back to the bottom returns to live output
+- **Mouse selection**: drag to select, double-click a word, triple-click a line; releasing copies and reports the character count. `Ctrl+C` copies while a selection exists, and interrupts only when there is none
+- **Full key mapping**: arrows, `Home` / `End`, `Del` / `Ins`, `PageUp` / `PageDown`, including the application cursor mode used by `vim` and `less`
+- Full-screen programs (`vim`, `htop`) get their own screen; exiting restores the previous screen and cursor position
 
 ### Port forwarding
 
@@ -143,10 +153,15 @@ Once the phone build was done I wanted the same thing while sitting at a desk: n
 
 ### Appearance and language
 
-- 18 settings across six groups: General / Appearance / Terminal / Connection / Logs / About
+- Settings across seven groups: General / Appearance / Terminal / Connection / Logs / About / Backup
 - Five accent colours, UI scale, monospace font and size, cursor style
-- 287 bilingual strings, switched at runtime
+- 376 bilingual strings, switched at runtime
 - Log level, retention days, and one-click open/clean of the log directory
+
+### Backup and restore
+
+- The seventh settings group offers export and import; the password dialog carries a "no encryption" toggle
+- Shares the phone edition's container format, so backups move in both directions; import only appends, deduplicating on `user@host:port`, and never overwrites existing hosts or appearance
 
 ### Shortcuts
 
@@ -289,7 +304,7 @@ cmake --build win\build
 - **No built-in browser**: a working channel opens in your default browser rather than inside the app
 - **Limited authentication**: password and public key only; keyboard-interactive is not implemented, so servers requiring 2FA cannot be used
 - **Live regression coverage is partial**: long-running stability of connections, forwards, SFTP and usage polling against a real server still needs testing
-- The version line is independent of the phone edition; the desktop build is 0.1.x
+- The version line is independent of the phone edition; the desktop build is 0.2.x
 
 ## Architecture
 

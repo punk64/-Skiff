@@ -85,7 +85,7 @@ std::string BuildJson(const SshParams& p, int keyFd) {
 
 struct SshService::Impl {
     struct Item {
-        std::unique_ptr<SshSession> session;
+        std::shared_ptr<SshSession> session;
         std::thread worker;
         std::string pending;
         std::string lastError;
@@ -95,11 +95,20 @@ struct SshService::Impl {
         std::atomic<int> state{0};
         std::atomic<bool> busy{false};
         bool sftpReady = false;
+        SshParams params;
+        std::atomic<int> xferSid{-1};
+        std::atomic<long long> upLimit{0};
+        std::atomic<unsigned long long> rxBytes{0};
+        std::atomic<unsigned long long> txBytes{0};
         mutable std::mutex ioMtx;
+        mutable std::mutex dataMtx;
     };
 
     mutable std::mutex mtx;
     std::map<int, std::shared_ptr<Item>> items;
+    std::atomic<int> xferSeq{0};
+    std::vector<int> xferZombie;
+    std::vector<int> deferZombie;
     NotifyFn notify = nullptr;
     void* notifyCtx = nullptr;
 
@@ -116,6 +125,13 @@ struct SshService::Impl {
         return pos->second;
     }
 
+    std::shared_ptr<SshSession> Live(int id) const {
+        std::lock_guard<std::mutex> lk(mtx);
+        auto pos = items.find(id);
+        if (pos == items.end()) return nullptr;
+        return pos->second->session;
+    }
+
     std::shared_ptr<Item> ItemOf(int id) {
         std::lock_guard<std::mutex> lk(mtx);
         auto pos = items.find(id);
@@ -128,8 +144,9 @@ struct SshService::Impl {
     void OnData(int id, const std::string& data) {
         std::shared_ptr<Item> item = Find(id);
         if (!item) return;
+        item->rxBytes.fetch_add(data.size());
         {
-            std::lock_guard<std::mutex> lk(mtx);
+            std::lock_guard<std::mutex> lk(item->dataMtx);
             item->pending += data;
             if (item->pending.size() > 4194304) {
                 item->pending.erase(0, item->pending.size() - 2097152);
@@ -144,7 +161,7 @@ struct SshService::Impl {
             keyFd = _wopen(p.keyPathW.c_str(), _O_RDONLY | _O_BINARY);
         }
 
-        std::unique_ptr<SshSession> s = std::make_unique<SshSession>();
+        std::shared_ptr<SshSession> s = std::make_shared<SshSession>();
         s->setDataCallbacks([this, id](int, std::string data, bool isStatus) {
             if (isStatus) return;
             OnData(id, data);
@@ -166,7 +183,7 @@ struct SshService::Impl {
 
         if (!ok) {
             {
-                std::lock_guard<std::mutex> lk(mtx);
+                std::lock_guard<std::mutex> lk(item->dataMtx);
                 item->lastError = s->getLastConnectError();
                 if (item->lastError.empty()) item->lastError = "连接失败";
             }
@@ -177,14 +194,17 @@ struct SshService::Impl {
         }
 
         {
-            std::lock_guard<std::mutex> lk(mtx);
+            std::lock_guard<std::mutex> lk(item->dataMtx);
             item->hostKey = s->getHostKeyFingerprint();
             item->hostKeyType = s->getHostKeyType();
             item->activeHost = p.host;
             item->lastError.clear();
-            item->session = std::move(s);
-            item->state.store(static_cast<int>(SshState::Connected));
         }
+        {
+            std::lock_guard<std::mutex> lk(mtx);
+            item->session = s;
+        }
+        item->state.store(static_cast<int>(SshState::Connected));
         item->busy.store(false);
         Notify(id);
     }
@@ -210,16 +230,25 @@ bool SshService::Connect(int id, const SshParams& p) {
     std::shared_ptr<Impl::Item> item = d_->ItemOf(id);
     if (!item) return false;
 
-    std::unique_ptr<SshSession> old;
+    std::shared_ptr<SshSession> old;
     {
         std::lock_guard<std::mutex> ilk(item->ioMtx);
-        std::lock_guard<std::mutex> lk(d_->mtx);
-        old = std::move(item->session);
-        item->pending.clear();
+        {
+            std::lock_guard<std::mutex> lk(d_->mtx);
+            old = item->session;
+            item->session.reset();
+            int oldXid = item->xferSid.exchange(-1);
+            if (oldXid != -1) d_->xferZombie.push_back(oldXid);
+        }
+        {
+            std::lock_guard<std::mutex> lk(item->dataMtx);
+            item->pending.clear();
+            item->lastError.clear();
+            item->hostKey.clear();
+            item->activeHost = p.host;
+            item->params = p;
+        }
         item->sftpReady = false;
-        item->lastError.clear();
-        item->hostKey.clear();
-        item->activeHost = p.host;
     }
     if (old) {
         old->disconnect();
@@ -238,12 +267,41 @@ void SshService::Disconnect(int id) {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
     if (!item) return;
 
-    std::unique_ptr<SshSession> owned;
-    {
-        std::lock_guard<std::mutex> ilk(item->ioMtx);
+    int xid = item->xferSid.exchange(-1);
+    if (xid != -1) {
+        std::shared_ptr<SshSession> xs = d_->Live(xid);
+        if (xs) xs->cancelTransfer();
         std::lock_guard<std::mutex> lk(d_->mtx);
-        owned = std::move(item->session);
-        item->pending.clear();
+        d_->xferZombie.push_back(xid);
+    }
+
+    std::shared_ptr<SshSession> live = d_->Live(id);
+    if (live) live->cancelTransfer();
+
+    std::shared_ptr<SshSession> owned;
+    {
+        std::unique_lock<std::mutex> ilk(item->ioMtx, std::try_to_lock);
+        if (!ilk.owns_lock()) {
+            std::lock_guard<std::mutex> lk(d_->mtx);
+            bool dup = false;
+            for (size_t i = 0; i < d_->deferZombie.size(); ++i) {
+                if (d_->deferZombie[i] == id) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (!dup) d_->deferZombie.push_back(id);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(d_->mtx);
+            owned = item->session;
+            item->session.reset();
+        }
+        {
+            std::lock_guard<std::mutex> lk(item->dataMtx);
+            item->pending.clear();
+        }
         item->sftpReady = false;
     }
     if (owned) {
@@ -256,6 +314,45 @@ void SshService::Disconnect(int id) {
     d_->Notify(id);
 }
 
+void SshService::CancelAllTransfers() {
+    std::vector<std::shared_ptr<SshSession>> all;
+    {
+        std::lock_guard<std::mutex> lk(d_->mtx);
+        for (auto& kv : d_->items) {
+            if (kv.second && kv.second->session) all.push_back(kv.second->session);
+        }
+    }
+    for (size_t i = 0; i < all.size(); ++i) all[i]->cancelTransfer();
+}
+
+void SshService::CancelTransfer(int sid) {
+    std::shared_ptr<Impl::Item> item = d_->Find(sid);
+    if (!item) return;
+    std::shared_ptr<SshSession> s = d_->Live(sid);
+    if (s) s->cancelTransfer();
+    if (sid >= 0) {
+        int tid = item->xferSid.load();
+        if (tid != -1) {
+            std::shared_ptr<SshSession> xs = d_->Live(tid);
+            if (xs) xs->cancelTransfer();
+        }
+    }
+}
+
+void SshService::PauseTransfer(int sid, bool on) {
+    std::shared_ptr<Impl::Item> item = d_->Find(sid);
+    if (!item) return;
+    std::shared_ptr<SshSession> s = d_->Live(sid);
+    if (s) s->pauseTransfer(on);
+    if (sid >= 0) {
+        int tid = item->xferSid.load();
+        if (tid != -1) {
+            std::shared_ptr<SshSession> xs = d_->Live(tid);
+            if (xs) xs->pauseTransfer(on);
+        }
+    }
+}
+
 void SshService::DisconnectAll() {
     std::vector<int> ids;
     {
@@ -266,21 +363,28 @@ void SshService::DisconnectAll() {
 }
 
 bool SshService::Send(int id, const std::string& bytes) {
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    auto pos = d_->items.find(id);
-    if (pos == d_->items.end()) return false;
-    std::shared_ptr<Impl::Item> item = pos->second;
-    if (!item || !item->session || !item->session->isConnected()) return false;
-    return item->session->sendData(bytes);
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return false;
+    std::shared_ptr<SshSession> s = d_->Live(id);
+    if (!s || !s->isConnected()) return false;
+    bool ok = s->sendData(bytes);
+    if (ok) item->txBytes.fetch_add(bytes.size());
+    return ok;
+}
+
+void SshService::Traffic(int id, unsigned long long& rx, unsigned long long& tx) const {
+    rx = 0;
+    tx = 0;
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return;
+    rx = item->rxBytes.load();
+    tx = item->txBytes.load();
 }
 
 bool SshService::ResizePty(int id, int cols, int rows) {
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    auto pos = d_->items.find(id);
-    if (pos == d_->items.end()) return false;
-    std::shared_ptr<Impl::Item> item = pos->second;
-    if (!item || !item->session) return false;
-    return item->session->resizePty(cols, rows);
+    std::shared_ptr<SshSession> s = d_->Live(id);
+    if (!s) return false;
+    return s->resizePty(cols, rows);
 }
 
 SshState SshService::State(int id) const {
@@ -294,47 +398,43 @@ bool SshService::IsConnected(int id) const {
 }
 
 std::string SshService::LastError(int id) const {
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    auto pos = d_->items.find(id);
-    if (pos == d_->items.end()) return std::string();
-    return pos->second->lastError;
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return std::string();
+    std::lock_guard<std::mutex> lk(item->dataMtx);
+    return item->lastError;
 }
 
 std::string SshService::HostKey(int id) const {
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    auto pos = d_->items.find(id);
-    if (pos == d_->items.end()) return std::string();
-    return pos->second->hostKey;
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return std::string();
+    std::lock_guard<std::mutex> lk(item->dataMtx);
+    return item->hostKey;
 }
 
 std::string SshService::HostKeyType(int id) const {
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    auto pos = d_->items.find(id);
-    if (pos == d_->items.end()) return std::string();
-    return pos->second->hostKeyType;
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return std::string();
+    std::lock_guard<std::mutex> lk(item->dataMtx);
+    return item->hostKeyType;
 }
 
 std::string SshService::ActiveHost(int id) const {
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    auto pos = d_->items.find(id);
-    if (pos == d_->items.end()) return std::string();
-    return pos->second->activeHost;
+    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return std::string();
+    std::lock_guard<std::mutex> lk(item->dataMtx);
+    return item->activeHost;
 }
 
 std::string SshService::CipherName(int id) const {
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return std::string();
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session || !item->session->isConnected()) return std::string();
-    return item->session->getCipherName();
+    std::shared_ptr<SshSession> s = d_->Live(id);
+    if (!s || !s->isConnected()) return std::string();
+    return s->getCipherName();
 }
 
 std::string SshService::MacName(int id) const {
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return std::string();
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session || !item->session->isConnected()) return std::string();
-    return item->session->getMacName();
+    std::shared_ptr<SshSession> s = d_->Live(id);
+    if (!s || !s->isConnected()) return std::string();
+    return s->getMacName();
 }
 
 void SshService::SetNotify(NotifyFn fn, void* ctx) {
@@ -345,7 +445,7 @@ void SshService::SetNotify(NotifyFn fn, void* ctx) {
 std::string SshService::PumpOutput(int id) {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
     if (!item) return std::string();
-    std::lock_guard<std::mutex> lk(d_->mtx);
+    std::lock_guard<std::mutex> lk(item->dataMtx);
     std::string out;
     out.swap(item->pending);
     return out;
@@ -354,17 +454,15 @@ std::string SshService::PumpOutput(int id) {
 bool SshService::HasPending(int id) const {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
     if (!item) return false;
-    std::lock_guard<std::mutex> lk(d_->mtx);
+    std::lock_guard<std::mutex> lk(item->dataMtx);
     return !item->pending.empty();
 }
 
 bool SshService::Exec(int id, const std::string& command, std::string& out) {
     out.clear();
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return false;
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session || !item->session->isConnected()) return false;
-    SshSession* ssh = item->session.get();
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held || !held->isConnected()) return false;
+    SshSession* ssh = held.get();
     std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
     LIBSSH2_SESSION* sess = ssh->getInternalSession();
     if (sess == nullptr) return false;
@@ -443,10 +541,77 @@ bool SshService::SftpList(int id, const std::string& path, std::vector<RemoteEnt
     });
 }
 
-bool SshService::SftpUpload(int id, const std::wstring& localPath, const std::string& remotePath,
-                            std::string& err, ProgressFn prog) {
-    err.clear();
+int SshService::EnsureTransferSession(int id) {
+    std::shared_ptr<Impl::Item> host = d_->Find(id);
+    if (!host || !IsConnected(id)) return -1;
+    SshParams p;
+    {
+        std::lock_guard<std::mutex> lk(host->dataMtx);
+        p = host->params;
+    }
+    if (p.host.empty()) return -1;
+    int cur = host->xferSid.load();
+    if (cur != -1) {
+        if (IsConnected(cur)) return cur;
+        host->xferSid.store(-1);
+        std::lock_guard<std::mutex> lk(d_->mtx);
+        d_->xferZombie.push_back(cur);
+    }
+    int nid = -2 - d_->xferSeq.fetch_add(1);
+    if (!Connect(nid, p)) return -1;
+    for (int i = 0; i < 400; ++i) {
+        SshState st = State(nid);
+        if (st == SshState::Connected) {
+            std::shared_ptr<Impl::Item> ni = d_->Find(nid);
+            if (ni) ni->upLimit.store(host->upLimit.load());
+            host->xferSid.store(nid);
+            return nid;
+        }
+        if (st == SshState::Failed) break;
+        Sleep(25);
+    }
+    std::lock_guard<std::mutex> lk(d_->mtx);
+    d_->xferZombie.push_back(nid);
+    return -1;
+}
+
+int SshService::TransferSessionId(int id) const {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
+    if (!item) return -1;
+    return item->xferSid.load();
+}
+
+void SshService::ReapTransferSession() {
+    std::vector<int> kill;
+    {
+        std::lock_guard<std::mutex> lk(d_->mtx);
+        kill.swap(d_->xferZombie);
+        for (size_t i = 0; i < d_->deferZombie.size(); ++i) kill.push_back(d_->deferZombie[i]);
+        d_->deferZombie.clear();
+    }
+    if (kill.empty()) return;
+    std::vector<int> again;
+    for (size_t i = 0; i < kill.size(); ++i) {
+        std::shared_ptr<Impl::Item> item = d_->Find(kill[i]);
+        if (!item) continue;
+        std::unique_lock<std::mutex> lk(item->ioMtx, std::try_to_lock);
+        if (!lk.owns_lock()) {
+            again.push_back(kill[i]);
+            continue;
+        }
+        lk.unlock();
+        Disconnect(kill[i]);
+    }
+    if (again.empty()) return;
+    std::lock_guard<std::mutex> lk(d_->mtx);
+    for (size_t i = 0; i < again.size(); ++i) d_->deferZombie.push_back(again[i]);
+}
+
+bool SshService::SftpUpload(int id, const std::wstring& localPath, const std::string& remotePath,
+                            std::string& err, ProgressFn prog) {    err.clear();
+    int tid = EnsureTransferSession(id);
+    int useId = tid != -1 ? tid : id;
+    std::shared_ptr<Impl::Item> item = d_->Find(useId);
     if (!item) {
         err = "SESSION_NOT_FOUND";
         return false;
@@ -465,14 +630,21 @@ bool SshService::SftpUpload(int id, const std::wstring& localPath, const std::st
     if (!item->sftpReady) {
         if (ssh->initSftp()) item->sftpReady = true;
     }
-    std::function<void(int)> up;
-    if (prog) {
-        up = [prog](int pct) {
-            if (pct < 0) pct = 0;
-            if (pct > 100) pct = 100;
-            prog(static_cast<unsigned long long>(pct), 100ULL);
-        };
-    }
+    long long fsize = _filelengthi64(fd);
+    unsigned long long total = fsize > 0 ? static_cast<unsigned long long>(fsize) : 0ULL;
+    ssh->setUploadThrottle(item->upLimit.load());
+    long long sent = 0;
+    std::function<void(int64_t)> up = [prog, total, item, &sent](int64_t done) {
+        long long d = done > 0 ? done : 0;
+        if (d > sent) {
+            item->txBytes.fetch_add(static_cast<unsigned long long>(d - sent));
+            sent = d;
+        }
+        if (!prog) return;
+        unsigned long long v = static_cast<unsigned long long>(d);
+        if (total > 0 && v > total) v = total;
+        prog(v, total);
+    };
     bool ok = item->sftpReady &&
               GuardSftp(&err, [&]() { return ssh->uploadFile(fd, remotePath, up); });
     _close(fd);
@@ -483,7 +655,9 @@ bool SshService::SftpUpload(int id, const std::wstring& localPath, const std::st
 bool SshService::SftpDownload(int id, const std::string& remotePath, const std::wstring& localPath,
                               std::string& err, ProgressFn prog) {
     err.clear();
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
+    int tid = EnsureTransferSession(id);
+    int useId = tid != -1 ? tid : id;
+    std::shared_ptr<Impl::Item> item = d_->Find(useId);
     if (!item) {
         err = "SESSION_NOT_FOUND";
         return false;
@@ -507,12 +681,18 @@ bool SshService::SftpDownload(int id, const std::string& remotePath, const std::
     FileInfo fi;
     GuardSftp(&err, [&]() { return ssh->getFileInfo(remotePath, fi); });
     if (fi.size > 0) total = fi.size;
-    std::function<void(off_t)> dn;
-    if (prog) {
-        dn = [prog, total](off_t done) {
-            prog(done < 0 ? 0ULL : static_cast<unsigned long long>(done), total);
-        };
-    }
+    long long got = 0;
+    std::function<void(int64_t)> dn = [prog, total, item, &got](int64_t done) {
+        long long d = done > 0 ? done : 0;
+        if (d > got) {
+            item->rxBytes.fetch_add(static_cast<unsigned long long>(d - got));
+            got = d;
+        }
+        if (!prog) return;
+        unsigned long long v = static_cast<unsigned long long>(d);
+        if (total > 0 && v > total) v = total;
+        prog(v, total);
+    };
     bool ok = item->sftpReady &&
               GuardSftp(&err, [&]() { return ssh->downloadFile(remotePath, fd, dn); });
     _close(fd);
@@ -614,53 +794,67 @@ bool SshService::SftpChmod(int id, const std::string& path, unsigned int mode,
 
 bool SshService::ForwardStartLocal(int id, int localPort, const std::string& targetHost,
                                    int targetPort) {
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return false;
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session || !item->session->isConnected()) return false;
-    SshSession* ssh = item->session.get();
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held || !held->isConnected()) return false;
+    SshSession* ssh = held.get();
     std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
     return ssh->startLocalPortForwarding(localPort, targetHost, targetPort, false);
 }
 
 bool SshService::ForwardStopLocal(int id, int localPort) {
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return false;
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session) return false;
-    SshSession* ssh = item->session.get();
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held) return false;
+    SshSession* ssh = held.get();
     std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
     return ssh->stopPortForwarding(localPort, false);
 }
 
 bool SshService::ForwardActive(int id, int localPort) {
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return false;
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session) return false;
-    SshSession* ssh = item->session.get();
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held) return false;
+    SshSession* ssh = held.get();
     std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
     return ssh->isPortForwardingActive(localPort, false);
 }
 
 int SshService::ForwardAccepts(int id) {
-    std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return 0;
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session) return 0;
-    SshSession* ssh = item->session.get();
-    std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
-    return ssh->getForwardAccepts();
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held) return 0;
+    std::lock_guard<std::recursive_mutex> lock(held->getLibssh2Mutex());
+    return held->getForwardAccepts();
 }
 
 int SshService::ForwardFailures(int id) {
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held) return 0;
+    std::lock_guard<std::recursive_mutex> lock(held->getLibssh2Mutex());
+    return held->getForwardFailures();
+}
+
+int SshService::ForwardAcceptsOf(int id, int port) {
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held) return 0;
+    std::lock_guard<std::recursive_mutex> lock(held->getLibssh2Mutex());
+    return held->getForwardAcceptsOf(port);
+}
+
+int SshService::ForwardFailuresOf(int id, int port) {
+    std::shared_ptr<SshSession> held = d_->Live(id);
+    if (!held) return 0;
+    std::lock_guard<std::recursive_mutex> lock(held->getLibssh2Mutex());
+    return held->getForwardFailuresOf(port);
+}
+
+void SshService::SetUploadLimit(int id, long long bps) {
     std::shared_ptr<Impl::Item> item = d_->Find(id);
-    if (!item) return 0;
-    std::lock_guard<std::mutex> lk(d_->mtx);
-    if (!item->session) return 0;
-    SshSession* ssh = item->session.get();
-    std::lock_guard<std::recursive_mutex> lock(ssh->getLibssh2Mutex());
-    return ssh->getForwardFailures();
+    if (!item) return;
+    item->upLimit.store(bps);
+    int xid = item->xferSid.load();
+    if (xid == -1) return;
+    std::shared_ptr<Impl::Item> xi = d_->Find(xid);
+    if (xi) xi->upLimit.store(bps);
+    std::shared_ptr<SshSession> s = d_->Live(xid);
+    if (s) s->setUploadThrottle(bps);
 }
 
 }
